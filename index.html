@@ -170,6 +170,166 @@
       color: var(--gold);
     }
 
+    /* Expandable Live Chart section in sidebar */
+    .side-nav-section { display: block; }
+    .side-nav-toggle::after {
+      content: '▸';
+      float: right;
+      font-size: 10px;
+      opacity: 0.6;
+      transition: transform 0.2s;
+      margin-top: 2px;
+    }
+    .side-nav-toggle.expanded::after { transform: rotate(90deg); }
+    .side-nav-children {
+      display: none;
+      margin: 0 12px 8px;
+      padding: 6px 0;
+      border-left: 1px solid var(--border);
+    }
+    .side-nav-children.expanded { display: block; }
+
+    /* Compact toolbar inside dropdown */
+    .side-toolbar {
+      display: flex;
+      gap: 4px;
+      padding: 0 0 8px 10px;
+      margin-bottom: 6px;
+      border-bottom: 1px dashed var(--border);
+    }
+    /* Override .side-nav button cascade for compact toolbar buttons */
+    .side-nav .side-toolbar-btn {
+      flex: 1;
+      width: auto;
+      margin: 0;
+      padding: 6px 0;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text-dim);
+      font-size: 13px;
+      line-height: 1;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .side-nav .side-toolbar-btn:hover {
+      background: rgba(201,169,97,0.08);
+      color: var(--gold);
+      border-color: rgba(201,169,97,0.4);
+    }
+
+    /* Asset row in sidebar dropdown — scoped under .side-nav to override the
+       broad .side-nav button cascade. */
+    .side-nav .side-asset-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      width: calc(100% - 10px);
+      margin: 0 0 2px 10px;
+      padding: 7px 10px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      color: var(--text-dim);
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .side-nav .side-asset-row:hover {
+      background: var(--bg-hot);
+      color: var(--text);
+    }
+    .side-nav .side-asset-row.active {
+      background: rgba(201,169,97,0.12);
+      border-color: rgba(201,169,97,0.4);
+      color: var(--gold);
+    }
+    /* Mobile picker rows are outside .side-nav, so re-state base styles */
+    .mobile-asset-picker .side-asset-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-dim);
+      font-size: 12px;
+      cursor: pointer;
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+    .mobile-asset-picker .side-asset-row.active {
+      background: rgba(201,169,97,0.12);
+      border-color: rgba(201,169,97,0.4);
+      color: var(--gold);
+    }
+    .side-asset-row .sym {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+    }
+    .side-asset-row .meta {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .side-asset-row .meta .asset-bias,
+    .side-asset-row .meta .asset-grade {
+      font-size: 8px;
+      padding: 2px 6px;
+      margin: 0;
+      line-height: 1.3;
+    }
+
+    /* Mobile-only asset picker (horizontal scroll chips on live-chart tab) */
+    .mobile-asset-picker {
+      display: none;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 8px 4px 12px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      scrollbar-width: none;
+    }
+    .mobile-asset-picker::-webkit-scrollbar { display: none; }
+    @media (max-width: 900px) {
+      .mobile-asset-picker { display: flex; }
+    }
+
+    /* Live-chart empty hint state */
+    .live-chart-empty {
+      background: var(--bg-surface);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 80px 24px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .live-chart-empty .icon {
+      font-size: 56px;
+      opacity: 0.4;
+      margin-bottom: 16px;
+    }
+    .live-chart-empty .title {
+      font-family: 'Instrument Serif', serif;
+      font-size: 22px;
+      color: var(--gold);
+      margin-bottom: 8px;
+    }
+    .live-chart-empty .sub {
+      font-size: 13px;
+      color: var(--text-mute);
+      max-width: 400px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
     main { padding: 32px 36px; overflow-x: hidden; }
 
     .tab-content { display: none; }
@@ -1133,8 +1293,18 @@
       </div>
       <div class="side-nav">
         <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Top Setup</button>
-        <button class="nav-btn" onclick="switchTab('dashboard')">🏛 Dashboard</button>
-        <button class="nav-btn" onclick="switchTab('live-chart')">📈 Live Chart</button>
+        <div class="side-nav-section">
+          <button class="nav-btn side-nav-toggle expanded" onclick="onLiveChartNavClick(this)">📈 Live Chart</button>
+          <div class="side-nav-children expanded" id="sideAssetsList">
+            <div class="side-toolbar">
+              <button class="side-toolbar-btn" onclick="event.stopPropagation();syncBinance()" title="Sync now">⚡</button>
+              <button class="side-toolbar-btn" onclick="event.stopPropagation();pasteCSV()" title="Paste CSV">📋</button>
+              <button class="side-toolbar-btn" onclick="event.stopPropagation();openSharedSheet()" title="Shared sheet">👥</button>
+              <button class="side-toolbar-btn" onclick="event.stopPropagation();showAddAssetModal()" title="Add asset" style="color:var(--gold);border-color:rgba(201,169,97,0.4);">＋</button>
+            </div>
+            <div id="sideAssetsRows"></div>
+          </div>
+        </div>
         <button class="nav-btn" onclick="switchTab('journal')">📰 News</button>
         <button class="nav-btn" onclick="switchTab('calendar')">📅 Calendar</button>
         <button class="nav-btn" onclick="switchTab('web3')">🐋 Web3</button>
@@ -1288,86 +1458,84 @@
         </div>
       </div>
 
-      <!-- ═══ DASHBOARD TAB ═══ -->
-      <div id="dashboard" class="tab-content">
-        <div class="page-header">
-          <h1>Dashboard</h1>
-          <p>Click any asset for full ICT analysis. Prices auto-sync every 30s via Binance API.</p>
-        </div>
-        <div class="sync-bar">
-          <button class="sync-btn" onclick="syncBinance()">⚡ Sync Now</button>
-          <button class="sync-btn" onclick="pasteCSV()">📋 CSV Paste</button>
-          <button class="sync-btn" onclick="openSharedSheet()">👥 Shared Sheet</button>
-          <button class="sync-btn" style="background:rgba(201,169,97,0.15);border-color:rgba(201,169,97,0.4);color:var(--gold);" onclick="showAddAssetModal()">＋ Add Asset</button>
-          <span class="sync-status-text" id="dashSyncStatus">Auto-syncing every 30s</span>
-        </div>
-        <div class="assets-grid" id="assetsGrid"></div>
-      </div>
-
       <!-- ═══ LIVE CHART TAB ═══ -->
       <div id="live-chart" class="tab-content">
-        <div class="page-header">
-          <h1>📈 Live Chart</h1>
-          <p>Price syncs every 30s. Crypto via Binance SPOT (MEXC perp fallback), GOLD/SILVER MEXC-only (XAUT_USDT / SILVER_USDT perps, no Binance/OANDA fallback), US100 via FP Markets (TradingView). Chart and dashboard always show the same price.</p>
-        </div>
-        <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-          <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Asset:</div>
-          <span id="tvLivePrice" style="display:inline-block;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.3);border-radius:20px;padding:4px 14px;font-size:14px;font-weight:700;color:#c9a961;font-family:'JetBrains Mono',monospace;margin-right:10px;">--</span>
-          <select id="tvSymbolSelect" onchange="switchTVChart(this.value)" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;"></select>
-          <input id="tvQuickTrack" type="text" placeholder="Type symbol (e.g. DOGE)" autocomplete="off" spellcheck="false"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();quickTrackAsset();}"
-            style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;width:160px;outline:none;">
-          <button onclick="quickTrackAsset()" style="background:rgba(201,169,97,0.15);border:1px solid rgba(201,169,97,0.4);border-radius:8px;padding:7px 12px;color:var(--gold);font-size:12px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Track</button>
-          <div style="flex:1;"></div>
-          <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Timeframe:</div>
-          <div style="display:flex;gap:6px;">
-            <button class="tf-btn" data-tf="1" onclick="switchTVTimeframe('1')">1m</button>
-            <button class="tf-btn" data-tf="5" onclick="switchTVTimeframe('5')">5m</button>
-            <button class="tf-btn" data-tf="15" onclick="switchTVTimeframe('15')">15m</button>
-            <button class="tf-btn" data-tf="60" onclick="switchTVTimeframe('60')">1H</button>
-            <button class="tf-btn" data-tf="240" onclick="switchTVTimeframe('240')">4H</button>
-            <button class="tf-btn" data-tf="D" onclick="switchTVTimeframe('D')">Daily</button>
-            <button class="tf-btn active" data-tf="W" onclick="switchTVTimeframe('W')">Weekly</button>
-          </div>
-        </div>
-        <style>
-          .tf-btn {
-            padding: 7px 12px;
-            background: transparent;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: var(--text-dim);
-            font-size: 11px;
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-            cursor: pointer;
-            transition: all 0.2s;
-          }
-          .tf-btn:hover {
-            border-color: var(--gold);
-            color: var(--text);
-          }
-          .tf-btn.active {
-            background: rgba(201,169,97,0.15);
-            border-color: var(--gold);
-            color: var(--gold);
-          }
-          #tvChartContainer {
-            background: var(--bg-surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            overflow: hidden;
-            margin-bottom: 20px;
-            min-height: 600px;
-          }
-        </style>
-        <div id="tvChartContainer" style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px;height:600px;min-height:600px;"></div>
+        <!-- Mobile-only asset picker (horizontal chips) -->
+        <div class="mobile-asset-picker" id="mobileAssetPicker"></div>
 
-        <!-- ICT Analysis Panel for selected asset -->
-        <div class="ap-card full">
-          <div class="ap-card-title">📊 ICT Analysis · Selected Asset</div>
-          <div id="tvAnalysisPanel" style="font-size:13px;color:var(--text-dim);line-height:1.8;">
-            <div style="color:var(--text-mute);padding:20px;text-align:center;">Select an asset to see analysis…</div>
+        <!-- Empty state shown until user clicks an asset -->
+        <div id="liveChartEmptyHint" class="live-chart-empty">
+          <div class="icon">📈</div>
+          <div class="title">Pick an asset to begin</div>
+          <div class="sub">Choose any symbol from the <strong>Live Chart</strong> dropdown in the sidebar to load its TradingView chart and full ICT analysis here.</div>
+        </div>
+
+        <!-- Asset view (chart + analysis) — hidden until an asset is picked -->
+        <div id="liveChartContent" style="display:none;">
+          <div class="page-header">
+            <h1>📈 <span id="tvCurrentSymbolLabel">—</span> · Live Chart</h1>
+            <p>Price syncs every 30s. Crypto via Binance SPOT (MEXC perp fallback), GOLD/SILVER MEXC-only, US100 via FP Markets.</p>
+          </div>
+          <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+            <span id="tvLivePrice" style="display:inline-block;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.3);border-radius:20px;padding:4px 14px;font-size:14px;font-weight:700;color:#c9a961;font-family:'JetBrains Mono',monospace;margin-right:10px;">--</span>
+            <input id="tvQuickTrack" type="text" placeholder="Quick-track symbol (e.g. DOGE)" autocomplete="off" spellcheck="false"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();quickTrackAsset();}"
+              style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;width:200px;outline:none;">
+            <button onclick="quickTrackAsset()" style="background:rgba(201,169,97,0.15);border:1px solid rgba(201,169,97,0.4);border-radius:8px;padding:7px 12px;color:var(--gold);font-size:12px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Track</button>
+            <div style="flex:1;"></div>
+            <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Timeframe:</div>
+            <div style="display:flex;gap:6px;">
+              <button class="tf-btn" data-tf="1" onclick="switchTVTimeframe('1')">1m</button>
+              <button class="tf-btn" data-tf="5" onclick="switchTVTimeframe('5')">5m</button>
+              <button class="tf-btn" data-tf="15" onclick="switchTVTimeframe('15')">15m</button>
+              <button class="tf-btn" data-tf="60" onclick="switchTVTimeframe('60')">1H</button>
+              <button class="tf-btn" data-tf="240" onclick="switchTVTimeframe('240')">4H</button>
+              <button class="tf-btn" data-tf="D" onclick="switchTVTimeframe('D')">Daily</button>
+              <button class="tf-btn active" data-tf="W" onclick="switchTVTimeframe('W')">Weekly</button>
+            </div>
+          </div>
+          <style>
+            .tf-btn {
+              padding: 7px 12px;
+              background: transparent;
+              border: 1px solid var(--border);
+              border-radius: 6px;
+              color: var(--text-dim);
+              font-size: 11px;
+              font-weight: 600;
+              font-family: 'JetBrains Mono', monospace;
+              cursor: pointer;
+              transition: all 0.2s;
+            }
+            .tf-btn:hover {
+              border-color: var(--gold);
+              color: var(--text);
+            }
+            .tf-btn.active {
+              background: rgba(201,169,97,0.15);
+              border-color: var(--gold);
+              color: var(--gold);
+            }
+            #tvChartContainer {
+              background: var(--bg-surface);
+              border: 1px solid var(--border);
+              border-radius: 12px;
+              overflow: hidden;
+              margin-bottom: 20px;
+              min-height: 600px;
+            }
+          </style>
+          <div id="tvChartContainer" style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px;height:600px;min-height:600px;"></div>
+
+          <!-- ICT Analysis Panel for selected asset -->
+          <div class="ap-card full">
+            <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+              <span>📊 ICT Analysis · Selected Asset</span>
+              <button onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚙ Asset details</button>
+            </div>
+            <div id="tvAnalysisPanel" style="font-size:13px;color:var(--text-dim);line-height:1.8;">
+              <div style="color:var(--text-mute);padding:20px;text-align:center;">Select an asset to see analysis…</div>
+            </div>
           </div>
         </div>
       </div>
@@ -2460,6 +2628,9 @@
   }
 
   function renderAssets() {
+    // Sidebar list is the new primary asset surface — render it on every
+    // pulse, even though the legacy assetsGrid is gone.
+    try { renderSidebarAssets(); } catch(e) {}
     const grid = document.getElementById('assetsGrid');
     if (!grid) return;
     const gst = getGST();
@@ -3046,13 +3217,17 @@
     if (tab==='ict-methods') renderMethods();
     if (tab==='autopilot') { renderSignals(); renderMarketRead(); }
     if (tab==='live-chart') {
-      if (!tvWidget) {
-        tvCurrentSymbol = getBestAsset();
-        const sel = document.getElementById('tvSymbolSelect');
-        if (sel) sel.value = tvCurrentSymbol;
-        initTVChart(tvCurrentSymbol, tvCurrentTimeframe);
+      // Don't auto-init the chart on first visit — keep the empty hint until
+      // the user picks an asset from the sidebar (or mobile picker). Once
+      // they've picked one, tvWidget exists and we just refresh the analysis.
+      if (tvWidget && tvCurrentSymbol) {
+        const hint = document.getElementById('liveChartEmptyHint');
+        const content = document.getElementById('liveChartContent');
+        if (hint) hint.style.display = 'none';
+        if (content) content.style.display = '';
+        updateTVAnalysis(tvCurrentSymbol);
       }
-      updateTVAnalysis(tvCurrentSymbol);
+      try { renderSidebarAssets(); } catch(e) {}
     }
     if (tab==='journal') {
       // News page: load saved filters, render whatever's cached, kick off fetch if stale
@@ -4189,8 +4364,15 @@
       if (typeof tvCurrentSymbol !== 'undefined') tvCurrentSymbol = symbol;
       const sel = document.getElementById('tvSymbolSelect');
       if (sel) sel.value = symbol;
+      const lbl = document.getElementById('tvCurrentSymbolLabel');
+      if (lbl) lbl.textContent = symbol;
+      const hint = document.getElementById('liveChartEmptyHint');
+      const content = document.getElementById('liveChartContent');
+      if (hint) hint.style.display = 'none';
+      if (content) content.style.display = '';
       if (typeof initTVChart === 'function') initTVChart(symbol, (typeof tvCurrentTimeframe !== 'undefined' ? tvCurrentTimeframe : '60'));
       if (typeof updateTVAnalysis === 'function') updateTVAnalysis(symbol);
+      if (typeof renderSidebarAssets === 'function') renderSidebarAssets();
     } catch(e) { console.warn('[acknowledgeAlert] chart load failed:', e); }
 
     try { showToast(`📈 ${symbol} loaded on Live Chart`, 'ok'); } catch(e) {}
@@ -7309,15 +7491,83 @@
   let tvCurrentTimeframe = 'W';
   let tvWidget = null;
 
-  // Rebuild the chart-tab dropdown from ASSETS so custom-tracked symbols appear
+  // Sidebar asset list — replaces the old dashboard cards. Each row is a
+  // clickable nav item that loads the asset into the Live Chart pane.
+  // Also rendered into the mobile horizontal-scroll picker.
+  function renderSidebarAssets() {
+    const desktopHost = document.getElementById('sideAssetsRows');
+    const mobileHost = document.getElementById('mobileAssetPicker');
+    if (!desktopHost && !mobileHost) return;
+    const assets = ASSETS.filter(a => TV_SYMBOLS[a.symbol]);
+    const rows = assets.map(a => {
+      const isActive = a.symbol === tvCurrentSymbol;
+      const biasClass = (a.bias === 'bear' || a.bias === 'BEARISH') ? 'bias-bear'
+        : (a.bias === 'bull' || a.bias === 'BULLISH') ? 'bias-bull' : 'bias-flux';
+      const biasLabel = a.bias === 'bull' ? 'BULLISH'
+        : a.bias === 'bear' ? 'BEARISH'
+        : a.bias === 'neutral' ? 'NEUTRAL'
+        : (a.bias || '—');
+      const grade = (a.grade || '').toString().toUpperCase();
+      return `<button class="side-asset-row${isActive?' active':''}" onclick="onSideAssetClick('${a.symbol}')" title="${a.symbol} · ${a.platform||''}">
+        <span class="sym">${a.symbol}${a.custom?' ⭐':''}</span>
+        <span class="meta">
+          <span class="asset-bias ${biasClass}">${biasLabel}</span>
+          ${grade ? `<span class="asset-grade">${grade}</span>` : ''}
+        </span>
+      </button>`;
+    }).join('');
+    if (desktopHost) desktopHost.innerHTML = rows;
+    if (mobileHost) mobileHost.innerHTML = rows;
+  }
+
+  // Asset row click → switch to Live Chart and load that asset.
+  function onSideAssetClick(symbol) {
+    const liveTab = document.getElementById('live-chart');
+    if (liveTab && !liveTab.classList.contains('active')) {
+      switchTab('live-chart');
+    }
+    switchTVChart(symbol);
+  }
+
+  // Live Chart sidebar header click. If we're not already on the live-chart
+  // tab, switch to it and ensure the dropdown is expanded. If we're already
+  // there, toggle the dropdown so the user can collapse it for chart space.
+  function onLiveChartNavClick(btn) {
+    const section = btn && btn.parentElement;
+    if (!section) return;
+    const children = section.querySelector('.side-nav-children');
+    const liveTab = document.getElementById('live-chart');
+    const onLiveChartNow = liveTab && liveTab.classList.contains('active');
+    if (!onLiveChartNow) {
+      switchTab('live-chart');
+      btn.classList.add('expanded');
+      if (children) children.classList.add('expanded');
+      return;
+    }
+    const isExpanded = btn.classList.contains('expanded');
+    if (isExpanded) {
+      btn.classList.remove('expanded');
+      if (children) children.classList.remove('expanded');
+    } else {
+      btn.classList.add('expanded');
+      if (children) children.classList.add('expanded');
+    }
+  }
+
+  // Rebuild the chart-tab dropdown from ASSETS so custom-tracked symbols appear.
+  // The legacy <select id="tvSymbolSelect"> was removed in favour of the
+  // sidebar list, but this function is still called from quickTrackAsset and
+  // other paths — so it now drives the sidebar render.
   function rebuildTVSymbolSelect() {
     const sel = document.getElementById('tvSymbolSelect');
-    if (!sel) return;
-    const current = sel.value || tvCurrentSymbol;
-    const opts = ASSETS.filter(a => TV_SYMBOLS[a.symbol]).map(a =>
-      `<option value="${a.symbol}">${a.symbol}${a.custom ? ' ⭐' : ''}</option>`).join('');
-    sel.innerHTML = opts || `<option value="BTC">BTC</option>`;
-    if (current && ASSETS.find(a => a.symbol === current && TV_SYMBOLS[a.symbol])) sel.value = current;
+    if (sel) {
+      const current = sel.value || tvCurrentSymbol;
+      const opts = ASSETS.filter(a => TV_SYMBOLS[a.symbol]).map(a =>
+        `<option value="${a.symbol}">${a.symbol}${a.custom ? ' ⭐' : ''}</option>`).join('');
+      sel.innerHTML = opts || `<option value="BTC">BTC</option>`;
+      if (current && ASSETS.find(a => a.symbol === current && TV_SYMBOLS[a.symbol])) sel.value = current;
+    }
+    try { renderSidebarAssets(); } catch(e) {}
   }
 
   // Quick-track: type a symbol, hit Enter, system validates on Binance,
@@ -7451,9 +7701,18 @@
 
   function switchTVChart(symbol) {
     tvCurrentSymbol = symbol;
-    document.getElementById('tvSymbolSelect').value = symbol;
+    const sel = document.getElementById('tvSymbolSelect');
+    if (sel) sel.value = symbol;
+    const lbl = document.getElementById('tvCurrentSymbolLabel');
+    if (lbl) lbl.textContent = symbol;
+    // Reveal the chart + analysis pane, hide the empty hint.
+    const hint = document.getElementById('liveChartEmptyHint');
+    const content = document.getElementById('liveChartContent');
+    if (hint) hint.style.display = 'none';
+    if (content) content.style.display = '';
     initTVChart(symbol, tvCurrentTimeframe);
     updateTVAnalysis(symbol);
+    try { renderSidebarAssets(); } catch(e) {}
   }
 
   function switchTVTimeframe(tf) {
@@ -9222,10 +9481,6 @@
     <button class="mob-nav-btn active" id="mobBtn-autopilot" onclick="switchTab('autopilot',this)">
       <span class="mob-icon">⚡</span>
       <span class="mob-label">AutoPilot</span>
-    </button>
-    <button class="mob-nav-btn" id="mobBtn-dashboard" onclick="switchTab('dashboard',this)">
-      <span class="mob-icon">🏛</span>
-      <span class="mob-label">Assets</span>
     </button>
     <button class="mob-nav-btn" id="mobBtn-live-chart" onclick="switchTab('live-chart',this)">
       <span class="mob-icon">📈</span>
