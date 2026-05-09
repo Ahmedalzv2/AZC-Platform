@@ -280,11 +280,23 @@
       align-items: center;
     }
     .side-asset-row .meta .asset-bias,
-    .side-asset-row .meta .asset-grade {
+    .side-asset-row .meta .asset-grade,
+    .side-asset-row .meta .side-mode-badge {
       font-size: 8px;
       padding: 2px 6px;
       margin: 0;
       line-height: 1.3;
+      border-radius: 3px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .side-mode-badge.mode-fut {
+      background: rgba(92,184,138,0.15);
+      color: var(--bull);
+    }
+    .side-mode-badge.mode-spot {
+      background: rgba(101,101,109,0.15);
+      color: var(--text-mute);
     }
 
     /* Mobile-only asset picker (horizontal scroll chips on live-chart tab) */
@@ -2479,8 +2491,15 @@
     const gst = getGST();
     const session = getCurrentSession(gst);
     const sessionStr = session ? session.name : 'Off Session';
-    const armedAssets = ASSETS.filter(a => { const s=getSignal(a,gst); return s==='enter'||s==='armed'; });
-    const watchAssets = ASSETS.filter(a => getSignal(a, gst) === 'watch');
+    // Trade-call signals (Armed / Watch) are futures-only by policy. Spot
+    // assets (BTC, ETH, etc.) live by buy-low / sell-high accumulation, not
+    // ICT entry/SL/TP triggers, so we exclude them from these badges.
+    const armedAssets = ASSETS.filter(a => {
+      if (!_isFuturesAsset(a)) return false;
+      const s = getSignal(a, gst);
+      return s === 'enter' || s === 'armed';
+    });
+    const watchAssets = ASSETS.filter(a => _isFuturesAsset(a) && getSignal(a, gst) === 'watch');
 
     el.innerHTML = `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
@@ -2608,6 +2627,15 @@
     renderSignals();
     renderAnalysis();
     showToast(mode === 'spot' ? `🏦 ${symbol} → SPOT · Hold 1–3 weeks` : `⚡ ${symbol} → FUTURES · ICT trade`, 'ok');
+  }
+
+  // Policy gate: trade calls (ENTER NOW alerts, sounds, auto-execution) only
+  // fire for futures-mode assets. Spot assets get accumulation guidance via
+  // the Live Chart analysis text — no overlays, no journal "ENTER" entries,
+  // no auto-orders. Used by checkArmedAlerts, the signal board, and the
+  // entry-alerts host.
+  function _isFuturesAsset(asset) {
+    return !!asset && asset.tradeMode === 'futures';
   }
 
   function updateLevel(symbol, field, rawVal) {
@@ -2915,18 +2943,25 @@
     const _mtfMsgColor = _mtf.pending ? 'var(--text-mute)' : _mtfAligned ? 'var(--bull)' : 'var(--bear)';
     const _mtfHtml = '<div style="flex:1;"><div style="color:' + _h1c + ';">' + _h1t + ' 1H: ' + (_mtf.h1||'?') + '</div><div style="color:' + _h4c + ';">' + _h4t + ' 4H: ' + (_mtf.h4||'?') + '</div><div style="color:' + _d1c + ';">' + _d1t + ' Daily: ' + (_mtf.d1||'?') + '</div></div><div style="flex:1;text-align:right;color:' + _mtfMsgColor + ';">' + _mtfMsg + '</div>';
 
-    const spotBannerHtml = (asset.tradeMode === 'spot') ? `
+    const modeBannerHtml = (asset.tradeMode === 'spot') ? `
       <div style="background:rgba(201,169,97,0.08);border:1px solid rgba(201,169,97,0.3);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;">
         <div style="font-size:24px;">🏦</div>
         <div>
           <div style="font-size:12px;font-weight:700;color:var(--gold);">SPOT MODE · Hold 1–3 Weeks</div>
-          <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Buy & hold in wallet. No stop-out pressure. Accumulate at value, target ${(asset.tp1||asset.tp||0).toLocaleString(undefined,{maximumFractionDigits:4})}.</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Buy low, sell high. Accumulate at value, target ${(asset.tp1||asset.tp||0).toLocaleString(undefined,{maximumFractionDigits:4})}. No SL pressure, no trade-call alerts.</div>
         </div>
-      </div>` : '';
+      </div>` : `
+      <div style="background:rgba(92,184,138,0.08);border:1px solid rgba(92,184,138,0.3);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;">
+        <div style="font-size:24px;">⚡</div>
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--bull);">FUTURES MODE · Leveraged ICT Trade</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Killzone-timed entry/SL/TP with 3–5× leverage. Trade-call alerts active. Hours-to-days hold.</div>
+        </div>
+      </div>`;
 
     document.getElementById('modalAsset').textContent = `${asset.symbol} · ${asset.platform || asset.type || 'Tracked'}`;
     document.getElementById('modalBody').innerHTML = `
-      ${spotBannerHtml}
+      ${modeBannerHtml}
 
       <!-- Confidence badge + signal status + Open-on-MEXC shortcut -->
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:14px;background:${sig==='armed'?'rgba(92,184,138,0.08)':sig==='watch'?'rgba(242,179,61,0.08)':'var(--bg)'};border:1px solid ${sig==='armed'?'rgba(92,184,138,0.3)':sig==='watch'?'rgba(242,179,61,0.3)':'var(--border)'};border-radius:10px;">
@@ -4380,6 +4415,10 @@
 
   function checkArmedAlerts(gst) {
     ASSETS.forEach(asset => {
+      // Policy: only futures assets (US100, SILVER) fire trade calls. Spot
+      // assets get accumulation guidance via the Live Chart analysis text;
+      // no overlays, sounds, vibration, or auto-execution for them.
+      if (!_isFuturesAsset(asset)) return;
       const sig = getSignal(asset, gst);
       const prev = prevSignalMap[asset.symbol] || 'wait';
 
@@ -7508,9 +7547,14 @@
         : a.bias === 'neutral' ? 'NEUTRAL'
         : (a.bias || '—');
       const grade = (a.grade || '').toString().toUpperCase();
-      return `<button class="side-asset-row${isActive?' active':''}" onclick="onSideAssetClick('${a.symbol}')" title="${a.symbol} · ${a.platform||''}">
+      const isFutures = _isFuturesAsset(a);
+      const modeBadge = isFutures
+        ? `<span class="side-mode-badge mode-fut" title="Futures — ICT entry/SL/TP, leverage, alerts">⚡ FUT</span>`
+        : `<span class="side-mode-badge mode-spot" title="Spot — buy low, sell high, no alerts">🏦 SPOT</span>`;
+      return `<button class="side-asset-row${isActive?' active':''}" onclick="onSideAssetClick('${a.symbol}')" title="${a.symbol} · ${a.platform||''} · ${isFutures?'futures (calls)':'spot (buy low / sell high)'}">
         <span class="sym">${a.symbol}${a.custom?' ⭐':''}</span>
         <span class="meta">
+          ${modeBadge}
           <span class="asset-bias ${biasClass}">${biasLabel}</span>
           ${grade ? `<span class="asset-grade">${grade}</span>` : ''}
         </span>
@@ -8016,26 +8060,23 @@
       </div>`;
     };
 
-    // Show only the lane matching the asset's tradeMode by default — the
-    // off-lane was noise for assets the user has already decided on.
-    // Per the user's policy: SILVER + US100 are futures, everything else
-    // (BTC, ETH, SOL, BNB, XRP, SUI, ASTR, GOLD) is spot. The toggle in the
-    // asset modal still lets them flip if they want the other view.
+    // Trade-mode policy is fixed by symbol (see DEFAULT_TRADE_MODES):
+    // SILVER + US100 = futures, everything else = spot. The asset gets the
+    // lane matching its policy mode — no toggle, no off-lane noise.
     const mode = asset.tradeMode === 'spot' ? 'spot' : 'futures';
     const futuresCard = card('FUTURES', fSetup, 'rgba(92,184,138,0.5)', 'rgba(92,184,138,0.05)', 'Killzone-timed · hours-to-days hold · leverage 3–5×', ' · suggest 3–5× leverage');
     const spotCard    = card('SPOT',    sSetup, 'rgba(201,169,97,0.5)', 'rgba(201,169,97,0.05)', 'Accumulation zone · 1–3 weeks hold · no leverage · scale in', '');
     const headerLine  = mode === 'spot'
-      ? '🏦 Spot opinion · accumulation read for this asset'
-      : '⚡ Futures opinion · killzone-timed read for this asset';
+      ? '🏦 Spot · accumulation read for this asset'
+      : '⚡ Futures · killzone-timed read for this asset';
     const subLine = mode === 'spot'
-      ? 'You configured this as a SPOT asset. Buy-low / sell-high from HTF (1D / 4H) FVGs, weeks-long hold, no SL pressure.'
-      : 'You configured this as a FUTURES asset. Killzone-timed entries from 1H / 4H structure with leverage 3–5×.';
-    const flipHint = `<span style="opacity:.7;">Flip via the SPOT/FUTURES toggle in the asset modal if you want the other view.</span>`;
+      ? 'Buy-low / sell-high from HTF (1D / 4H) FVGs · weeks-long hold · no SL pressure · no trade-call alerts.'
+      : 'Killzone-timed entries from 1H / 4H structure · leverage 3–5× · trade-call alerts active.';
 
     return `
       <div style="margin-top:18px;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px;">
         <div style="font-size:11px;color:var(--gold);font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;font-family:'JetBrains Mono',monospace;">${headerLine}</div>
-        <div style="font-size:10px;color:var(--text-mute);margin-bottom:12px;font-family:'JetBrains Mono',monospace;">${subLine} ${flipHint}</div>
+        <div style="font-size:10px;color:var(--text-mute);margin-bottom:12px;font-family:'JetBrains Mono',monospace;">${subLine}</div>
         ${mode === 'spot' ? spotCard : futuresCard}
       </div>
     `;

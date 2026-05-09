@@ -51,6 +51,8 @@ const EXPORTS = [
   'PRICE_PROXY_SYMBOLS',
   // exchange routing
   '_exchangeUrl', 'openOnExchange',
+  // trade-mode policy
+  '_isFuturesAsset', 'setTradeMode', 'loadTradeModes', 'DEFAULT_TRADE_MODES',
   // live trading (real signed call via user-deployed Worker)
   'loadLiveTradingState', 'liveTradingStatus',
   'setLiveTradingEnabled', 'setLiveTradingDryRun',
