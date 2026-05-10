@@ -68,6 +68,7 @@ const EXPORTS = [
   'computeMexcOrderQty', 'getAssetLeverage', 'setAssetLeverage', 'ASSET_LEVERAGE_SPEC',
   'toggleLiveTradingKillSwitch',
   '_isHighLeverage', '_highLevLevels', 'LEVERAGE_HIGH_THRESHOLD',
+  '_fastRefreshAssetEntry', '_fastRefreshTick', 'FAST_REFRESH_INTERVAL_MS',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode + cooldown
   'getScalpTf', 'setScalpTf',
