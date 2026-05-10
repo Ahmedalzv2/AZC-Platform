@@ -4338,6 +4338,49 @@
   // Read-only sanity check. Hits the signed account-assets endpoint
   // through the Worker — never places an order — to verify keys +
   // Worker URL + signing all work end-to-end.
+  // Last connection-test result. Captured by _onClickTestMexcConnection so
+  // the modal can show the full breakdown (status, MEXC code, msg, fix hint)
+  // without requiring the user to dig into browser dev tools.
+  let _lastConnTest = null;
+
+  // MEXC contract API error codes → one-line "what to fix" hints. We only
+  // catalogue the codes that have a *specific* user action attached; for
+  // everything else the modal falls back to showing the raw code + msg.
+  const _MEXC_FIX_HINTS = {
+    10007:  'API key invalid or missing the Contract Trade permission. In MEXC → API Management, edit the key and enable "Futures (Contract Trade)".',
+    700002: 'Signature mismatch — API key and secret don\'t pair, or the secret got copied with a trailing space. Disconnect + paste both fresh.',
+    700003: 'Request timestamp out of sync. Your device clock is more than ~10s off; sync system time and retry.',
+    700006: 'Recv-window expired before MEXC saw the request. Usually a slow Worker hop; just retry.',
+    30004:  'API key IP whitelist is blocking Cloudflare. In MEXC → API Management, edit the key and DISABLE the IP restriction (Workers have no fixed IP).',
+    30005:  'API key disabled or revoked. Generate a new key in MEXC with Contract Trade enabled.',
+  };
+
+  // Humanize one connection-test result into a {label, color, hint, raw}.
+  // Pure function so the tests can verify the mapping without rendering.
+  function _classifyConnTest(r) {
+    if (!r) return { label: 'not run', color: 'var(--text-mute)', hint: 'Tap Test connection to verify.', raw: '' };
+    if (r.ok) return { label: '✓ OK', color: 'var(--bull)', hint: 'Keys + Worker verified end-to-end.', raw: '' };
+    if (r.error === 'no-keys')   return { label: '✗ no keys',   color: 'var(--bear)', hint: 'Paste your MEXC API key + secret above, then Save.', raw: '' };
+    if (r.error === 'no-worker') return { label: '✗ no worker', color: 'var(--bear)', hint: 'Paste your Cloudflare Worker URL above, then Save.', raw: '' };
+    if (r.error === 'sign-failed') return { label: '✗ signing failed', color: 'var(--bear)', hint: 'Browser crypto.subtle unavailable — try a different browser.', raw: r.detail || '' };
+    if (r.error === 'network')     return { label: '✗ network', color: 'var(--bear)', hint: 'Worker URL unreachable. Verify it loads in a new tab and returns "path not allowed".', raw: r.detail || '' };
+    // MEXC responded but rejected. Pick the most specific code.
+    const code = r.response && (r.response.code ?? r.response.errno ?? null);
+    const msg  = r.response && (r.response.msg  ?? r.response.message ?? '');
+    const knownHint = _MEXC_FIX_HINTS[code];
+    if (knownHint) {
+      return { label: `✗ MEXC ${code}`, color: 'var(--bear)', hint: knownHint, raw: msg };
+    }
+    if (r.status === 401 || r.status === 403) {
+      return { label: `✗ ${r.status} unauthorized`, color: 'var(--bear)',
+               hint: 'MEXC rejected the signed request. Most likely the API key IP whitelist is on (Cloudflare has no fixed IP) — disable it on the MEXC API page.',
+               raw: msg || JSON.stringify(r.response || {}).slice(0,160) };
+    }
+    return { label: `✗ status ${r.status || 'unknown'}${code?` · code ${code}`:''}`, color: 'var(--bear)',
+             hint: msg || 'See browser console for the full response. Most futures-key issues are: IP whitelist on, or Contract Trade permission off.',
+             raw: msg || '' };
+  }
+
   async function testMexcConnection() {
     const apiKey = getMexcApiKey();
     const apiSecret = getMexcApiSecret();
@@ -4475,10 +4518,18 @@
     try { showToast('Testing MEXC connection…', 'info'); } catch (e) {}
     const r = await testMexcConnection();
     console.log('[mexc] test connection result:', r);
+    // Stash for the modal panel so the user can see the full breakdown
+    // without browser dev tools.
+    _lastConnTest = { ...r, ts: Date.now() };
     try {
       if (r.ok) showToast('✓ Connection OK · keys + Worker verified', 'ok');
-      else showToast('✗ Connection failed: ' + (r.error || r.status || 'unknown'), 'err');
+      else {
+        const c = _classifyConnTest(r);
+        showToast(`${c.label} — ${c.hint}`, 'err');
+      }
     } catch (e) {}
+    // Re-render the modal so the diag panel updates immediately.
+    try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
     return r;
   }
   async function _onClickTestFireSilver() {
@@ -4496,6 +4547,29 @@
       else showToast('✗ Test fire: ' + (r.reason || r.error || 'failed'), 'err');
     } catch (e) {}
     return r;
+  }
+
+  // Render the last connection-test result inline in the modal. Shows
+  // status, MEXC code/msg, and a one-line "what to fix" hint so the user
+  // doesn't have to open browser dev tools to know which knob to turn.
+  function _renderConnTestHTML() {
+    if (!_lastConnTest) return '';
+    const c = _classifyConnTest(_lastConnTest);
+    const ageS = Math.max(0, Math.round((Date.now() - _lastConnTest.ts) / 1000));
+    const statusLine = _lastConnTest.status
+      ? `HTTP ${_lastConnTest.status}${_lastConnTest.response && _lastConnTest.response.code !== undefined ? ' · MEXC code ' + _lastConnTest.response.code : ''}`
+      : (_lastConnTest.error || '');
+    const rawLine = c.raw ? `<div style="margin-top:6px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;word-break:break-word;">${c.raw}</div>` : '';
+    return `
+      <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;">
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">Last connection test · ${ageS}s ago</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+          <span style="font-size:13px;font-weight:700;color:${c.color};">${c.label}</span>
+          <span style="font-size:10px;color:var(--text-mute);">${statusLine}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text);line-height:1.5;">${c.hint}</div>
+        ${rawLine}
+      </div>`;
   }
 
   // Render the scalp diagnostics panel — what scalpMonitorTick returned for
@@ -4691,6 +4765,8 @@
           <button onclick="_onClickTestMexcConnection()" style="flex:1;background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:8px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔍 Test connection</button>
           <button onclick="_onClickTestFireSilver()" style="flex:1;background:${_liveTradingDryRun?'rgba(242,179,61,0.18)':'rgba(224,93,93,0.18)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:8px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🧪 Test fire SILVER</button>
         </div>
+
+        ${_renderConnTestHTML()}
 
         ${_renderScalpDiagHTML()}
 
