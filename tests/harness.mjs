@@ -70,6 +70,7 @@ const EXPORTS = [
   '_isHighLeverage', '_highLevLevels', 'LEVERAGE_HIGH_THRESHOLD',
   '_fastRefreshAssetEntry', '_fastRefreshTick', 'FAST_REFRESH_INTERVAL_MS',
   '_scalpProximityPct', 'SCALP_PROXIMITY_PCT', 'SCALP_PROXIMITY_PCT_HIGH_LEV',
+  '_classifyConnTest', '_MEXC_FIX_HINTS',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode + cooldown
   'getScalpTf', 'setScalpTf',
