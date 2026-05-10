@@ -4362,6 +4362,22 @@
   // skip-shape { fired:false, reason } when any gate fails.
   // ─────────────────────────────────────────────────────────────────────
   const SCALP_PROXIMITY_PCT = 0.15;  // same threshold as the HTF "armed" tier
+  // High-lev mode runs with a mechanical SL of (100/lev)×0.7% from entry
+  // (e.g. 0.35% at 200×). Filling 0.30% off the FVG mid is still inside that
+  // SL band, so the wider proximity catches fast-moving 1m setups that the
+  // tight 0.15% threshold blows past. Trade-off: entry is up to 0.30% off
+  // the structural mid, but the SL absorbs it.
+  const SCALP_PROXIMITY_PCT_HIGH_LEV = 0.30;
+  function _scalpProximityPct(symbol) {
+    return _isHighLeverage(symbol) ? SCALP_PROXIMITY_PCT_HIGH_LEV : SCALP_PROXIMITY_PCT;
+  }
+
+  // Per-asset diagnostic of the most recent scalpMonitorTick — what the
+  // function returned, how far price was from the suggested entry, and
+  // when the tick ran. Surfaces in the Live Trading modal so the user
+  // can see *why* a fire didn't happen ("good call but missed").
+  // { [symbol]: { ts, fired, reason, distPct, sugDir, htfDir, ... } }
+  const _scalpDiag = {};
 
   function _normalizeBiasDir(bias) {
     const s = String(bias || '').toLowerCase();
@@ -4370,46 +4386,59 @@
     return null;
   }
 
+  // Internal: every return path goes through _recordScalpDiag so the modal
+  // panel can show *why* a fire didn't happen ("good call but missed" turned
+  // out to be: distPct = 0.18%, threshold 0.15% — invisible without diag).
+  function _recordScalpDiag(symbol, result) {
+    if (!symbol) return result;
+    _scalpDiag[symbol] = { ...result, ts: Date.now(), symbol };
+    return result;
+  }
+
   async function scalpMonitorTick(asset) {
-    if (!asset || !_liveTradingEnabled) return { fired: false, reason: 'master-off' };
-    if (!_mexcContractSymbol(asset)) return { fired: false, reason: 'unsupported-symbol' };
-    const tf = getScalpTf(asset.symbol);
-    if (tf !== '1m') return { fired: false, reason: 'scalp-off' };
+    if (!asset) return { fired: false, reason: 'no-asset' };
+    const sym = asset.symbol;
+    if (!_liveTradingEnabled)        return _recordScalpDiag(sym, { fired: false, reason: 'master-off' });
+    if (!_mexcContractSymbol(asset)) return _recordScalpDiag(sym, { fired: false, reason: 'unsupported-symbol' });
+    const tf = getScalpTf(sym);
+    if (tf !== '1m')                 return _recordScalpDiag(sym, { fired: false, reason: 'scalp-off' });
 
     const tfData = asset.tfEntries && asset.tfEntries['1m'];
-    if (!tfData || tfData.error) return { fired: false, reason: 'no-1m-data' };
+    if (!tfData || tfData.error)     return _recordScalpDiag(sym, { fired: false, reason: 'no-1m-data' });
     const rawSug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, '1m') : null;
-    if (!rawSug) return { fired: false, reason: 'no-1m-setup' };
+    if (!rawSug)                     return _recordScalpDiag(sym, { fired: false, reason: 'no-1m-setup' });
     // High-leverage survival mode: rewrite SL/TP to mechanical levels that
     // fit inside the liquidation buffer. Pass-through when leverage < threshold.
     const sug = _highLevLevels(asset, rawSug);
 
     // HTF agreement: 1m direction must match the asset's HTF bias.
     const htfDir = _normalizeBiasDir(asset.bias);
-    if (!htfDir) return { fired: false, reason: 'no-htf-bias' };
-    if (sug.dir !== htfDir) return { fired: false, reason: 'htf-disagrees', sugDir: sug.dir, htfDir };
+    if (!htfDir)                     return _recordScalpDiag(sym, { fired: false, reason: 'no-htf-bias', sugDir: sug.dir });
+    if (sug.dir !== htfDir)          return _recordScalpDiag(sym, { fired: false, reason: 'htf-disagrees', sugDir: sug.dir, htfDir });
 
-    // Proximity check — only fire when live price is at the 1m entry.
-    if (!asset.price || !sug.entry) return { fired: false, reason: 'no-price' };
+    // Proximity check — only fire when live price is at the 1m entry. Wider
+    // tolerance for high-lev mode because the mechanical SL absorbs the slip.
+    if (!asset.price || !sug.entry)  return _recordScalpDiag(sym, { fired: false, reason: 'no-price' });
     const distPct = Math.abs((asset.price - sug.entry) / sug.entry) * 100;
-    if (distPct > SCALP_PROXIMITY_PCT) return { fired: false, reason: 'too-far', distPct };
+    const proximityPct = _scalpProximityPct(sym);
+    if (distPct > proximityPct)      return _recordScalpDiag(sym, { fired: false, reason: 'too-far', distPct, proximityPct, sugEntry: sug.entry, price: asset.price });
 
     // Cooldown — once any order fires (HTF or scalp) for this asset, no more
     // for MEXC_COOLDOWN_MS regardless of which path tried to fire.
-    if (isMexcInCooldown(asset.symbol)) return { fired: false, reason: 'cooldown' };
+    if (isMexcInCooldown(sym))       return _recordScalpDiag(sym, { fired: false, reason: 'cooldown' });
 
     const side = sug.dir === 'bull' ? 'LONG' : 'SHORT';
-    const lev = getAssetLeverage(asset.symbol);
+    const lev = getAssetLeverage(sym);
     const qty = computeMexcOrderQty(asset, sug.entry, sug.sl, lev) || 1;
 
     // Pre-record cooldown so a slow round-trip doesn't fire twice. If
     // placeMexcFuturesOrder returns a hard "skip" (e.g. master flipped
     // off mid-flight), we'd still hold cooldown — that's safer than the
     // alternative.
-    _setLastMexcFireMs(asset.symbol, Date.now());
+    _setLastMexcFireMs(sym, Date.now());
 
     const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
-    return { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r };
+    return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
 
   // Modal button handlers — extracted so the inline onclick="" stays
@@ -4439,6 +4468,80 @@
       else showToast('✗ Test fire: ' + (r.reason || r.error || 'failed'), 'err');
     } catch (e) {}
     return r;
+  }
+
+  // Render the scalp diagnostics panel — what scalpMonitorTick returned for
+  // each MEXC-eligible asset on its most recent tick. The whole point: when
+  // the user says "good call but missed it", they need to see WHY. The
+  // panel surfaces the skip reason + the distPct gap so the next adjustment
+  // is obvious (proximity? cooldown? HTF disagrees?).
+  function _renderScalpDiagHTML() {
+    if (typeof ASSETS === 'undefined') return '';
+    const eligible = ASSETS.filter(a => _mexcContractSymbol && _mexcContractSymbol(a));
+    if (!eligible.length) return '';
+    const REASON_LABEL = {
+      'master-off':         '⏸ master OFF',
+      'unsupported-symbol': '— no contract',
+      'scalp-off':          'scalp tf ≠ 1m',
+      'no-1m-data':         '⟳ awaiting 1m data',
+      'no-1m-setup':        '⟳ no 1m FVG setup',
+      'no-htf-bias':        '? bias unset',
+      'htf-disagrees':      '⚠ 1m vs HTF disagrees',
+      'no-price':           '⟳ awaiting price',
+      'too-far':            '· out of proximity',
+      'cooldown':           '⏳ cooldown',
+    };
+    const rows = eligible.map(a => {
+      const d = _scalpDiag[a.symbol];
+      if (!d) {
+        return `<tr><td style="padding:4px 6px;color:var(--text-mute);">${a.symbol}</td>
+          <td colspan="3" style="padding:4px 6px;color:var(--text-mute);">— no scalp tick yet</td></tr>`;
+      }
+      const ageS = Math.max(0, Math.round((Date.now() - d.ts) / 1000));
+      const reason = d.fired ? '🟢 FIRED' : (REASON_LABEL[d.reason] || d.reason || '?');
+      const reasonColor = d.fired ? 'var(--bull)'
+        : d.reason === 'too-far' ? 'var(--liq)'
+        : d.reason === 'htf-disagrees' ? 'var(--bear)'
+        : d.reason === 'cooldown' ? 'var(--liq)'
+        : 'var(--text-mute)';
+      // Detail column: distPct vs threshold for too-far; sugDir vs htfDir
+      // for htf-disagrees; otherwise empty.
+      let detail = '';
+      if (d.reason === 'too-far' && typeof d.distPct === 'number') {
+        const near = d.distPct <= (d.proximityPct || 0.15) * 1.5;
+        const c = near ? 'var(--liq)' : 'var(--text-mute)';
+        detail = `<span style="color:${c};">${d.distPct.toFixed(3)}% from $${d.sugEntry?.toFixed?.(4) ?? '—'} (gate ${d.proximityPct?.toFixed?.(2) ?? '0.15'}%)</span>`;
+      } else if (d.reason === 'htf-disagrees') {
+        detail = `<span style="color:var(--bear);">1m=${d.sugDir} · HTF=${d.htfDir}</span>`;
+      } else if (d.fired) {
+        detail = `<span style="color:var(--bull);">${d.side} ${d.qty} @ $${d.entry?.toFixed?.(4)} · ${d.leverage}×</span>`;
+      }
+      return `<tr>
+        <td style="padding:4px 6px;color:var(--text);font-weight:700;">${a.symbol}</td>
+        <td style="padding:4px 6px;color:${reasonColor};">${reason}</td>
+        <td style="padding:4px 6px;color:var(--text-mute);">${detail}</td>
+        <td style="padding:4px 6px;color:var(--text-mute);text-align:right;">${ageS}s ago</td>
+      </tr>`;
+    }).join('');
+    return `
+      <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">Scalp Tick Diagnostics</div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;text-align:left;">
+            <th style="padding:4px 6px;font-weight:700;">Asset</th>
+            <th style="padding:4px 6px;font-weight:700;">Last result</th>
+            <th style="padding:4px 6px;font-weight:700;">Detail</th>
+            <th style="padding:4px 6px;font-weight:700;text-align:right;">Age</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div style="margin-top:8px;font-size:10px;color:var(--text-mute);line-height:1.5;">
+          Updated each scalp tick (every render). "<em>out of proximity</em>" means
+          the price was outside the entry zone — the threshold is 0.15% normally,
+          0.30% when leverage ≥ 100×. "Detail" shows the gap so you can see how
+          near the miss was.
+        </div>
+      </div>`;
   }
 
   function openLiveTradingModal() {
@@ -4560,6 +4663,8 @@
           <button onclick="_onClickTestMexcConnection()" style="flex:1;background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:8px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔍 Test connection</button>
           <button onclick="_onClickTestFireSilver()" style="flex:1;background:${_liveTradingDryRun?'rgba(242,179,61,0.18)':'rgba(224,93,93,0.18)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:8px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🧪 Test fire SILVER</button>
         </div>
+
+        ${_renderScalpDiagHTML()}
 
         <div style="margin-top:12px;padding:10px;background:var(--bg-elevated);border:1px dashed var(--border);border-radius:8px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.6;">
           ℹ Auto-execution is wired for <strong style="color:var(--text);">SILVER + SOL</strong>.
