@@ -126,7 +126,20 @@
       border-right: 1px solid var(--border);
       padding: 20px 0;
       z-index: 10;
+      /* Hide the bright system scrollbar — it clashes with the dark theme.
+         Firefox uses scrollbar-width/scrollbar-color; WebKit (Chrome / Edge /
+         Safari / Brave) uses ::-webkit-scrollbar pseudos. Both kept the
+         scrolling functional, just visually quiet. */
+      scrollbar-width: thin;
+      scrollbar-color: rgba(201,169,97,0.20) transparent;
     }
+    nav.side::-webkit-scrollbar { width: 6px; }
+    nav.side::-webkit-scrollbar-track { background: transparent; }
+    nav.side::-webkit-scrollbar-thumb {
+      background: rgba(201,169,97,0.20);
+      border-radius: 3px;
+    }
+    nav.side::-webkit-scrollbar-thumb:hover { background: rgba(201,169,97,0.40); }
 
     .brand {
       padding: 0 20px 20px;
@@ -905,10 +918,25 @@
     border-radius: 20px;
     padding: 40px 44px;
     max-width: 520px; width: 92%;
+    /* Cap height + scroll inside the box. Without this, tall modals (Live
+       Trading config + diagnostics panel) get cut off below the viewport on
+       small displays — the Test Fire / Save buttons become unreachable. */
+    max-height: 90vh;
+    overflow-y: auto;
     box-shadow: 0 0 80px rgba(92,184,138,0.25), 0 32px 80px rgba(0,0,0,0.9);
     text-align: center;
     animation: alertIn .4s cubic-bezier(.34,1.56,.64,1);
+    /* Quiet, theme-matched scrollbar (same look as the sidebar). */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(201,169,97,0.20) transparent;
   }
+  .alert-box::-webkit-scrollbar { width: 6px; }
+  .alert-box::-webkit-scrollbar-track { background: transparent; }
+  .alert-box::-webkit-scrollbar-thumb {
+    background: rgba(201,169,97,0.20);
+    border-radius: 3px;
+  }
+  .alert-box::-webkit-scrollbar-thumb:hover { background: rgba(201,169,97,0.40); }
   @keyframes alertIn {
     0% { transform: scale(0.7) translateY(20px); opacity: 0; }
     100% { transform: scale(1) translateY(0); opacity: 1; }
