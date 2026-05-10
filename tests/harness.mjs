@@ -55,8 +55,9 @@ const EXPORTS = [
   '_isFuturesAsset', 'setTradeMode', 'loadTradeModes', 'DEFAULT_TRADE_MODES',
   // spot watch (buy-low / sell-high zone tracking)
   'getSpotLevels', 'getSpotZone', 'checkSpotZones',
-  // advanced gap theory (iFVG, BPR)
+  // advanced gap theory (iFVG, BPR, Liquidity Void, NDOG, NWOG)
   '_collectFVGs', '_detectInversionFVG', '_detectBPR', '_analyzeKlines',
+  '_detectLiquidityVoid', '_detectNDOG', '_detectNWOG', '_detectFVG',
   // live trading (real signed call via user-deployed Worker)
   'loadLiveTradingState', 'liveTradingStatus',
   'setLiveTradingEnabled', 'setLiveTradingDryRun',

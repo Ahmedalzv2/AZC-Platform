@@ -4825,15 +4825,27 @@
     const tfes = asset.tfEntries;
     if (tfes && !tfes.closed) {
       const wantDir = ((asset.bias || '').toLowerCase().includes('bull')) ? 'bull' : 'bear';
-      let hasIFVG = false, hasBPR = false;
+      let hasIFVG = false, hasBPR = false, hasLV = false;
+      let nearNDOG = false, nearNWOG = false;
       for (const tf of ['1m','5m','15m','1h','4h','1d']) {
         const e = tfes[tf];
         if (!e || e.error) continue;
         if (e.iFVG && e.iFVGZone && e.iFVGZone.dir === wantDir) hasIFVG = true;
         if (e.bpr  && e.bprZone  && e.bprZone.dir  === wantDir) hasBPR  = true;
+        if (e.liqVoid && e.liqVoidZone && e.liqVoidZone.dir === wantDir) hasLV = true;
+        // NDOG / NWOG don't carry a dir — they're reference levels. Bonus
+        // applies whenever price is within 0.3% of the level (a reaction
+        // is forming or already underway).
+        if (asset.price) {
+          if (e.ndog && e.ndog.level && Math.abs((asset.price - e.ndog.level) / e.ndog.level) <= 0.003) nearNDOG = true;
+          if (e.nwog && e.nwog.level && Math.abs((asset.price - e.nwog.level) / e.nwog.level) <= 0.003) nearNWOG = true;
+        }
       }
-      if (hasIFVG) bonusComp += 4;
-      if (hasBPR)  bonusComp += 4;
+      if (hasIFVG)   bonusComp += 4;
+      if (hasBPR)    bonusComp += 4;
+      if (hasLV)     bonusComp += 3;
+      if (nearNDOG)  bonusComp += 2;
+      if (nearNWOG)  bonusComp += 3; // weekly is a stronger reference than daily
     }
     // Floor at 0 — negative confidence is meaningless to a trader.
     return Math.max(0, Math.min(99, Math.round(scoreComp + proxComp + sessComp + bonusComp)));
@@ -4878,10 +4890,13 @@
     const { tf, e } = best;
     const fmt = v => v >= 1000 ? v.toFixed(2) : v >= 10 ? v.toFixed(3) : v >= 1 ? v.toFixed(4) : v.toFixed(6);
     const parts = [];
-    if (e.fvg && e.fvgZone)        parts.push(`${TFL[tf]} FVG ${fmt(e.fvgZone.lo)}–${fmt(e.fvgZone.hi)}`);
+    if (e.fvg && e.fvgZone)        parts.push(`${TFL[tf]} ${e.fvgZone.label || 'FVG'} ${fmt(e.fvgZone.lo)}–${fmt(e.fvgZone.hi)}${e.fvgZone.liquidityTarget?` → ${e.fvgZone.liquidityTarget}`:''}`);
     if (e.obZone)                  parts.push(`${TFL[tf]} OB ${fmt(e.obZone.lo)}–${fmt(e.obZone.hi)}`);
     if (e.iFVG && e.iFVGZone)      parts.push(`${TFL[tf]} iFVG (flipped ${e.iFVGZone.originalDir}) ${fmt(e.iFVGZone.lo)}–${fmt(e.iFVGZone.hi)}`);
     if (e.bpr && e.bprZone)        parts.push(`${TFL[tf]} BPR ${fmt(e.bprZone.lo)}–${fmt(e.bprZone.hi)}`);
+    if (e.liqVoid && e.liqVoidZone)parts.push(`${TFL[tf]} Liquidity Void ${fmt(e.liqVoidZone.lo)}–${fmt(e.liqVoidZone.hi)} (${e.liqVoidZone.atrMultiple.toFixed(1)}× ATR)`);
+    if (e.ndog && e.ndog.level)    parts.push(`NDOG @ ${fmt(e.ndog.level)}`);
+    if (e.nwog && e.nwog.level)    parts.push(`NWOG @ ${fmt(e.nwog.level)}`);
     if (e.sweep && e.sweepLevel)   parts.push(`liquidity swept @ ${fmt(e.sweepLevel.level)}`);
     if (e.choch)                   parts.push('CHoCH confirmed');
     if (e.displacement)            parts.push('displacement candle');
@@ -7073,13 +7088,16 @@
 
   function _detectFVG(k) {
     // 3-candle imbalance somewhere in last 5; also flag if any subsequent candle
-    // has wicked into the gap (mitigated FVGs are lower probability)
+    // has wicked into the gap (mitigated FVGs are lower probability).
+    // BISI / SIBI labels come from ICT's gap-theory taxonomy:
+    //   bull FVG = BISI = Buyside Imbalance / Sellside Inefficiency, targets BSL
+    //   bear FVG = SIBI = Sellside Imbalance / Buyside Inefficiency, targets SSL
     if (k.length < 5) return null;
     for (let i = k.length - 5; i <= k.length - 3; i++) {
       const a = k[i], c = k[i+2];
       let fvg = null;
-      if (a.h < c.l) fvg = { dir:'bull', lo:a.h, hi:c.l, mid:(a.h + c.l)/2, idx: i+2 };
-      else if (a.l > c.h) fvg = { dir:'bear', lo:c.h, hi:a.l, mid:(c.h + a.l)/2, idx: i+2 };
+      if (a.h < c.l) fvg = { dir:'bull', lo:a.h, hi:c.l, mid:(a.h + c.l)/2, idx: i+2, label: 'BISI', liquidityTarget: 'BSL' };
+      else if (a.l > c.h) fvg = { dir:'bear', lo:c.h, hi:a.l, mid:(c.h + a.l)/2, idx: i+2, label: 'SIBI', liquidityTarget: 'SSL' };
       if (fvg) {
         let mitigated = false;
         for (let j = fvg.idx + 1; j < k.length; j++) {
@@ -7104,8 +7122,10 @@
     const fvgs = [];
     for (let i = start; i + 2 < k.length; i++) {
       const a = k[i], c = k[i+2];
-      if (a.h < c.l) fvgs.push({ dir:'bull', lo:a.h, hi:c.l, mid:(a.h + c.l)/2, idx: i+2 });
-      else if (a.l > c.h) fvgs.push({ dir:'bear', lo:c.h, hi:a.l, mid:(c.h + a.l)/2, idx: i+2 });
+      // Same BISI / SIBI labelling as _detectFVG so downstream consumers can
+      // tell at a glance which side of liquidity is being targeted.
+      if (a.h < c.l) fvgs.push({ dir:'bull', lo:a.h, hi:c.l, mid:(a.h + c.l)/2, idx: i+2, label: 'BISI', liquidityTarget: 'BSL' });
+      else if (a.l > c.h) fvgs.push({ dir:'bear', lo:c.h, hi:a.l, mid:(c.h + a.l)/2, idx: i+2, label: 'SIBI', liquidityTarget: 'SSL' });
     }
     return fvgs;
   }
@@ -7186,6 +7206,90 @@
       }
     }
     return best;
+  }
+
+  // Liquidity Void: a single candle of violent expansion (body ≥ 2× the
+  // recent ATR) that hasn't been re-traded into. Distinct from a 3-candle
+  // FVG — this is a single-bar imbalance left by aggressive market orders
+  // sweeping liquidity in one direction. Magnetic on retest because the
+  // void represents un-transacted price; market loves to revisit voids
+  // before continuing. Returns the body range (open↔close), not the wick
+  // range — wick prints filled at the spread are not a void.
+  function _detectLiquidityVoid(k) {
+    if (!k || k.length < 16) return null;
+    // ATR(14) baseline from the candles BEFORE the candidate window.
+    const baseline = k.slice(-16, -5);
+    if (baseline.length < 5) return null;
+    const ranges = baseline.map(c => c.h - c.l);
+    const atr = ranges.reduce((a,b) => a+b, 0) / ranges.length;
+    if (!atr) return null;
+    // Scan the last 5 candles (excluding the very latest, which may still be
+    // forming) for a body ≥ 2× ATR that hasn't been refilled.
+    for (let i = k.length - 6; i <= k.length - 2; i++) {
+      const c = k[i];
+      const body = Math.abs(c.c - c.o);
+      if (body < atr * 2.0) continue;
+      const lo = Math.min(c.o, c.c);
+      const hi = Math.max(c.o, c.c);
+      // "Unfilled" = no later candle's CLOSE landed inside the body range.
+      // Body close is what matters per ICT — wicks into voids are noise.
+      let filled = false;
+      for (let j = i + 1; j < k.length; j++) {
+        const cj = k[j];
+        if (cj.c >= lo && cj.c <= hi) { filled = true; break; }
+      }
+      if (filled) continue;
+      return {
+        dir: c.c > c.o ? 'bull' : 'bear',
+        lo, hi, mid: (lo + hi) / 2,
+        idx: i,
+        bodySize: body,
+        atrMultiple: body / atr,
+      };
+    }
+    return null;
+  }
+
+  // NDOG (New Day Opening Gap): the OPEN price of the most recent UTC daily
+  // candle. Crypto perpetuals trade 24/7 so there's no actual gap, but the
+  // 00:00 UTC open is a watched reference level — institutions reset
+  // bias / margin / pricing models there, and the level often acts as a
+  // magnet for the day's price action. Walks klines back to find the first
+  // candle whose `t` lands at or after the most recent UTC midnight; its
+  // open is the NDOG level.
+  function _detectNDOG(k) {
+    if (!k || !k.length) return null;
+    const now = k[k.length - 1].t;
+    if (!now) return null;
+    const d = new Date(now);
+    d.setUTCHours(0, 0, 0, 0);
+    const dayStart = d.getTime();
+    // Find the first candle whose t >= dayStart — that's the day's first
+    // candle, whose open is the daily open.
+    for (let i = 0; i < k.length; i++) {
+      if (k[i].t >= dayStart) return { level: k[i].o, ts: k[i].t };
+    }
+    return null;
+  }
+
+  // NWOG (New Week Opening Gap): same idea as NDOG but anchored to the start
+  // of the trading week (Monday 00:00 UTC for crypto/perpetual markets — the
+  // forex Sunday 22:00 GMT open isn't relevant here because MEXC perps are
+  // continuous). The Monday open is heavily watched and frequently retested.
+  function _detectNWOG(k) {
+    if (!k || !k.length) return null;
+    const now = k[k.length - 1].t;
+    if (!now) return null;
+    const d = new Date(now);
+    d.setUTCHours(0, 0, 0, 0);
+    // UTC day-of-week: Sun=0..Sat=6. Convert so Monday=0 for arithmetic.
+    const dow = (d.getUTCDay() + 6) % 7;
+    d.setUTCDate(d.getUTCDate() - dow);
+    const weekStart = d.getTime();
+    for (let i = 0; i < k.length; i++) {
+      if (k[i].t >= weekStart) return { level: k[i].o, ts: k[i].t };
+    }
+    return null;
   }
 
   function _detectOB(k, dispDir) {
@@ -7373,8 +7477,11 @@
     // FVGs) tightens the entry zone, which directly improves R:R on
     // leveraged MEXC fires.
     const allFvgs = _collectFVGs(k);
-    const iFVG = _detectInversionFVG(k, allFvgs);
-    const bpr  = _detectBPR(allFvgs);
+    const iFVG    = _detectInversionFVG(k, allFvgs);
+    const bpr     = _detectBPR(allFvgs);
+    const liqVoid = _detectLiquidityVoid(k);
+    const ndog    = _detectNDOG(k);
+    const nwog    = _detectNWOG(k);
     const dirs = [fvg?.dir, sweep?.dir, disp?.dir, choch?.dir].filter(Boolean);
     const bull = dirs.filter(d=>d==='bull').length;
     const bear = dirs.filter(d=>d==='bear').length;
@@ -7399,13 +7506,19 @@
     const iFvgAligned = !!(iFVG && iFVG.dir === dir);
     const bprAligned  = !!(bpr  && bpr.dir  === dir);
     const score = Math.min(4, baseScore + (iFvgAligned?1:0) + (bprAligned?1:0));
+    // liqVoid scores as a confluence whenever it aligns with the dir; NDOG /
+    // NWOG are reference levels (not setups), so they don't add to score —
+    // they surface in the methodology line and bump confidence via proximity
+    // checks downstream.
+    const liqVoidAligned = !!(liqVoid && liqVoid.dir === dir);
     return {
       bias: last.c > last.o ? 'bull' : 'bear',
       dir,
       fvg:!!fvg, sweep:!!sweep, displacement:!!disp, choch:!!choch,
-      iFVG: iFvgAligned, bpr: bprAligned,
+      iFVG: iFvgAligned, bpr: bprAligned, liqVoid: liqVoidAligned,
       fvgZone: fvg, sweepLevel: sweep, obZone: ob, pd, rejection,
-      iFVGZone: iFVG, bprZone: bpr,
+      iFVGZone: iFVG, bprZone: bpr, liqVoidZone: liqVoid,
+      ndog, nwog,
       score,
       entryReady: score >= 3 && dir !== null,
       price: last.c
