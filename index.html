@@ -2678,54 +2678,59 @@
   // levels reflect current 1D/4H structure rather than whatever was seeded
   // weeks ago. Falls back to the asset's static entry/sl/tp1/tp2 when HTF
   // analysis isn't ready yet (first sync, weekend, fetch failure).
+  //
+  // Spot semantics: buy = LOWER price, sell = HIGHER price, *regardless* of
+  // bullish/bearish bias. Many seeded assets (e.g. SUI, BNB) are configured
+  // as futures shorts where `entry` is the rally-sell point (HIGH) and `tp1`
+  // is the short target (LOW) — for spot accumulation that's inverted, so
+  // we explicitly normalize here. The user's mental model: "buy low, sell
+  // high" — never "sell whatever the manual entry says."
   function getSpotLevels(asset) {
-    const fallback = {
-      entry: asset.entry,
-      sl: asset.sl,
-      tp1: asset.tp1 || asset.tp || asset.entry,
-      tp2: asset.tp2 || asset.tp1 || asset.entry,
-      source: 'manual',
-      dir: (asset.bias || '').toLowerCase().includes('bull') ? 'bull' : 'bear',
-    };
+    // Pull two raw levels from either HTF analysis or the manual seed, then
+    // normalize to buy=lower, sell=higher below.
+    let rawA = asset.entry;
+    let rawB = asset.tp1 || asset.tp || asset.entry;
+    let source = 'manual';
+    let dir = (asset.bias || '').toLowerCase().includes('bull') ? 'bull' : 'bear';
     const tfes = asset.tfEntries;
-    if (!tfes || tfes.closed) return fallback;
-    // HTF preference order: Daily structure first (matches the 1–3 week hold),
-    // 4H second (still HTF for spot purposes, faster to confirm).
-    for (const tf of ['1d', '4h']) {
-      const a = tfes[tf];
-      if (!a || a.error || !a.dir) continue;
-      const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(a, tf) : null;
-      if (!sug) continue;
-      // tp2 = 1.5× the tp distance. Sell-high target stretches further than
-      // futures TP1 because spot has no SL pressure to tighten the R:R.
-      const tpDist = Math.abs(sug.tp - sug.entry);
-      const tp2 = sug.dir === 'bull' ? sug.entry + tpDist * 1.5 : sug.entry - tpDist * 1.5;
-      return {
-        entry: sug.entry,
-        sl: sug.sl,
-        tp1: sug.tp,
-        tp2,
-        source: tf.toUpperCase(),
-        dir: sug.dir,
-      };
+    if (tfes && !tfes.closed) {
+      // HTF preference order: Daily structure first (matches the 1–3 week
+      // hold), 4H second (still HTF for spot purposes, faster to confirm).
+      for (const tf of ['1d', '4h']) {
+        const a = tfes[tf];
+        if (!a || a.error || !a.dir) continue;
+        const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(a, tf) : null;
+        if (!sug) continue;
+        rawA = sug.entry;
+        rawB = sug.tp;
+        source = tf.toUpperCase();
+        dir = sug.dir;
+        break;
+      }
     }
-    return fallback;
+    const buy  = Math.min(rawA, rawB);
+    const sell = Math.max(rawA, rawB);
+    // Stretch target sits 50% beyond the buy→sell distance — spot has no SL
+    // pressure to tighten R:R, so the upside ladder runs further than
+    // futures TP2.
+    const sellStretch = sell + (sell - buy) * 0.5;
+    return { buy, sell, sellStretch, source, dir };
   }
 
   // Classify where price sits relative to the spot buy/sell levels.
   // Returns one of:
-  //   buy_at    — within 0.5% of entry (AT BUY ZONE — accumulate)
-  //   buy_near  — within 3% of entry   (approaching value)
-  //   sell_at   — within 0.5% of tp1   (AT SELL ZONE — distribute)
-  //   sell_near — within 3% of tp1     (approaching distribution)
+  //   buy_at    — within 0.5% of buy   (AT BUY ZONE — accumulate)
+  //   buy_near  — within 3%   of buy   (approaching value)
+  //   sell_at   — within 0.5% of sell  (AT SELL ZONE — distribute)
+  //   sell_near — within 3%   of sell  (approaching distribution)
   //   mid       — between the two bands (no action)
   // Distance is signed: positive when price is above the level, negative below.
   function getSpotZone(asset) {
     const lv = getSpotLevels(asset);
     const p = asset.price;
-    if (!p || !lv.entry || !lv.tp1) return { state: 'mid', distancePct: null, levels: lv };
-    const buyPct  = ((p - lv.entry) / lv.entry) * 100;
-    const sellPct = ((p - lv.tp1)   / lv.tp1)   * 100;
+    if (!p || !lv.buy || !lv.sell) return { state: 'mid', distancePct: null, levels: lv };
+    const buyPct  = ((p - lv.buy)  / lv.buy)  * 100;
+    const sellPct = ((p - lv.sell) / lv.sell) * 100;
     const absBuy  = Math.abs(buyPct);
     const absSell = Math.abs(sellPct);
     // Pick whichever band the price is closer to. Ties (extremely rare in
@@ -2762,11 +2767,11 @@
       if (newAt) {
         const lv = zone.levels;
         if (zone.state === 'buy_at') {
-          const tgt = (lv.tp1 || 0).toLocaleString(undefined,{maximumFractionDigits:4});
+          const tgt = (lv.sell || 0).toLocaleString(undefined,{maximumFractionDigits:4});
           showToast(`🏦 ${asset.symbol} · AT BUY ZONE · accumulate (target $${tgt})`, 'ok');
         } else {
-          const ent = (lv.entry || 0).toLocaleString(undefined,{maximumFractionDigits:4});
-          showToast(`🎯 ${asset.symbol} · AT SELL ZONE · distribute (entry was $${ent})`, 'ok');
+          const buy = (lv.buy || 0).toLocaleString(undefined,{maximumFractionDigits:4});
+          showToast(`🎯 ${asset.symbol} · AT SELL ZONE · distribute (bought at $${buy})`, 'ok');
         }
       }
       prevSpotZoneMap[asset.symbol] = zone.state;
@@ -3082,8 +3087,8 @@
     if (asset.tradeMode === 'spot') {
       const z = getSpotZone(asset);
       const lv = z.levels;
-      const buy   = `$${(lv.entry||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
-      const sell  = `$${(lv.tp1||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      const buy   = `$${(lv.buy||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      const sell  = `$${(lv.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
       const sourceTag = lv.source === 'manual' ? 'manual setup' : `${lv.source} HTF auto-derived`;
       // Lift the zone-state language from getSpotZone so the modal headline
       // matches whatever the sidebar pill is showing — single source of truth.
@@ -4927,12 +4932,11 @@
     if (asset.tradeMode === 'spot') {
       const z = getSpotZone(asset);
       const lv = z.levels;
-      const buy   = `$${(lv.entry||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
-      const sell  = `$${(lv.tp1||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
-      const stretch = `$${(lv.tp2||lv.tp1||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      const buy   = `$${(lv.buy||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      const sell  = `$${(lv.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      const stretch = `$${(lv.sellStretch||lv.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
       const sourceTag = lv.source === 'manual' ? 'manual setup' : `${lv.source} HTF structure`;
-      const isBullSpot = (asset.bias||'').toLowerCase().includes('bull');
-      const biasNote = `Bias: ${isBullSpot?'Bullish':'Bearish'} · SPOT (no stop-out) · Buy ${buy} · Sell ${sell} (stretch ${stretch}) · Levels: ${sourceTag} · ${sessNote}`;
+      const biasNote = `SPOT (no stop-out) · Buy ${buy} · Sell ${sell} (stretch ${stretch}) · Levels: ${sourceTag} · ${sessNote}`;
 
       if (z.state === 'buy_at') {
         return `🏦 ${asset.symbol} is AT BUY ZONE (${buy}). Price is in the accumulation pocket from ${sourceTag} — strong value for a 1–3 week hold. Scale in here in tranches; don't commit full size on one tick. Sell-high target: ${sell} (stretch ${stretch}). Confirmation, not prediction — a 1H close holding above ${buy} is your acceptance signal.\n${biasNote}`.trim();
@@ -4943,16 +4947,16 @@
         return `🏦 ${asset.symbol} is ${dist}% ${aboveBelow} buy zone (${buy}). Approaching value — ladder a few small bids near ${buy} rather than chasing here. Sell-high target: ${sell}. Patience pays in spot accumulation — let price come to you.\n${biasNote}`.trim();
       }
       if (z.state === 'sell_at') {
-        return `🎯 ${asset.symbol} is AT SELL ZONE (${sell}). Price has reached your distribution level from ${sourceTag}. Take partials here, trail the rest toward stretch ${stretch}. The 1–3 week thesis has played out at this band — locking gains beats hoping for more.\n${biasNote}`.trim();
+        return `🎯 ${asset.symbol} is AT SELL ZONE (${sell}) — only relevant if you bought near ${buy}. Price has reached your distribution level from ${sourceTag}. If you have a position, take partials and trail toward stretch ${stretch}. If you don't, ignore this — chasing a sell signal without a position is selling air.\n${biasNote}`.trim();
       }
       if (z.state === 'sell_near') {
         const dist = Math.abs(z.distancePct).toFixed(2);
         const aboveBelow = z.distancePct >= 0 ? 'above' : 'below';
-        return `🎯 ${asset.symbol} is ${dist}% ${aboveBelow} sell zone (${sell}). Approaching distribution — start staging sell orders ladder-style toward ${sell} and ${stretch} so partials catch the wick.\n${biasNote}`.trim();
+        return `🎯 ${asset.symbol} is ${dist}% ${aboveBelow} sell zone (${sell}) — relevant if you accumulated near ${buy}. Stage sell orders ladder-style toward ${sell} and ${stretch} so partials catch the wick. If no position, this is information only.\n${biasNote}`.trim();
       }
       // mid: between bands — no action.
-      const buyDist  = Math.abs(((asset.price - lv.entry) / lv.entry) * 100).toFixed(1);
-      const sellDist = Math.abs(((asset.price - lv.tp1)   / lv.tp1)   * 100).toFixed(1);
+      const buyDist  = Math.abs(((asset.price - lv.buy)  / lv.buy)  * 100).toFixed(1);
+      const sellDist = Math.abs(((asset.price - lv.sell) / lv.sell) * 100).toFixed(1);
       return `${asset.symbol} is between zones — ${buyDist}% from buy (${buy}) and ${sellDist}% from sell (${sell}). No action; stand down and wait for either band. Spot rewards patience; chasing mid-range is how you bleed.\n${biasNote}`.trim();
     }
 
@@ -7737,8 +7741,8 @@
                      : (z.state === 'sell_at')   ? `🎯 AT SELL${dist}`
                      :                             `🎯 NEAR SELL${dist}`;
           const tip = z.state.startsWith('buy')
-            ? `Buy zone $${(z.levels.entry||0).toLocaleString(undefined,{maximumFractionDigits:4})} · target $${(z.levels.tp1||0).toLocaleString(undefined,{maximumFractionDigits:4})}${z.levels.source!=='manual'?' · '+z.levels.source+' HTF':' · manual'}`
-            : `Sell zone $${(z.levels.tp1||0).toLocaleString(undefined,{maximumFractionDigits:4})} · entry was $${(z.levels.entry||0).toLocaleString(undefined,{maximumFractionDigits:4})}${z.levels.source!=='manual'?' · '+z.levels.source+' HTF':' · manual'}`;
+            ? `Buy zone $${(z.levels.buy||0).toLocaleString(undefined,{maximumFractionDigits:4})} · target $${(z.levels.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})}${z.levels.source!=='manual'?' · '+z.levels.source+' HTF':' · manual'}`
+            : `Sell zone $${(z.levels.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})} · bought at $${(z.levels.buy||0).toLocaleString(undefined,{maximumFractionDigits:4})}${z.levels.source!=='manual'?' · '+z.levels.source+' HTF':' · manual'}`;
           zoneBadge = `<span class="side-zone-badge ${cls}" title="${tip}">${label}</span>`;
         }
       }
