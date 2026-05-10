@@ -4816,8 +4816,27 @@
     // Dead Zone is a no-trade window per ICT rules — it should not contribute
     // confidence. Off-session also = 0. Only an active KZ grants 15.
     const sessComp = inKZ ? 15 : 0;
+    // Advanced gap theory bonuses. Each adds a small confidence bump when the
+    // dir-aligned zone is present on any TF. They never gate the signal — the
+    // existing checks-based threshold still rules — but they bump the
+    // displayed confidence so the user sees that a leveraged entry has the
+    // tighter / higher-conviction zone underneath.
+    let bonusComp = 0;
+    const tfes = asset.tfEntries;
+    if (tfes && !tfes.closed) {
+      const wantDir = ((asset.bias || '').toLowerCase().includes('bull')) ? 'bull' : 'bear';
+      let hasIFVG = false, hasBPR = false;
+      for (const tf of ['1m','5m','15m','1h','4h','1d']) {
+        const e = tfes[tf];
+        if (!e || e.error) continue;
+        if (e.iFVG && e.iFVGZone && e.iFVGZone.dir === wantDir) hasIFVG = true;
+        if (e.bpr  && e.bprZone  && e.bprZone.dir  === wantDir) hasBPR  = true;
+      }
+      if (hasIFVG) bonusComp += 4;
+      if (hasBPR)  bonusComp += 4;
+    }
     // Floor at 0 — negative confidence is meaningless to a trader.
-    return Math.max(0, Math.min(99, Math.round(scoreComp + proxComp + sessComp)));
+    return Math.max(0, Math.min(99, Math.round(scoreComp + proxComp + sessComp + bonusComp)));
   }
 
   // Builds the "Triggered by:" sentence by reading the per-TF analysis from
@@ -4861,6 +4880,8 @@
     const parts = [];
     if (e.fvg && e.fvgZone)        parts.push(`${TFL[tf]} FVG ${fmt(e.fvgZone.lo)}–${fmt(e.fvgZone.hi)}`);
     if (e.obZone)                  parts.push(`${TFL[tf]} OB ${fmt(e.obZone.lo)}–${fmt(e.obZone.hi)}`);
+    if (e.iFVG && e.iFVGZone)      parts.push(`${TFL[tf]} iFVG (flipped ${e.iFVGZone.originalDir}) ${fmt(e.iFVGZone.lo)}–${fmt(e.iFVGZone.hi)}`);
+    if (e.bpr && e.bprZone)        parts.push(`${TFL[tf]} BPR ${fmt(e.bprZone.lo)}–${fmt(e.bprZone.hi)}`);
     if (e.sweep && e.sweepLevel)   parts.push(`liquidity swept @ ${fmt(e.sweepLevel.level)}`);
     if (e.choch)                   parts.push('CHoCH confirmed');
     if (e.displacement)            parts.push('displacement candle');
@@ -7072,6 +7093,101 @@
     return null;
   }
 
+  // Gather every 3-candle FVG in the lookback window (default 25 candles), in
+  // chronological order. Used by _detectInversionFVG and _detectBPR which both
+  // need *all* recent FVGs, not just the latest. Each entry includes the
+  // candle index (i+2 — the third candle of the gap) so downstream detectors
+  // can walk forward from there.
+  function _collectFVGs(k, lookback = 25) {
+    if (!k || k.length < 5) return [];
+    const start = Math.max(0, k.length - lookback);
+    const fvgs = [];
+    for (let i = start; i + 2 < k.length; i++) {
+      const a = k[i], c = k[i+2];
+      if (a.h < c.l) fvgs.push({ dir:'bull', lo:a.h, hi:c.l, mid:(a.h + c.l)/2, idx: i+2 });
+      else if (a.l > c.h) fvgs.push({ dir:'bear', lo:c.h, hi:a.l, mid:(c.h + a.l)/2, idx: i+2 });
+    }
+    return fvgs;
+  }
+
+  // Inversion FVG (iFVG): a bull FVG that gets violated (a candle CLOSES below
+  // its low) flips polarity to bearish — on the next retest, the zone acts as
+  // resistance instead of support. Vice versa for bear. The retest of an
+  // inverted FVG is one of ICT's highest-conviction reversal entries because
+  // the prior gap is now the rejection level.
+  //
+  // Returns the most recent inverted FVG that has NOT yet been retested
+  // (so we don't re-trigger on a stale flip), or null. The returned `dir` is
+  // the FLIPPED polarity (i.e. the side it now acts as).
+  function _detectInversionFVG(k, fvgs) {
+    if (!k || !fvgs || !fvgs.length) return null;
+    let result = null;
+    for (const fvg of fvgs) {
+      let inverted = false;
+      let invertedAt = -1;
+      // Walk forward from the FVG completion candle. Body close beyond the
+      // far edge = invalidation. We use the candle close `c` as the body
+      // close indicator (ICT-canonical: a "closure through" is enough).
+      for (let j = fvg.idx + 1; j < k.length; j++) {
+        const cj = k[j];
+        if (fvg.dir === 'bull' && cj.c < fvg.lo) { inverted = true; invertedAt = j; break; }
+        if (fvg.dir === 'bear' && cj.c > fvg.hi) { inverted = true; invertedAt = j; break; }
+      }
+      if (!inverted) continue;
+      // Retest check: after invalidation, has price come back into the zone?
+      // If yes, the iFVG already fired and we should look for a fresher one.
+      let retested = false;
+      for (let j = invertedAt + 1; j < k.length; j++) {
+        const cj = k[j];
+        if (cj.h >= fvg.lo && cj.l <= fvg.hi) { retested = true; break; }
+      }
+      if (retested) continue;
+      // Most recent un-retested inverted FVG wins — it's the active zone.
+      result = {
+        dir: fvg.dir === 'bull' ? 'bear' : 'bull',  // FLIPPED
+        lo: fvg.lo, hi: fvg.hi, mid: fvg.mid, idx: fvg.idx,
+        originalDir: fvg.dir,
+        invertedAt,
+      };
+    }
+    return result;
+  }
+
+  // BPR (Balanced Price Range): the price overlap of a bullish FVG and a
+  // bearish FVG. Both sides have left orders behind in this zone, so retests
+  // produce sharper reactions than a one-sided FVG. The intersection itself
+  // is the BPR — narrower than either FVG alone, which gives a tighter SL on
+  // leveraged entries.
+  //
+  // `dir` reflects the more recent FVG's direction (the active aggressor on
+  // the next retest). Returns null if no overlapping bull/bear pair exists.
+  function _detectBPR(fvgs) {
+    if (!fvgs || fvgs.length < 2) return null;
+    let best = null;
+    for (let i = 0; i < fvgs.length; i++) {
+      for (let j = i + 1; j < fvgs.length; j++) {
+        const a = fvgs[i], b = fvgs[j];
+        if (a.dir === b.dir) continue;
+        // Overlap test: the intervals [a.lo, a.hi] and [b.lo, b.hi] intersect.
+        if (a.hi < b.lo || b.hi < a.lo) continue;
+        const lo = Math.max(a.lo, b.lo);
+        const hi = Math.min(a.hi, b.hi);
+        if (hi <= lo) continue;
+        const recent = a.idx > b.idx ? a : b;
+        const candidate = {
+          dir: recent.dir,
+          lo, hi, mid: (lo + hi) / 2,
+          idx: recent.idx,
+          bullIdx: a.dir === 'bull' ? a.idx : b.idx,
+          bearIdx: a.dir === 'bear' ? a.idx : b.idx,
+        };
+        // Prefer the most recent overlap.
+        if (!best || candidate.idx > best.idx) best = candidate;
+      }
+    }
+    return best;
+  }
+
   function _detectOB(k, dispDir) {
     // Order Block = last opposite-color candle before displacement.
     // Bull displacement → look back for last bearish candle. Bear → last bullish.
@@ -7158,13 +7274,38 @@
     const fvg = analysis.fvgZone;
     const ob = analysis.obZone;
     const sweep = analysis.sweepLevel;
+    const bpr  = analysis.bprZone;
+    const iFVG = analysis.iFVGZone;
     if (!fvg || fvg.dir !== dir) return null;
     let entry, sl, source;
-    const useOB = ob && ob.dir === dir && (
+    // Conviction ladder for leveraged entries (tightest SL first):
+    //   1. BPR overlap   — both sides have orders here, narrowest zone
+    //   2. iFVG retest   — flipped gap is acting as resistance/support
+    //   3. OB ∩ FVG      — refined zone within the gap
+    //   4. FVG + sweep   — gap with liquidity sweep buffer
+    //   5. FVG edge      — bare gap fallback
+    const useBPR  = bpr  && bpr.dir  === dir;
+    const useIFVG = !useBPR && iFVG && iFVG.dir === dir;
+    const useOB   = !useBPR && !useIFVG && ob && ob.dir === dir && (
       (ob.hi >= fvg.lo && ob.lo <= fvg.hi) ||
       (dir === 'bull' ? ob.mid <= fvg.mid : ob.mid >= fvg.mid)
     );
-    if (useOB) {
+    if (useBPR) {
+      // BPR is the smallest of all candidate zones — entry at its mid, SL
+      // just past the far edge of the overlap with a small buffer.
+      entry = bpr.mid;
+      const bprBody = Math.abs(bpr.hi - bpr.lo);
+      sl = dir === 'bull' ? bpr.lo - bprBody * 0.10 : bpr.hi + bprBody * 0.10;
+      source = 'bpr';
+    } else if (useIFVG) {
+      // iFVG retest: enter at the mid of the inverted gap, SL just beyond
+      // the far edge (a violation of the iFVG = the inversion thesis is
+      // wrong, cut quickly).
+      entry = iFVG.mid;
+      const ifvgBody = Math.abs(iFVG.hi - iFVG.lo);
+      sl = dir === 'bull' ? iFVG.lo - ifvgBody * 0.10 : iFVG.hi + ifvgBody * 0.10;
+      source = 'ifvg';
+    } else if (useOB) {
       entry = ob.mid;
       const obBody = Math.abs(ob.hi - ob.lo);
       sl = dir === 'bull' ? ob.lo - obBody * 0.10 : ob.hi + obBody * 0.10;
@@ -7226,21 +7367,45 @@
     const sweep = _detectSweep(k);
     const disp = _detectDisplacement(k);
     const choch = _detectCHoCH(k);
+    // Advanced gap theory — collect every recent FVG once, then derive iFVG
+    // and BPR from the same list. iFVG (inverted FVG) catches the false
+    // breakouts that wick-out leveraged positions; BPR (overlapping bull+bear
+    // FVGs) tightens the entry zone, which directly improves R:R on
+    // leveraged MEXC fires.
+    const allFvgs = _collectFVGs(k);
+    const iFVG = _detectInversionFVG(k, allFvgs);
+    const bpr  = _detectBPR(allFvgs);
     const dirs = [fvg?.dir, sweep?.dir, disp?.dir, choch?.dir].filter(Boolean);
     const bull = dirs.filter(d=>d==='bull').length;
     const bear = dirs.filter(d=>d==='bear').length;
     const dir = bull > bear ? 'bull' : bear > bull ? 'bear' : null;
     const ob = _detectOB(k, disp?.dir || dir);
     const pd = _calcPDArray(k, 50);
-    // Rejection check on the more refined zone (OB if available, else FVG)
-    const rejectionZone = (ob && ob.dir === dir) ? ob : (fvg && fvg.dir === dir) ? fvg : null;
+    // Rejection check picks the tightest dir-aligned zone available, in
+    // order of conviction: BPR overlap > iFVG > OB > FVG. Smaller zones
+    // mean tighter SL on a leveraged entry.
+    const rejectionZone =
+        (bpr  && bpr.dir  === dir) ? bpr
+      : (iFVG && iFVG.dir === dir) ? iFVG
+      : (ob   && ob.dir   === dir) ? ob
+      : (fvg  && fvg.dir  === dir) ? fvg
+      : null;
     const rejection = _detectRejection(k, rejectionZone, dir);
-    const score = (fvg?1:0) + (sweep?1:0) + (disp?1:0) + (choch?1:0);
+    // Bonus confluence: iFVG and BPR each count as an extra trigger when they
+    // align with the dir. Cap at 4 so the existing /4 entryReady gate stays
+    // backwards-compatible — these become "free" upgrades that boost grade
+    // and confidence rather than gating earlier than before.
+    const baseScore = (fvg?1:0) + (sweep?1:0) + (disp?1:0) + (choch?1:0);
+    const iFvgAligned = !!(iFVG && iFVG.dir === dir);
+    const bprAligned  = !!(bpr  && bpr.dir  === dir);
+    const score = Math.min(4, baseScore + (iFvgAligned?1:0) + (bprAligned?1:0));
     return {
       bias: last.c > last.o ? 'bull' : 'bear',
       dir,
       fvg:!!fvg, sweep:!!sweep, displacement:!!disp, choch:!!choch,
+      iFVG: iFvgAligned, bpr: bprAligned,
       fvgZone: fvg, sweepLevel: sweep, obZone: ob, pd, rejection,
+      iFVGZone: iFVG, bprZone: bpr,
       score,
       entryReady: score >= 3 && dir !== null,
       price: last.c
