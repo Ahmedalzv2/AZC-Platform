@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
 describe('Trade-mode policy: futures vs spot', () => {
-  test('DEFAULT_TRADE_MODES: SILVER and US100 are futures, everything else is spot', () => {
+  test('DEFAULT_TRADE_MODES (v3): SILVER, US100, SOL = futures; rest = spot', () => {
     const { app } = loadApp();
     // The harness doesn't run window.onload, so loadTradeModes never seeds
     // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
@@ -11,9 +11,9 @@ describe('Trade-mode policy: futures vs spot', () => {
     const modes = app.DEFAULT_TRADE_MODES;
     assert.equal(modes.SILVER, 'futures');
     assert.equal(modes.US100,  'futures');
+    assert.equal(modes.SOL,    'futures', 'SOL flipped to futures in v3 for weekend coverage');
     assert.equal(modes.BTC,    'spot');
     assert.equal(modes.ETH,    'spot');
-    assert.equal(modes.SOL,    'spot');
     assert.equal(modes.BNB,    'spot');
     assert.equal(modes.XRP,    'spot');
     assert.equal(modes.SUI,    'spot');
@@ -29,6 +29,7 @@ describe('Trade-mode policy: futures vs spot', () => {
     const seedFor = (sym) => app.ASSETS.find(a => a.symbol === sym)?.tradeMode;
     assert.equal(seedFor('SILVER'), 'futures');
     assert.equal(seedFor('US100'),  'futures');
+    assert.equal(seedFor('SOL'),    'futures', 'SOL gets weekend coverage in v3');
     assert.equal(seedFor('BTC'),    'spot');
     assert.equal(seedFor('GOLD'),   'spot');
   });

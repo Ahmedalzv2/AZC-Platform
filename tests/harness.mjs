@@ -65,7 +65,8 @@ const EXPORTS = [
   'getMexcWorkerUrl', 'setMexcWorkerUrl',
   'getSilverLeverage', 'setSilverLeverage',
   '_hmacSha256Hex', '_signMexcRequest', '_mexcContractSymbol',
-  'computeMexcOrderQty',
+  'computeMexcOrderQty', 'getAssetLeverage', 'setAssetLeverage', 'ASSET_LEVERAGE_SPEC',
+  'toggleLiveTradingKillSwitch',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode + cooldown
   'getScalpTf', 'setScalpTf',
@@ -212,6 +213,7 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set prevSignalMap(v) { prevSignalMap = v; },
   get prevSpotZoneMap() { return typeof prevSpotZoneMap === 'undefined' ? undefined : prevSpotZoneMap; },
   set prevSpotZoneMap(v) { prevSpotZoneMap = v; },
+  get _liveTradingEnabled() { return typeof _liveTradingEnabled === 'undefined' ? undefined : _liveTradingEnabled; },
   get showToast() { return typeof showToast === 'undefined' ? undefined : showToast; },
   set showToast(v) { showToast = v; },
   get consecutiveSyncFails() { return typeof consecutiveSyncFails === 'undefined' ? undefined : consecutiveSyncFails; },

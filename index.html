@@ -324,6 +324,43 @@
       50%      { opacity: 0.55; }
     }
 
+    /* Live-trading kill-switch — always-visible floating button.
+       OFF state: green/calm so it's not alarming when system is idle.
+       ON  state: red + slow pulse so it's impossible to miss while
+                  auto-execution can fire. */
+    #liveKillSwitch {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 5000;
+      padding: 14px 22px;
+      border-radius: 999px;
+      border: 2px solid var(--bull);
+      background: rgba(92,184,138,0.18);
+      color: var(--bull);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      user-select: none;
+      transition: transform 0.12s ease, background 0.12s ease;
+    }
+    #liveKillSwitch:hover { transform: translateY(-2px); }
+    #liveKillSwitch:active { transform: translateY(0); }
+    #liveKillSwitch.live-on {
+      background: rgba(224,93,93,0.92);
+      border-color: var(--bear);
+      color: white;
+      box-shadow: 0 6px 28px rgba(224,93,93,0.55);
+      animation: kill-switch-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes kill-switch-pulse {
+      0%, 100% { box-shadow: 0 6px 28px rgba(224,93,93,0.55); }
+      50%      { box-shadow: 0 6px 36px rgba(224,93,93,0.95); }
+    }
+
     /* Mobile-only asset picker (horizontal scroll chips on live-chart tab) */
     .mobile-asset-picker {
       display: none;
@@ -1293,6 +1330,17 @@
   </style>
 </head>
 <body>
+
+  <!-- ═══ KILL-SWITCH (live-trading hard stop) ═══
+       Fixed bottom-right floating button. Always visible on every screen.
+       One tap toggles _liveTradingEnabled and journals the action. The
+       button text + colour are driven by _updateLiveTradingBadge below
+       (single source of truth with the toolbar badge). -->
+  <button id="liveKillSwitch"
+          onclick="toggleLiveTradingKillSwitch()"
+          title="Live trading master switch — tap to STOP/START all auto-execution">
+    ▶ LIVE OFF
+  </button>
 
   <!-- ═══ AUTOPILOT TOP BAR ═══ -->
   <div class="autopilot-bar">
@@ -2610,12 +2658,17 @@
   // localStorage get wiped and replaced with the new defaults. The user can
   // still flip an individual asset back via setTradeMode — that just writes
   // a new override on top of the migrated defaults.
+  // Policy v3: SOL flipped to futures so it can auto-fire on MEXC perp
+  // (SOL_USDT). Reasoning: SILVER closes on weekends, leaving the
+  // auto-execution path idle Sat–Sun; SOL trades 24/7 and gives weekend
+  // coverage. SOL gets its own per-asset leverage (default 200x) — see
+  // getAssetLeverage. The user keeps full control via setTradeMode.
   const DEFAULT_TRADE_MODES = {
-    SILVER: 'futures', US100: 'futures',
-    BTC: 'spot', ETH: 'spot', SOL: 'spot', BNB: 'spot',
+    SILVER: 'futures', US100: 'futures', SOL: 'futures',
+    BTC: 'spot', ETH: 'spot', BNB: 'spot',
     XRP: 'spot', SUI: 'spot', ASTR: 'spot', GOLD: 'spot',
   };
-  const TRADE_MODE_POLICY_VERSION = 2;
+  const TRADE_MODE_POLICY_VERSION = 3;
 
   function loadTradeModes() {
     try {
@@ -3831,11 +3884,41 @@
     return { state: 'on-live', icon: '🔴', label: 'ON · LIVE' };
   }
   function _updateLiveTradingBadge() {
-    const el = (typeof document !== 'undefined' && document.getElementById) ? document.getElementById('liveTradingBadge') : null;
-    if (!el) return;
+    if (typeof document === 'undefined' || !document.getElementById) return;
     const s = liveTradingStatus();
-    el.textContent = s.icon;
-    el.title = `Live trading: ${s.label} (tap to configure)`;
+    const el = document.getElementById('liveTradingBadge');
+    if (el) {
+      el.textContent = s.icon;
+      el.title = `Live trading: ${s.label} (tap to configure)`;
+    }
+    // Floating kill-switch — same source of truth, separate styling.
+    const kill = document.getElementById('liveKillSwitch');
+    if (kill) {
+      if (_liveTradingEnabled) {
+        kill.classList.add('live-on');
+        kill.textContent = '🛑 STOP LIVE';
+        kill.title = 'Live trading is ON — auto-execution can fire. Tap to STOP everything.';
+      } else {
+        kill.classList.remove('live-on');
+        kill.textContent = '▶ LIVE OFF';
+        kill.title = 'Live trading is OFF — no auto-execution. Tap to START.';
+      }
+    }
+  }
+
+  // Floating kill-switch handler. Keep it small & boring on purpose: flips
+  // the master switch via setLiveTradingEnabled (which already persists +
+  // re-paints the badge), then surfaces a toast so the state change is
+  // unambiguous on every tap. No confirmation dialog — the user explicitly
+  // asked for a "one-tap close" if I made a mistake; a confirm() defeats
+  // that.
+  function toggleLiveTradingKillSwitch() {
+    const wasOn = !!_liveTradingEnabled;
+    setLiveTradingEnabled(!wasOn);
+    try {
+      if (wasOn) showToast('🛑 LIVE TRADING STOPPED — no auto-execution will fire', 'warn');
+      else        showToast('🟢 LIVE TRADING STARTED — auto-execution armed', 'ok');
+    } catch (e) {}
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -3852,22 +3935,40 @@
   }
 
   // Default leverage for SILVER auto-execution. Dashboard suggests 3–5×
-  // for futures lanes; we pick the safer end. User override stored in
-  // localStorage 'ict_mexc_silver_leverage' (1–20).
-  function getSilverLeverage() {
-    try {
-      const v = parseInt(localStorage.getItem('ict_mexc_silver_leverage') || '3', 10);
-      if (v >= 1 && v <= 20) return v;
-    } catch (e) {}
-    return 3;
+  // for futures lanes; we pick the safer end per asset.
+  //
+  // Per-asset leverage spec (default + cap). Each asset gets its own ceiling
+  // so the SILVER conservative (≤20×) doesn't silently clamp a user setting
+  // 200× on SOL — that's the explicit YOLO test the user signed up for.
+  // Storage key: ict_mexc_<symbol>_leverage.
+  const ASSET_LEVERAGE_SPEC = {
+    SILVER: { def: 3,   max: 20  },  // commodity perp — conservative
+    SOL:    { def: 200, max: 200 },  // YOLO test (user-confirmed: no rails)
+    US100:  { def: 5,   max: 30  },  // CFD-style — leveraged but bounded
+  };
+  function _leverageSpec(symbol) {
+    return ASSET_LEVERAGE_SPEC[symbol] || { def: 3, max: 20 };
   }
-  function setSilverLeverage(v) {
+  function getAssetLeverage(symbol) {
+    const spec = _leverageSpec(symbol);
+    try {
+      const v = parseInt(localStorage.getItem(`ict_mexc_${(symbol||'').toLowerCase()}_leverage`) || String(spec.def), 10);
+      if (v >= 1 && v <= spec.max) return v;
+    } catch (e) {}
+    return spec.def;
+  }
+  function setAssetLeverage(symbol, v) {
+    const spec = _leverageSpec(symbol);
     const parsed = parseInt(v, 10);
-    // NaN/empty → fall back to default 3; valid number → clamp to [1, 20].
-    const n = isFinite(parsed) ? Math.max(1, Math.min(20, parsed)) : 3;
-    try { localStorage.setItem('ict_mexc_silver_leverage', String(n)); } catch (e) {}
+    const n = isFinite(parsed) ? Math.max(1, Math.min(spec.max, parsed)) : spec.def;
+    try { localStorage.setItem(`ict_mexc_${(symbol||'').toLowerCase()}_leverage`, String(n)); } catch (e) {}
     return n;
   }
+  // Backwards-compat aliases — earlier code paths and tests still reference
+  // the SILVER-specific helpers directly. Keep them as thin shims so the
+  // generalization doesn't ripple into every call site at once.
+  function getSilverLeverage() { return getAssetLeverage('SILVER'); }
+  function setSilverLeverage(v) { return setAssetLeverage('SILVER', v); }
 
   // ─────────────────────────────────────────────────────────────────────
   // Scalp mode (per-asset). Picks which timeframe drives auto-execution.
@@ -3956,12 +4057,18 @@
     } catch (e) { return null; }
   }
 
-  // MEXC contract symbol per asset. SILVER-only by design — auto-exec
-  // is rolled out asset-by-asset after each one is signed off on.
+  // MEXC contract symbol per asset. Roll-out is per-asset: SILVER first
+  // (conservative leverage, hours-to-days hold), SOL added for weekend
+  // coverage with 200× YOLO settings (user signed off — see ASSET_LEVERAGE_SPEC).
+  // Klines for SOL still come from Binance via _resolveSymbols; only the
+  // execution side (this map) routes to MEXC futures.
+  const MEXC_CONTRACT_MAP = {
+    SILVER: 'SILVER_USDT',
+    SOL:    'SOL_USDT',
+  };
   function _mexcContractSymbol(asset) {
     if (!asset) return null;
-    if (asset.symbol === 'SILVER') return 'SILVER_USDT';
-    return null;
+    return MEXC_CONTRACT_MAP[asset.symbol] || null;
   }
 
   // Real signed order call. Replaces the old placeMexcFuturesOrderStub.
@@ -4163,7 +4270,7 @@
 
     const side = sug.dir === 'bull' ? 'LONG' : 'SHORT';
     const qty = computeMexcOrderQty(asset, sug.entry, sug.sl) || 1;
-    const lev = getSilverLeverage();
+    const lev = getAssetLeverage(asset.symbol);
 
     // Pre-record cooldown so a slow round-trip doesn't fire twice. If
     // placeMexcFuturesOrder returns a hard "skip" (e.g. master flipped
@@ -4220,6 +4327,12 @@
     const silverInCooldown = isMexcInCooldown('SILVER');
     const silverCooldownLeftMs = silverInCooldown
       ? Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs('SILVER')))
+      : 0;
+    const solLev = getAssetLeverage('SOL');
+    const solScalp = getScalpTf('SOL');
+    const solInCooldown = isMexcInCooldown('SOL');
+    const solCooldownLeftMs = solInCooldown
+      ? Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs('SOL')))
       : 0;
     modal.innerHTML = `
       <div class="alert-box" style="position:relative;border-color:var(--gold);max-width:520px;text-align:left;">
@@ -4282,9 +4395,33 @@
               : 'HTF mode (default) — fires on the main asset entry/SL/TP, killzone-timed, hours-to-days hold.'}
           </div>
           <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER cooldown</div>
-          <div style="display:flex;align-items:center;gap:10px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;">
             <span style="font-size:11px;color:${silverInCooldown?'var(--liq)':'var(--text-mute)'};">${silverInCooldown ? '⏳ Locked for ' + Math.ceil(silverCooldownLeftMs/1000) + 's' : '✓ Ready to fire'}</span>
             ${silverInCooldown ? `<button onclick="clearMexcCooldown('SILVER');openLiveTradingModal();" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:3px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">Clear</button>` : ''}
+          </div>
+
+          <!-- ─── SOL (200× YOLO) ─────────────────────────────────── -->
+          <div style="margin-top:6px;padding-top:14px;border-top:1px dashed var(--border);">
+            <div style="font-size:10px;color:var(--bear);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">⚠ SOL leverage (200× cap — YOLO test)</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+              <select id="ltSolLev" onchange="setAssetLeverage('SOL', this.value);openLiveTradingModal();" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
+                ${[5,10,25,50,75,100,150,200].map(n => `<option value="${n}" ${n===solLev?'selected':''}>${n}×</option>`).join('')}
+              </select>
+              <span style="font-size:11px;color:var(--text-mute);">Used when SOL auto-fires · liquidation ≈ ${(100/solLev).toFixed(2)}% from entry</span>
+            </div>
+            <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SOL auto-exec timeframe</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+              <button onclick="setScalpTf('SOL','htf');openLiveTradingModal();" style="background:${solScalp==='htf'?'rgba(201,169,97,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${solScalp==='htf'?'var(--gold)':'var(--border)'};color:${solScalp==='htf'?'var(--gold)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">HTF (1H/4H)</button>
+              <button onclick="setScalpTf('SOL','1m');openLiveTradingModal();" style="background:${solScalp==='1m'?'rgba(242,179,61,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${solScalp==='1m'?'var(--liq)':'var(--border)'};color:${solScalp==='1m'?'var(--liq)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Scalp 1m</button>
+            </div>
+            <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-bottom:14px;">
+              <span style="color:var(--bear);">⚠ At ${solLev}× on SOL, a ${(100/solLev).toFixed(2)}% adverse move = full liquidation. SOL routinely moves that much in minutes. The kill-switch (bottom-right) hard-stops everything.</span>
+            </div>
+            <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SOL cooldown</div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-size:11px;color:${solInCooldown?'var(--liq)':'var(--text-mute)'};">${solInCooldown ? '⏳ Locked for ' + Math.ceil(solCooldownLeftMs/1000) + 's' : '✓ Ready to fire'}</span>
+              ${solInCooldown ? `<button onclick="clearMexcCooldown('SOL');openLiveTradingModal();" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:3px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">Clear</button>` : ''}
+            </div>
           </div>
         </div>
 
@@ -4294,12 +4431,13 @@
         </div>
 
         <div style="margin-top:12px;padding:10px;background:var(--bg-elevated);border:1px dashed var(--border);border-radius:8px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.6;">
-          ℹ Auto-execution is wired for <strong style="color:var(--text);">SILVER only</strong>.
+          ℹ Auto-execution is wired for <strong style="color:var(--text);">SILVER + SOL</strong>.
           HTF mode fires on the main entry; Scalp 1m fires on the per-TF
           1m FVG/OB setup. Both require 1m or HTF direction to match the
           asset's HTF bias, and obey a 5-min cooldown so a flickering
-          price can't fire repeated orders. Other assets stay manual
-          (use 🔗 Open on MEXC).
+          price can't fire repeated orders. SOL covers weekends when SILVER
+          is closed (200× YOLO test — see kill-switch). Other assets stay
+          manual (use 🔗 Open on MEXC).
         </div>
         ` : ''}
       </div>
@@ -4618,36 +4756,35 @@
           // Urgent vibration: long-short-long-short-long
           if (navigator.vibrate) navigator.vibrate([600, 150, 600, 150, 600]);
 
-          // ── AUTO-EXECUTE — SILVER only, HTF path ───────────────────
-          // Per-asset rollout: only SILVER is wired to live trading.
-          // _mexcContractSymbol() returns null for any other symbol; we
-          // also gate here to skip qty/side computation entirely.
-          // Skips:
+          // ── AUTO-EXECUTE — any contract-supported asset, HTF path ───
+          // Asset is eligible for auto-exec when _mexcContractSymbol returns
+          // truthy (currently SILVER + SOL — see MEXC_CONTRACT_MAP). Each
+          // uses its own per-asset leverage from getAssetLeverage. Skips:
           //   - master switch off (also enforced inside placeMexcFutures)
           //   - scalp mode is on for this asset (scalp monitor owns it)
           //   - in cooldown from a recent fire (HTF or scalp)
-          if (asset.symbol === 'SILVER' && _liveTradingEnabled
+          if (_mexcContractSymbol(asset) && _liveTradingEnabled
               && getScalpTf(asset.symbol) === 'htf'
               && !isMexcInCooldown(asset.symbol)) {
             const tp = asset.tp || asset.tp1 || 0;
             const qty = computeMexcOrderQty(asset, asset.entry, asset.sl) || 1;
-            const lev = getSilverLeverage();
+            const lev = getAssetLeverage(asset.symbol);
             const side = String(asset.bias || '').toUpperCase() === 'BEARISH' ? 'SHORT' : 'LONG';
             // Pre-record cooldown so a slow round-trip doesn't fire twice.
             _setLastMexcFireMs(asset.symbol, Date.now());
             // Fire-and-forget — don't block the alert overlay on the round-trip.
             placeMexcFuturesOrder(asset, side, asset.entry, asset.sl, tp, qty, lev)
               .then(r => {
-                console.log('[mexc auto-exec htf]', r);
+                console.log('[mexc auto-exec htf]', asset.symbol, r);
                 try {
-                  if (r.dryRun) showToast('🧪 SILVER ENTER NOW · [DRY-RUN] logged', 'ok');
-                  else if (r.sent) showToast('🟢 SILVER order sent to MEXC', 'ok');
-                  else showToast('⚠ SILVER auto-exec: ' + (r.reason || r.error || 'failed'), 'warn');
+                  if (r.dryRun) showToast(`🧪 ${asset.symbol} ENTER NOW · [DRY-RUN] logged`, 'ok');
+                  else if (r.sent) showToast(`🟢 ${asset.symbol} order sent to MEXC`, 'ok');
+                  else showToast(`⚠ ${asset.symbol} auto-exec: ` + (r.reason || r.error || 'failed'), 'warn');
                 } catch (e) {}
               })
               .catch(err => {
                 console.warn('[mexc auto-exec htf] threw:', err);
-                try { showToast('⚠ SILVER auto-exec error', 'err'); } catch (e) {}
+                try { showToast(`⚠ ${asset.symbol} auto-exec error`, 'err'); } catch (e) {}
               });
           }
         }
@@ -4688,12 +4825,12 @@
       try {
         scalpMonitorTick(asset).then(r => {
           if (r && r.fired) {
-            console.log('[mexc scalp 1m]', r);
+            console.log('[mexc scalp 1m]', asset.symbol, r);
             try {
               const sub = r.result;
-              if (sub && sub.dryRun) showToast('🧪 SILVER scalp 1m · [DRY-RUN] logged', 'ok');
-              else if (sub && sub.sent) showToast('🟢 SILVER scalp 1m order sent', 'ok');
-              else showToast('⚠ SILVER scalp 1m: ' + (sub && (sub.reason || sub.error) || 'failed'), 'warn');
+              if (sub && sub.dryRun) showToast(`🧪 ${asset.symbol} scalp 1m · [DRY-RUN] logged`, 'ok');
+              else if (sub && sub.sent) showToast(`🟢 ${asset.symbol} scalp 1m order sent`, 'ok');
+              else showToast(`⚠ ${asset.symbol} scalp 1m: ` + (sub && (sub.reason || sub.error) || 'failed'), 'warn');
             } catch (e) {}
           }
         }).catch(err => { console.warn('[mexc scalp 1m] threw:', err); });
