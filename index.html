@@ -4020,6 +4020,60 @@
   // win quickly, accept that the SL isn't structural. At 200× the math
   // doesn't allow anything else.
   // ─────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────
+  // Fast-refresh path for high-leverage assets.
+  //
+  // The full autoAnalyzeAsset pulls 6 TFs per asset on a 30s cadence — fine
+  // for HTF analysis but too slow when scalp 1m is firing at 200×: by the
+  // time the auto-fire reads asset.tfEntries['1m'], the FVG mid may have
+  // shifted enough to put us on the wrong side of the trade.
+  //
+  // _fastRefreshAssetEntry pulls *only* the 1m kline (one HTTP round-trip
+  // per call) and rewrites asset.tfEntries['1m'] in place. _fastRefreshTick
+  // calls it every 5s for high-lev futures assets. Other assets keep the
+  // 30s cadence to avoid Binance rate-limiting.
+  //
+  // Gated on _liveTradingEnabled — no point thrashing the API when nothing
+  // can fire anyway.
+  // ─────────────────────────────────────────────────────────────────────
+  const FAST_REFRESH_INTERVAL_MS = 5000;
+
+  async function _fastRefreshAssetEntry(asset) {
+    if (!asset || !_isFuturesAsset(asset)) return { refreshed: false, reason: 'not-futures' };
+    if (typeof isMarketClosed === 'function' && isMarketClosed(asset)) {
+      return { refreshed: false, reason: 'market-closed' };
+    }
+    const syms = (typeof _resolveSymbols === 'function') ? _resolveSymbols(asset) : null;
+    if (!syms) return { refreshed: false, reason: 'no-symbols' };
+    let kl = null, src = 'fail';
+    if (syms.binance)
+      { kl = await fetchBinanceKlines(syms.binance, '1m', 50);     if (kl && kl.length >= 22) src = 'binance'; }
+    if ((!kl || kl.length < 22) && syms.mexc)
+      { const k2 = await fetchMexcKlines(syms.mexc, '1m', 50);    if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-perp'; } }
+    if ((!kl || kl.length < 22) && syms.mexcSpot)
+      { const k2 = await fetchMexcSpotKlines(syms.mexcSpot, '1m', 50); if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-spot'; } }
+    if ((!kl || kl.length < 22) && syms.binanceFallback)
+      { const k2 = await fetchBinanceKlines(syms.binanceFallback, '1m', 50); if (k2 && k2.length >= 22) { kl = k2; src = 'binance-fallback'; } }
+    if (!kl || kl.length < 22) return { refreshed: false, reason: 'fetch-failed', source: src };
+    if (!asset.tfEntries) asset.tfEntries = {};
+    asset.tfEntries['1m'] = _analyzeKlines(kl);
+    asset.tfEntriesUpdated = Date.now();
+    return { refreshed: true, source: src };
+  }
+
+  async function _fastRefreshTick() {
+    if (!_liveTradingEnabled) return;
+    if (typeof ASSETS === 'undefined') return;
+    // High-lev assets only — others get the standard 30s pass via the
+    // main render-tick path. Run sequentially to avoid stampeding the
+    // upstream APIs (one fetch every ~50ms across 1–2 high-lev assets).
+    for (const a of ASSETS) {
+      if (!_isFuturesAsset(a)) continue;
+      if (!_isHighLeverage(a.symbol)) continue;
+      try { await _fastRefreshAssetEntry(a); } catch (e) {}
+    }
+  }
+
   const LEVERAGE_HIGH_THRESHOLD = 100;
 
   function _isHighLeverage(symbol) {
@@ -4492,7 +4546,7 @@
             </div>
             <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-bottom:14px;">
               <span style="color:var(--bear);">⚠ At ${solLev}× on SOL, a ${(100/solLev).toFixed(2)}% adverse move = full liquidation. SOL routinely moves that much in minutes. The kill-switch (bottom-right) hard-stops everything.</span>
-              ${solLev >= 100 ? `<br><br><span style="color:var(--gold);">🛡 High-Leverage Survival Mode active.</span> The structural ICT SL is wider than the liquidation buffer at ${solLev}×, so the auto-fire overrides SL/TP to mechanical levels: SL ≈ ${((100/solLev)*0.7).toFixed(3)}% from entry, TP same distance (1:1 R:R). The entry stays at the 1m FVG mid — only the protective levels are mechanical. HTF auto-fire is skipped (SLs too wide); only Scalp 1m fires at this leverage.` : ''}
+              ${solLev >= 100 ? `<br><br><span style="color:var(--gold);">🛡 High-Leverage Survival Mode active.</span> The structural ICT SL is wider than the liquidation buffer at ${solLev}×, so the auto-fire overrides SL/TP to mechanical levels: SL ≈ ${((100/solLev)*0.7).toFixed(3)}% from entry, TP same distance (1:1 R:R). The entry stays at the 1m FVG mid — only the protective levels are mechanical. HTF auto-fire is skipped (SLs too wide); only Scalp 1m fires at this leverage. <strong>1m kline fast-refresh every 5s</strong> so the entry zone stays current right up to fire-time.` : ''}
             </div>
             <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SOL cooldown</div>
             <div style="display:flex;align-items:center;gap:10px;">
@@ -10157,6 +10211,10 @@
     _try('initTVPriceListener', initTVPriceListener);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
+    // Fast-refresh: pull fresh 1m klines for high-lev futures assets every
+    // 5s so the auto-fire entry zone stays current. Gated on master switch
+    // inside _fastRefreshTick to avoid hammering APIs when nothing can fire.
+    setInterval(() => { _fastRefreshTick().catch(()=>{}); }, FAST_REFRESH_INTERVAL_MS);
     fetchNonBinancePrices();
     setInterval(fetchNonBinancePrices, 8000);
     fetchFearGreed();
