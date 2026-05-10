@@ -32,16 +32,33 @@ function muteOtherSpot(app, keepSymbol) {
 }
 
 describe('getSpotLevels', () => {
-  test('falls back to manual entry/sl/tp1/tp2 when tfEntries are absent', () => {
+  test('falls back to manual entry/tp1 when tfEntries are absent (bullish setup)', () => {
     const { app } = loadApp();
     const a = btc(app, { entry: 74000, sl: 73000, tp1: 78000, tp2: 80000, price: 75000 });
     a.tfEntries = null;
     const lv = app.getSpotLevels(a);
-    assert.equal(lv.entry, 74000);
-    assert.equal(lv.sl,    73000);
-    assert.equal(lv.tp1,   78000);
-    assert.equal(lv.tp2,   80000);
+    // Buy = lower (74000), sell = higher (78000)
+    assert.equal(lv.buy,  74000);
+    assert.equal(lv.sell, 78000);
     assert.equal(lv.source, 'manual');
+  });
+
+  test('SUI-style bearish setup: tp1 (LOW) becomes buy, entry (HIGH) becomes sell', () => {
+    // Regression for the bug where bearish-biased seeds (entry HIGH = short
+    // entry, tp1 LOW = short target) were exposing 'buy = entry' and
+    // 'sell = tp1' to the spot watch — flipping the user's mental model
+    // and firing a SELL trigger at a low price (which is actually the buy
+    // zone). Spot semantics: buy = lower, sell = higher, ALWAYS.
+    const { app } = loadApp();
+    const a = btc(app, {
+      entry: 1.00, sl: 1.02, tp1: 0.88, tp2: 0.82,
+      price: 0.945, bias: 'BEARISH',
+    });
+    a.tfEntries = null;
+    const lv = app.getSpotLevels(a);
+    assert.equal(lv.buy,  0.88, 'lower of the two raw levels is the buy zone');
+    assert.equal(lv.sell, 1.00, 'higher of the two raw levels is the sell zone');
+    assert.ok(lv.sellStretch > lv.sell, 'stretch sits above sell');
   });
 
   test('returns manual fallback when tfEntries.closed (weekend)', () => {
@@ -50,7 +67,7 @@ describe('getSpotLevels', () => {
     a.tfEntries = { closed: true, reopens: 'Sunday 22:00 GST' };
     const lv = app.getSpotLevels(a);
     assert.equal(lv.source, 'manual');
-    assert.equal(lv.entry, 74000);
+    assert.equal(lv.buy, 74000);
   });
 
   test('skips tfEntries with no dir or no FVG (no usable HTF setup)', () => {
@@ -110,6 +127,32 @@ describe('getSpotZone', () => {
     const z = app.getSpotZone(a);
     assert.equal(z.state, 'buy_at');
     assert.ok(z.distancePct < 0, 'price below entry should give negative distance');
+  });
+
+  test('SUI-like bearish seed near tp1 (LOW) is correctly classified — NOT a sell signal', () => {
+    // SUI seed: entry 1.00 (HIGH = short entry), tp1 0.88 (LOW = short
+    // target). Pre-fix, my code would have called 0.88 the "sell zone" and
+    // fired a 🎯 AT SELL ZONE pulse when price approached 0.88 — which is
+    // backwards: 0.88 is the discount/buy zone. Verify the fix.
+    const { app } = loadApp();
+    // Price right at the "low" level (0.88) — should be AT BUY, NOT AT SELL
+    const a = btc(app, { entry: 1.00, tp1: 0.88, price: 0.882, bias: 'BEARISH' });
+    a.tfEntries = null;
+    const z = app.getSpotZone(a);
+    assert.equal(z.state, 'buy_at', 'low price = buy zone, regardless of bias');
+    assert.notEqual(z.state, 'sell_at');
+    assert.notEqual(z.state, 'sell_near');
+  });
+
+  test('SUI at actual seed price (0.945, between 0.88 and 1.00) → mid, no badge', () => {
+    const { app } = loadApp();
+    const a = btc(app, { entry: 1.00, tp1: 0.88, price: 0.945, bias: 'BEARISH' });
+    a.tfEntries = null;
+    const z = app.getSpotZone(a);
+    // 0.945 is 7.4% above 0.88 (buy) and 5.5% below 1.00 (sell). Both > 3%
+    // → mid → no sidebar badge, no toast.
+    assert.equal(z.state, 'mid');
+    assert.equal(z.distancePct, null);
   });
 });
 
