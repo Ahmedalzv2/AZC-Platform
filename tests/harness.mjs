@@ -53,6 +53,8 @@ const EXPORTS = [
   '_exchangeUrl', 'openOnExchange',
   // trade-mode policy
   '_isFuturesAsset', 'setTradeMode', 'loadTradeModes', 'DEFAULT_TRADE_MODES',
+  // spot watch (buy-low / sell-high zone tracking)
+  'getSpotLevels', 'getSpotZone', 'checkSpotZones',
   // live trading (real signed call via user-deployed Worker)
   'loadLiveTradingState', 'liveTradingStatus',
   'setLiveTradingEnabled', 'setLiveTradingDryRun',
@@ -205,6 +207,10 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set firstSyncDone(v) { firstSyncDone = v; },
   get prevSignalMap() { return typeof prevSignalMap === 'undefined' ? undefined : prevSignalMap; },
   set prevSignalMap(v) { prevSignalMap = v; },
+  get prevSpotZoneMap() { return typeof prevSpotZoneMap === 'undefined' ? undefined : prevSpotZoneMap; },
+  set prevSpotZoneMap(v) { prevSpotZoneMap = v; },
+  get showToast() { return typeof showToast === 'undefined' ? undefined : showToast; },
+  set showToast(v) { showToast = v; },
   get consecutiveSyncFails() { return typeof consecutiveSyncFails === 'undefined' ? undefined : consecutiveSyncFails; },
   set consecutiveSyncFails(v) { consecutiveSyncFails = v; },
   get lastSuccessfulSyncMs() { return typeof lastSuccessfulSyncMs === 'undefined' ? undefined : lastSuccessfulSyncMs; },
