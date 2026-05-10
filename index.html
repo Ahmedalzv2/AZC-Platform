@@ -3980,14 +3980,67 @@
   const SCALP_TF_VALID = new Set(['htf', '1m']);
   function getScalpTf(symbol) {
     try {
-      const v = localStorage.getItem('ict_scalp_tf_' + String(symbol || '')) || 'htf';
-      return SCALP_TF_VALID.has(v) ? v : 'htf';
+      const stored = localStorage.getItem('ict_scalp_tf_' + String(symbol || ''));
+      // Auto-default for high-lev assets. At ≥ 100× the HTF path can't
+      // survive (its SLs are wider than the liquidation buffer), so the
+      // sensible default is '1m'. User can still override by explicitly
+      // tapping the HTF / Scalp buttons in the modal — the override is
+      // stored verbatim and respected here.
+      if (stored == null || stored === '') {
+        return _isHighLeverage(symbol) ? '1m' : 'htf';
+      }
+      return SCALP_TF_VALID.has(stored) ? stored : 'htf';
     } catch (e) { return 'htf'; }
   }
   function setScalpTf(symbol, tf) {
     const v = SCALP_TF_VALID.has(tf) ? tf : 'htf';
     try { localStorage.setItem('ict_scalp_tf_' + String(symbol || ''), v); } catch (e) {}
     return v;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // High-leverage survival mode (≥ 100×).
+  //
+  // The problem: ICT-structural SLs (just past the FVG body, OB, sweep, etc.)
+  // are typically 0.3–2% wide on SOL. At 200× leverage, the liquidation
+  // distance is ~0.5% (initial margin minus maintenance). So a structural SL
+  // is *physically* outside the liquidation buffer — the position blows up
+  // before any signal logic can react. The user has confirmed they want to
+  // keep 200× isolated, balance $1.20, "figure out a method".
+  //
+  // The method: when leverage ≥ LEVERAGE_HIGH_THRESHOLD, the SL/TP become
+  // mechanical (purely leverage-derived), not structural:
+  //   SL = (100 / leverage) × 0.7   →  inside 70% of liquidation buffer
+  //                                    (30% room for slippage + maintenance)
+  //   TP = SL                       →  1:1 R:R, fast realization
+  // The entry stays at the per-TF FVG mid (still a real ICT signal — we're
+  // only overriding the protective levels, not the trigger).
+  //
+  // Trade is now a leverage scalp: get in on the FVG retest, take a small
+  // win quickly, accept that the SL isn't structural. At 200× the math
+  // doesn't allow anything else.
+  // ─────────────────────────────────────────────────────────────────────
+  const LEVERAGE_HIGH_THRESHOLD = 100;
+
+  function _isHighLeverage(symbol) {
+    return getAssetLeverage(symbol) >= LEVERAGE_HIGH_THRESHOLD;
+  }
+
+  // Override SL/TP to mechanical leverage-fit levels. Returns a new sug
+  // object (does not mutate input). When leverage < threshold, returns the
+  // input unchanged — no behaviour change for SILVER's normal 3× path.
+  function _highLevLevels(asset, sug) {
+    if (!asset || !sug) return sug;
+    const lev = getAssetLeverage(asset.symbol);
+    if (lev < LEVERAGE_HIGH_THRESHOLD) return sug;
+    const slPct = (100 / lev) * 0.7;   // e.g. 200× → 0.35%
+    const tpPct = slPct;               // 1:1 R:R — neutral expectancy at break-even win rate
+    const slDist = sug.entry * (slPct / 100);
+    const tpDist = sug.entry * (tpPct / 100);
+    const sl = sug.dir === 'bull' ? sug.entry - slDist : sug.entry + slDist;
+    const tp = sug.dir === 'bull' ? sug.entry + tpDist : sug.entry - tpDist;
+    const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+    return { ...sug, sl: round(sl), tp: round(tp), rr: 1.0, source: (sug.source || '') + '+highlev' };
   }
 
   // Per-asset cooldown so a flickering price around an entry doesn't fire
@@ -4044,15 +4097,35 @@
   // qty = (account × risk%) / |entry − sl|. Mirrors the asset-modal
   // calculator. Returns null if account/risk aren't set, so callers can
   // fall back to a manual qty.
-  function computeMexcOrderQty(asset, entry, sl) {
+  // Compute the contract qty for a MEXC futures order.
+  //
+  // Two constraints:
+  //  1. Risk-based: qty × |entry − SL| ≤ account × riskPct%
+  //     (don't lose more than your configured tolerance per stop-out)
+  //  2. Margin-based: qty × entry ≤ account × leverage
+  //     (don't ask for more notional than your isolated margin can support —
+  //     MEXC will reject the order otherwise, e.g. at 200× on $1.20 the
+  //     max notional is $240, so qty × entry ≤ $240)
+  //
+  // Returns the smaller of the two caps, floored at 1 contract. When
+  // leverage isn't passed (legacy callers) only the risk cap applies.
+  function computeMexcOrderQty(asset, entry, sl, leverage) {
     try {
       const account = parseFloat(localStorage.getItem('ict_calc_account'));
       const riskPct = parseFloat(localStorage.getItem('ict_calc_risk'));
       if (!account || !riskPct) return null;
       const dist = Math.abs(Number(entry) - Number(sl));
       if (!isFinite(dist) || dist <= 0) return null;
-      const units = (account * riskPct / 100) / dist;
-      if (!isFinite(units) || units <= 0) return null;
+      const riskUnits = (account * riskPct / 100) / dist;
+      if (!isFinite(riskUnits) || riskUnits <= 0) return null;
+      let units = riskUnits;
+      const lev = Number(leverage);
+      if (isFinite(lev) && lev > 0 && Number(entry) > 0) {
+        const marginUnits = (account * lev) / Number(entry);
+        if (isFinite(marginUnits) && marginUnits > 0 && marginUnits < units) {
+          units = marginUnits;
+        }
+      }
       return Math.max(1, Math.round(units * 100) / 100);
     } catch (e) { return null; }
   }
@@ -4251,8 +4324,11 @@
 
     const tfData = asset.tfEntries && asset.tfEntries['1m'];
     if (!tfData || tfData.error) return { fired: false, reason: 'no-1m-data' };
-    const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, '1m') : null;
-    if (!sug) return { fired: false, reason: 'no-1m-setup' };
+    const rawSug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, '1m') : null;
+    if (!rawSug) return { fired: false, reason: 'no-1m-setup' };
+    // High-leverage survival mode: rewrite SL/TP to mechanical levels that
+    // fit inside the liquidation buffer. Pass-through when leverage < threshold.
+    const sug = _highLevLevels(asset, rawSug);
 
     // HTF agreement: 1m direction must match the asset's HTF bias.
     const htfDir = _normalizeBiasDir(asset.bias);
@@ -4264,13 +4340,13 @@
     const distPct = Math.abs((asset.price - sug.entry) / sug.entry) * 100;
     if (distPct > SCALP_PROXIMITY_PCT) return { fired: false, reason: 'too-far', distPct };
 
-    // Cooldown — once any SILVER order fires (HTF or scalp), no more for
-    // MEXC_COOLDOWN_MS regardless of which path tried to fire.
+    // Cooldown — once any order fires (HTF or scalp) for this asset, no more
+    // for MEXC_COOLDOWN_MS regardless of which path tried to fire.
     if (isMexcInCooldown(asset.symbol)) return { fired: false, reason: 'cooldown' };
 
     const side = sug.dir === 'bull' ? 'LONG' : 'SHORT';
-    const qty = computeMexcOrderQty(asset, sug.entry, sug.sl) || 1;
     const lev = getAssetLeverage(asset.symbol);
+    const qty = computeMexcOrderQty(asset, sug.entry, sug.sl, lev) || 1;
 
     // Pre-record cooldown so a slow round-trip doesn't fire twice. If
     // placeMexcFuturesOrder returns a hard "skip" (e.g. master flipped
@@ -4416,6 +4492,7 @@
             </div>
             <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-bottom:14px;">
               <span style="color:var(--bear);">⚠ At ${solLev}× on SOL, a ${(100/solLev).toFixed(2)}% adverse move = full liquidation. SOL routinely moves that much in minutes. The kill-switch (bottom-right) hard-stops everything.</span>
+              ${solLev >= 100 ? `<br><br><span style="color:var(--gold);">🛡 High-Leverage Survival Mode active.</span> The structural ICT SL is wider than the liquidation buffer at ${solLev}×, so the auto-fire overrides SL/TP to mechanical levels: SL ≈ ${((100/solLev)*0.7).toFixed(3)}% from entry, TP same distance (1:1 R:R). The entry stays at the 1m FVG mid — only the protective levels are mechanical. HTF auto-fire is skipped (SLs too wide); only Scalp 1m fires at this leverage.` : ''}
             </div>
             <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SOL cooldown</div>
             <div style="display:flex;align-items:center;gap:10px;">
@@ -4763,12 +4840,17 @@
           //   - master switch off (also enforced inside placeMexcFutures)
           //   - scalp mode is on for this asset (scalp monitor owns it)
           //   - in cooldown from a recent fire (HTF or scalp)
+          //   - asset is at high leverage (HTF SLs are always wider than the
+          //     liquidation buffer at ≥ 100× — HTF can't survive, only the
+          //     scalp path with mechanical SL can). For SOL@200x specifically
+          //     the scalp path is the auto-default — see getScalpTf.
           if (_mexcContractSymbol(asset) && _liveTradingEnabled
               && getScalpTf(asset.symbol) === 'htf'
+              && !_isHighLeverage(asset.symbol)
               && !isMexcInCooldown(asset.symbol)) {
             const tp = asset.tp || asset.tp1 || 0;
-            const qty = computeMexcOrderQty(asset, asset.entry, asset.sl) || 1;
             const lev = getAssetLeverage(asset.symbol);
+            const qty = computeMexcOrderQty(asset, asset.entry, asset.sl, lev) || 1;
             const side = String(asset.bias || '').toUpperCase() === 'BEARISH' ? 'SHORT' : 'LONG';
             // Pre-record cooldown so a slow round-trip doesn't fire twice.
             _setLastMexcFireMs(asset.symbol, Date.now());

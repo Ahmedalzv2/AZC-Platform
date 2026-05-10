@@ -67,6 +67,7 @@ const EXPORTS = [
   '_hmacSha256Hex', '_signMexcRequest', '_mexcContractSymbol',
   'computeMexcOrderQty', 'getAssetLeverage', 'setAssetLeverage', 'ASSET_LEVERAGE_SPEC',
   'toggleLiveTradingKillSwitch',
+  '_isHighLeverage', '_highLevLevels', 'LEVERAGE_HIGH_THRESHOLD',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode + cooldown
   'getScalpTf', 'setScalpTf',
