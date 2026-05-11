@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
 describe('Trade-mode policy: futures vs spot', () => {
-  test('DEFAULT_TRADE_MODES (v3): SILVER, US100, SOL = futures; rest = spot', () => {
+  test('DEFAULT_TRADE_MODES (v4): SILVER, US100, SOL, GOLD = futures; rest = spot', () => {
     const { app } = loadApp();
     // The harness doesn't run window.onload, so loadTradeModes never seeds
     // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
@@ -11,14 +11,14 @@ describe('Trade-mode policy: futures vs spot', () => {
     const modes = app.DEFAULT_TRADE_MODES;
     assert.equal(modes.SILVER, 'futures');
     assert.equal(modes.US100,  'futures');
-    assert.equal(modes.SOL,    'futures', 'SOL flipped to futures in v3 for weekend coverage');
+    assert.equal(modes.SOL,    'futures', 'v3: SOL for weekend coverage');
+    assert.equal(modes.GOLD,   'futures', 'v4: GOLD joins the trio (XAUT_USDT on MEXC)');
     assert.equal(modes.BTC,    'spot');
     assert.equal(modes.ETH,    'spot');
     assert.equal(modes.BNB,    'spot');
     assert.equal(modes.XRP,    'spot');
     assert.equal(modes.SUI,    'spot');
     assert.equal(modes.ASTR,   'spot');
-    assert.equal(modes.GOLD,   'spot');
   });
 
   test('loadTradeModes seeds every ASSET with the right policy mode', () => {
@@ -31,7 +31,7 @@ describe('Trade-mode policy: futures vs spot', () => {
     assert.equal(seedFor('US100'),  'futures');
     assert.equal(seedFor('SOL'),    'futures', 'SOL gets weekend coverage in v3');
     assert.equal(seedFor('BTC'),    'spot');
-    assert.equal(seedFor('GOLD'),   'spot');
+    assert.equal(seedFor('GOLD'),   'futures', 'v4: GOLD joins as default futures auto-exec asset');
   });
 
   test('_isFuturesAsset returns true only for futures-mode assets', () => {
@@ -46,8 +46,8 @@ describe('Trade-mode policy: futures vs spot', () => {
 
     assert.equal(app._isFuturesAsset(silver), true);
     assert.equal(app._isFuturesAsset(us100),  true);
+    assert.equal(app._isFuturesAsset(gold),   true,  'GOLD = futures in v4 (joins SOL + SILVER trio)');
     assert.equal(app._isFuturesAsset(btc),    false);
-    assert.equal(app._isFuturesAsset(gold),   false);
   });
 
   test('_isFuturesAsset is null-safe', () => {

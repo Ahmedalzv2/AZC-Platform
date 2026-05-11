@@ -2,15 +2,15 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
-describe('SOL trade-mode policy v3', () => {
-  test('DEFAULT_TRADE_MODES.SOL = futures (was spot in v2)', () => {
+describe('SOL trade-mode policy (v3 added SOL; v4 added GOLD)', () => {
+  test('DEFAULT_TRADE_MODES.SOL = futures', () => {
     const { app } = loadApp();
     assert.equal(app.DEFAULT_TRADE_MODES.SOL, 'futures');
-    // SILVER + US100 stay futures, others stay spot.
+    // SILVER + US100 + GOLD also futures (v4). BTC and other crypto stay spot.
     assert.equal(app.DEFAULT_TRADE_MODES.SILVER, 'futures');
     assert.equal(app.DEFAULT_TRADE_MODES.US100,  'futures');
+    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'futures', 'v4: GOLD joins the trio');
     assert.equal(app.DEFAULT_TRADE_MODES.BTC,    'spot');
-    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'spot');
   });
 
   test('loadTradeModes seeds SOL with futures', () => {
