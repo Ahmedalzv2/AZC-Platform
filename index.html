@@ -5215,8 +5215,10 @@
     const workerUrl = getMexcWorkerUrl();
     // Per-asset state is computed inside _renderAutoExecAssetBlock so the
     // modal can render a block per asset without me touching this scope.
-    modal.innerHTML = `
-      <div class="alert-box" style="position:relative;border-color:var(--gold);max-width:520px;text-align:left;">
+    // Build the .alert-box contents as a separate string. On refresh we
+    // only update the existing .alert-box's innerHTML (no element churn,
+    // no animation replay). The wrapper itself only gets created once.
+    const boxInner = `
         <button onclick="closeLiveTradingModal()" aria-label="Close" style="position:absolute;top:10px;right:10px;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:18px;font-weight:700;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;z-index:10;">✕</button>
         <div class="alert-label" style="color:var(--gold);text-align:left;margin-top:0;">⚙️ Live Trading · MEXC</div>
 
@@ -5285,10 +5287,16 @@
           manual (use 🔗 Open on MEXC).
         </div>
         ` : ''}
-      </div>
     `;
-    // (Append happens once on first create — subsequent 1s refreshes only
-    // mutate innerHTML on the existing node, no DOM churn.)
+    // Update the existing .alert-box in place if we have one — preserves the
+    // element across 1s refreshes so the .alert-box CSS animation (alertIn)
+    // doesn't replay every second (caused visible flicker).
+    const existingBox = modal.querySelector('.alert-box');
+    if (existingBox) {
+      existingBox.innerHTML = boxInner;
+    } else {
+      modal.innerHTML = `<div class="alert-box" style="position:relative;border-color:var(--gold);max-width:520px;text-align:left;">${boxInner}</div>`;
+    }
   }
   function closeLiveTradingModal() {
     const m = document.getElementById('liveTradingModal');
