@@ -1219,6 +1219,12 @@
       padding-bottom: 64px;
     }
 
+    /* Kill-switch clears the 64px bottom nav + iOS home-indicator
+       safe area so it never sits on top of the tab strip. */
+    #liveKillSwitch {
+      bottom: calc(80px + env(safe-area-inset-bottom));
+    }
+
     /* Compact top bar. Brand collapses to flex:0 so the timing segments
        (Clock, Session, Next KZ) take their natural width and fit on a
        375px phone. Sync stays hidden — debug surface, not actionable. */
