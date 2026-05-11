@@ -85,13 +85,14 @@ describe('Worker URL + leverage storage', () => {
     assert.equal(app.getMexcWorkerUrl(), 'https://my.workers.dev');
   });
 
-  test('SILVER leverage defaults to 3 and clamps 1..20', () => {
+  test('SILVER leverage defaults to 3 and clamps 1..200 (cap raised to join SOL YOLO)', () => {
     const { app } = loadApp();
     assert.equal(app.getSilverLeverage(), 3);
     assert.equal(app.setSilverLeverage(7), 7);
     assert.equal(app.getSilverLeverage(), 7);
-    assert.equal(app.setSilverLeverage(0), 1);   // clamped low
-    assert.equal(app.setSilverLeverage(99), 20); // clamped high
+    assert.equal(app.setSilverLeverage(0),  1);   // clamped low
+    assert.equal(app.setSilverLeverage(99), 99);  // mid-range stays exact
+    assert.equal(app.setSilverLeverage(500), 200);// clamped to new cap
   });
 });
 

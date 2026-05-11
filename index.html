@@ -3970,7 +3970,8 @@
   // 200× on SOL — that's the explicit YOLO test the user signed up for.
   // Storage key: ict_mexc_<symbol>_leverage.
   const ASSET_LEVERAGE_SPEC = {
-    SILVER: { def: 3,   max: 20  },  // commodity perp — conservative
+    SILVER: { def: 3,   max: 200 },  // raised cap so SILVER can join SOL's YOLO test;
+                                     // default stays conservative (3×) — opt-in to high-lev
     SOL:    { def: 200, max: 200 },  // YOLO test (user-confirmed: no rails)
     US100:  { def: 5,   max: 30  },  // CFD-style — leveraged but bounded
   };
@@ -4712,12 +4713,12 @@
             ${dryBtn}
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
           </div>
-          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER leverage</div>
+          <div style="font-size:10px;color:${lev>=100?'var(--bear)':'var(--gold)'};margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${lev>=100?'⚠ ':''}SILVER leverage${lev>=100?' (YOLO test)':''}</div>
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-            <select id="ltSilverLev" onchange="setSilverLeverage(this.value);" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
-              ${[1,2,3,4,5,7,10].map(n => `<option value="${n}" ${n===lev?'selected':''}>${n}×</option>`).join('')}
+            <select id="ltSilverLev" onchange="setAssetLeverage('SILVER', this.value);openLiveTradingModal();" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
+              ${[1,2,3,4,5,7,10,25,50,75,100,150,200].map(n => `<option value="${n}" ${n===lev?'selected':''}>${n}×</option>`).join('')}
             </select>
-            <span style="font-size:11px;color:var(--text-mute);">Used when SILVER auto-fires</span>
+            <span style="font-size:11px;color:var(--text-mute);">Used when SILVER auto-fires${lev>=100?` · liquidation ≈ ${(100/lev).toFixed(2)}% from entry`:''}</span>
           </div>
           <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER auto-exec timeframe</div>
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
@@ -4728,6 +4729,7 @@
             ${silverScalp==='1m'
               ? '⚡ <strong>Scalp 1m active.</strong> Fires on the per-TF 1m FVG/OB setup, only when 1m direction matches HTF bias. 5-min cooldown between fires. <span style="color:var(--bear);">Watch fees vs SL distance — 0.04% taker × 2 = 0.08% round-trip; if 1m SL is &lt;0.10% you have negative edge.</span>'
               : 'HTF mode (default) — fires on the main asset entry/SL/TP, killzone-timed, hours-to-days hold.'}
+            ${lev>=100 ? `<br><br><span style="color:var(--bear);">⚠ At ${lev}× on SILVER, a ${(100/lev).toFixed(2)}% adverse move = full liquidation.</span> <span style="color:var(--gold);">🛡 High-Leverage Survival Mode active.</span> The structural ICT SL is wider than the liquidation buffer at this leverage, so the auto-fire overrides SL/TP to mechanical levels: SL ≈ ${((100/lev)*0.7).toFixed(3)}% from entry, TP same distance (1:1 R:R). The entry stays at the 1m FVG mid — only the protective levels are mechanical. HTF auto-fire is skipped (SLs too wide); only Scalp 1m fires at this leverage. <strong>1m kline fast-refresh every 5s</strong> so the entry zone stays current right up to fire-time.` : ''}
           </div>
           <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER cooldown</div>
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;">

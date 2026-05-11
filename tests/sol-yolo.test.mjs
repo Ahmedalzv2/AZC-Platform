@@ -44,11 +44,20 @@ describe('_mexcContractSymbol generalised', () => {
 });
 
 describe('getAssetLeverage / setAssetLeverage per-asset cap', () => {
-  test('SILVER capped at 20x (conservative — was the original cap)', () => {
+  test('SILVER cap raised to 200x to join SOL YOLO (default stays 3x)', () => {
     const { app } = loadApp();
-    assert.equal(app.ASSET_LEVERAGE_SPEC.SILVER.max, 20);
-    assert.equal(app.setAssetLeverage('SILVER', 50), 20, 'clamped to SILVER cap');
-    assert.equal(app.setAssetLeverage('SILVER', 5),  5);
+    assert.equal(app.ASSET_LEVERAGE_SPEC.SILVER.max, 200);
+    assert.equal(app.ASSET_LEVERAGE_SPEC.SILVER.def, 3,  'default stays conservative — must opt in to YOLO');
+    assert.equal(app.setAssetLeverage('SILVER', 200), 200, 'accepts the YOLO 200x');
+    assert.equal(app.setAssetLeverage('SILVER', 500), 200, 'clamped to SILVER cap');
+    assert.equal(app.setAssetLeverage('SILVER', 5),   5);
+  });
+
+  test('SILVER at 200x is treated as high-lev (Survival Mode kicks in)', () => {
+    const { app } = loadApp();
+    app.setAssetLeverage('SILVER', 200);
+    assert.equal(app._isHighLeverage('SILVER'), true,
+      'SILVER@200x now inherits the same survival-mode pipeline as SOL@200x');
   });
 
   test('SOL capped at 200x (the YOLO test ceiling)', () => {
