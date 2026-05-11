@@ -1644,7 +1644,13 @@
           <div class="ap-card full">
             <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
               <span>📊 ICT Analysis · Selected Asset</span>
-              <button onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚙ Asset details</button>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button id="tvForceFireBtn"
+                        onclick="(function(){const sym=tvCurrentSymbol;if(!sym){alert('Select an asset first');return;}_onClickForceFire(sym);})()"
+                        title="Force-fire this asset on MEXC NOW — bypasses proximity, uses live price"
+                        style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Force Fire</button>
+                <button onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚙ Asset details</button>
+              </div>
             </div>
             <div id="tvAnalysisPanel" style="font-size:13px;color:var(--text-dim);line-height:1.8;">
               <div style="color:var(--text-mute);padding:20px;text-align:center;">Select an asset to see analysis…</div>
@@ -4098,12 +4104,14 @@
   async function _fastRefreshTick() {
     if (!_liveTradingEnabled) return;
     if (typeof ASSETS === 'undefined') return;
-    // High-lev assets only — others get the standard 30s pass via the
-    // main render-tick path. Run sequentially to avoid stampeding the
-    // upstream APIs (one fetch every ~50ms across 1–2 high-lev assets).
+    // Any auto-exec eligible asset (futures-mode + MEXC contract) gets the
+    // 5s 1m-kline pull. Low-lev assets need this too — a stale 30s entry
+    // zone can drift past current price by the time auto-exec evaluates
+    // proximity. Sequential to avoid stampeding the upstream APIs (one
+    // fetch every ~50ms across the auto-exec set).
     for (const a of ASSETS) {
       if (!_isFuturesAsset(a)) continue;
-      if (!_isHighLeverage(a.symbol)) continue;
+      if (!_mexcContractSymbol(a)) continue;
       try { await _fastRefreshAssetEntry(a); } catch (e) {}
     }
   }
@@ -4517,6 +4525,82 @@
     return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
 
+  // Per-asset last-fire result for the modal panel + Live Chart report.
+  // Captures EVERY fire attempt — auto-exec, scalp, and force-fire — so the
+  // user can see exactly what happened on the most recent trigger.
+  // { [symbol]: { ts, source: 'auto'|'scalp'|'force', side, entry, sl, tp,
+  //               qty, leverage, sent, dryRun, reason, error, mexcResponse } }
+  const _lastFireResult = {};
+  function _recordFireResult(symbol, payload) {
+    if (!symbol) return payload;
+    _lastFireResult[symbol] = { ...payload, ts: Date.now(), symbol };
+    return payload;
+  }
+
+  // Manual force-fire — the explicit "I want it to fire NOW" button.
+  // Skips every gate (proximity, cooldown, HTF agreement) except the master
+  // switch and contract eligibility. Builds the entry/SL/TP fresh from the
+  // CURRENT live price (not the stale FVG mid) so the fill is realistic:
+  //   bullish bias → LONG, mechanical SL = current × (1 - margin),
+  //                  TP same distance the other way
+  //   bearish bias → SHORT, flipped
+  // High-lev mode uses the survival-mode mechanical margin (≈0.35% at 200×);
+  // low-lev mode uses 0.4% as a sensible default tight stop.
+  //
+  // Always writes a _lastFireResult entry so the modal panel shows what
+  // happened. Pre-sets the cooldown so the auto-exec doesn't immediately
+  // double-fire on top of this manual one.
+  async function forceFireAsset(symbol, opts) {
+    opts = opts || {};
+    const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
+    if (!asset)                       return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-asset' });
+    if (!_liveTradingEnabled)         return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'master-off' });
+    if (!_mexcContractSymbol(asset))  return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'unsupported-symbol' });
+    const price = Number(asset.price);
+    if (!isFinite(price) || price <= 0) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-price' });
+    const dir = (asset.bias || '').toUpperCase().includes('BULL') ? 'LONG' : 'SHORT';
+    const lev = getAssetLeverage(symbol);
+    // SL/TP distance: mechanical liquidation-buffer math when high-lev,
+    // a flat 0.4% otherwise.
+    const slPct = _isHighLeverage(symbol) ? (100 / lev) * 0.7 / 100 : 0.004;
+    const slDist = price * slPct;
+    const tpDist = slDist; // 1:1 R:R — fast realization
+    const entry = price;
+    const sl = dir === 'LONG' ? price - slDist : price + slDist;
+    const tp = dir === 'LONG' ? price + tpDist : price - tpDist;
+    const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+    const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
+    const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev };
+    _setLastMexcFireMs(symbol, Date.now()); // pre-record so auto-exec doesn't dogpile
+    let r;
+    try {
+      r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), round(tp), qty, lev, { force: true });
+    } catch (e) {
+      return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });
+    }
+    return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
+  }
+
+  // Click handler for the Force Fire button. Confirms only when live (i.e.
+  // dry-run OFF) since a force-fire on dry-run is harmless. Re-renders the
+  // modal so the "Last fire" panel updates immediately.
+  async function _onClickForceFire(symbol) {
+    const live = !_liveTradingDryRun;
+    if (live) {
+      const ok = confirm(`⚠ Place a REAL ${getAssetLeverage(symbol)}× ${symbol} order at the current price on MEXC?\n\nThis bypasses the proximity gate — it will fire now regardless of where the FVG sits.\n\nProceed?`);
+      if (!ok) return;
+    }
+    try { showToast(`🔥 Force-firing ${symbol}…`, 'info'); } catch (e) {}
+    const r = await forceFireAsset(symbol);
+    try {
+      if (r.dryRun)        showToast(`🧪 ${symbol} force-fire · [DRY-RUN] logged`, 'ok');
+      else if (r.sent)     showToast(`🟢 ${symbol} order sent (${r.side} ${r.qty} @ $${r.entry} · ${r.leverage}×)`, 'ok');
+      else                 showToast(`⚠ ${symbol} force-fire skipped: ${r.reason || r.error || 'failed'}`, 'err');
+    } catch (e) {}
+    try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
+    return r;
+  }
+
   // Modal button handlers — extracted so the inline onclick="" stays
   // simple (avoids nested-quoting nightmares with confirm() prompts).
   async function _onClickTestMexcConnection() {
@@ -4582,7 +4666,10 @@
       <div style="margin-top:6px;padding-top:14px;border-top:1px dashed var(--border);">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <div style="font-size:10px;color:${headerColor};font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerPrefix}${sym} leverage${headerSuffix}</div>
-          <button onclick="setTradeMode('${sym}','spot');openLiveTradingModal();" title="Remove ${sym} from auto-exec (back to spot mode)" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:2px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">× Remove</button>
+          <div style="display:flex;gap:6px;">
+            <button onclick="_onClickForceFire('${sym}')" title="Force-fire ${sym} now — bypass proximity, use live price with mechanical SL/TP" style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);padding:2px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Force Fire</button>
+            <button onclick="setTradeMode('${sym}','spot');openLiveTradingModal();" title="Remove ${sym} from auto-exec (back to spot mode)" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:2px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">× Remove</button>
+          </div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
           <select onchange="setAssetLeverage('${sym}', this.value);openLiveTradingModal();" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
@@ -4632,6 +4719,47 @@
   // Render the last connection-test result inline in the modal. Shows
   // status, MEXC code/msg, and a one-line "what to fix" hint so the user
   // doesn't have to open browser dev tools to know which knob to turn.
+  // Render the most recent fire attempt per asset. Shows the user EXACTLY
+  // what happened on every fire (auto / scalp / force) — so when they say
+  // "did it enter or didn't it?" the answer is right there. Surfaces:
+  //   asset · result icon · side qty@entry · status code or reason · age
+  function _renderLastFireHTML() {
+    const syms = Object.keys(_lastFireResult);
+    if (!syms.length) return '';
+    const rows = syms.map(sym => {
+      const r = _lastFireResult[sym];
+      const ageS = Math.max(0, Math.round((Date.now() - r.ts) / 1000));
+      let resultIcon = '⚠';
+      let resultColor = 'var(--bear)';
+      let resultLabel = r.reason || r.error || 'failed';
+      if (r.dryRun) { resultIcon = '🧪'; resultColor = 'var(--liq)'; resultLabel = 'DRY-RUN logged'; }
+      else if (r.sent) { resultIcon = '🟢'; resultColor = 'var(--bull)'; resultLabel = 'sent to MEXC' + (r.status ? ` · HTTP ${r.status}` : ''); }
+      const lvlLine = (r.side && r.qty && r.entry)
+        ? `${r.side} ${r.qty} @ $${r.entry} · SL $${r.sl} · TP $${r.tp} · ${r.leverage}×`
+        : '';
+      const mexcMsg = r.mexcResponse && (r.mexcResponse.msg || r.mexcResponse.message) || '';
+      return `<tr>
+        <td style="padding:4px 6px;color:var(--text);font-weight:700;">${sym}</td>
+        <td style="padding:4px 6px;color:${resultColor};">${resultIcon} ${resultLabel}</td>
+        <td style="padding:4px 6px;color:var(--text-mute);">${lvlLine}${mexcMsg ? ' · ' + mexcMsg : ''}</td>
+        <td style="padding:4px 6px;color:var(--text-mute);text-align:right;">${ageS}s ago · ${r.source}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">Last fire per asset</div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;text-align:left;">
+            <th style="padding:4px 6px;font-weight:700;">Asset</th>
+            <th style="padding:4px 6px;font-weight:700;">Result</th>
+            <th style="padding:4px 6px;font-weight:700;">Order</th>
+            <th style="padding:4px 6px;font-weight:700;text-align:right;">When · Src</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
   function _renderConnTestHTML() {
     if (!_lastConnTest) return '';
     const c = _classifyConnTest(_lastConnTest);
@@ -4792,6 +4920,8 @@
         </div>
 
         ${_renderConnTestHTML()}
+
+        ${_renderLastFireHTML()}
 
         ${_renderScalpDiagHTML()}
 
