@@ -75,6 +75,7 @@ const EXPORTS = [
   'forceFireAsset', '_recordFireResult', '_refreshLiveTradingModalIfOpen',
   'getFireStatus',
   'fetchMexcOpenPositions', '_positionsTick', 'closeMexcPosition', 'POSITIONS_REFRESH_INTERVAL_MS',
+  '_profitGuardian', 'BREAK_EVEN_TRIGGER_PCT', 'BREAK_EVEN_CLOSE_PCT',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode + cooldown
   'getScalpTf', 'setScalpTf',
@@ -225,6 +226,8 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   get _lastFireResult() { return typeof _lastFireResult === 'undefined' ? undefined : _lastFireResult; },
   get _openPositions() { return typeof _openPositions === 'undefined' ? undefined : _openPositions; },
   set _openPositions(v) { _openPositions = v; },
+  get _positionPeakProfit() { return typeof _positionPeakProfit === 'undefined' ? undefined : _positionPeakProfit; },
+  set _positionPeakProfit(v) { _positionPeakProfit = v; },
   get _liveTradingEnabled() { return typeof _liveTradingEnabled === 'undefined' ? undefined : _liveTradingEnabled; },
   get showToast() { return typeof showToast === 'undefined' ? undefined : showToast; },
   set showToast(v) { showToast = v; },

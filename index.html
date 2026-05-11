@@ -4515,6 +4515,70 @@
       next[bare].push(p);
     }
     _openPositions = next;
+    // Profit guardian — runs on the same 5s cycle. Pure protection-only:
+    // can never open positions, only close winners that have retraced.
+    try { await _profitGuardian(); } catch (e) {}
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Profit Guardian — protects winners from retracing back to a loss.
+  //
+  // Rule: once any open position has touched +BREAK_EVEN_TRIGGER_PCT in
+  // favor (price-move terms — NOT margin-leveraged %), arm the guardian
+  // for that position. Then, if it ever retraces to <BREAK_EVEN_CLOSE_PCT
+  // (≈ break-even), submit a market-out to lock in the win/no-loss.
+  //
+  // At 200× on $1.20, +0.15% price move = +30% of margin = ~$0.36. Letting
+  // that round-trip back to -0.35% (the mechanical SL) would cost the
+  // whole margin. The guardian asymmetrically captures the win.
+  //
+  // Polled from _positionsTick (same 5s cycle — no extra HTTP overhead).
+  // The mechanical SL still runs underneath; the guardian only adds
+  // upside protection.
+  // ─────────────────────────────────────────────────────────────────────
+
+  const BREAK_EVEN_TRIGGER_PCT = 0.15; // % favorable move that ARMS the guard
+  const BREAK_EVEN_CLOSE_PCT   = 0.02; // close when profit drops below this %
+  let _positionPeakProfit = {};        // { [symbol]: { peakPct, armed } }
+  let _profitGuardianClosed = {};      // { [symbol]: ts } — for the modal hint
+
+  async function _profitGuardian() {
+    if (!_liveTradingEnabled) return;
+    // Clean up trackers for symbols no longer holding a position. The next
+    // open on that symbol gets a fresh tracker — peak profit doesn't carry
+    // across trades.
+    for (const sym of Object.keys(_positionPeakProfit)) {
+      if (!_openPositions[sym] || !_openPositions[sym].length) {
+        delete _positionPeakProfit[sym];
+      }
+    }
+    for (const sym in _openPositions) {
+      const pos = _openPositions[sym][0];
+      if (!pos) continue;
+      const entry = Number(pos.holdAvgPrice);
+      const vol   = Number(pos.holdVol);
+      const isLong = Number(pos.positionType) === 1;
+      // Use the dashboard's live tracked price — same source the modal
+      // already shows. _openPositions[].holdAvgPrice doesn't update; we
+      // need the current mark.
+      const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === sym) : null;
+      const mark = asset ? Number(asset.price) : NaN;
+      if (!entry || !vol || !isFinite(mark) || mark <= 0) continue;
+      const profitPct = isLong ? (mark - entry) / entry * 100 : (entry - mark) / entry * 100;
+      const trail = _positionPeakProfit[sym] || { peakPct: profitPct, armed: false };
+      if (profitPct > trail.peakPct) trail.peakPct = profitPct;
+      if (trail.peakPct >= BREAK_EVEN_TRIGGER_PCT) trail.armed = true;
+      _positionPeakProfit[sym] = trail;
+      // Once armed, watch for retracement back near break-even.
+      if (trail.armed && profitPct < BREAK_EVEN_CLOSE_PCT) {
+        try {
+          const r = await closeMexcPosition(sym, vol, isLong ? 1 : 3);
+          _profitGuardianClosed[sym] = { ts: Date.now(), peakPct: trail.peakPct, closedAtPct: profitPct, sent: !!r.sent };
+          try { showToast(`🛡 ${sym} break-even guard closed (peak +${trail.peakPct.toFixed(3)}% → exit ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(3)}%)`, 'ok'); } catch (e) {}
+        } catch (e) {}
+        delete _positionPeakProfit[sym];
+      }
+    }
   }
 
   // Close one position via a market-out order. Mirrors placeMexcFuturesOrder
@@ -5003,17 +5067,24 @@
   function _renderOpenPositionsHTML() {
     const syms = Object.keys(_openPositions || {});
     const headerLabel = `Open positions on MEXC${_openPositionsUpdatedMs ? ` · ${Math.max(0, Math.round((Date.now() - _openPositionsUpdatedMs)/1000))}s ago` : ''}`;
+    // Inline status of the break-even guardian per symbol. If a position
+    // has touched +0.15% and is being watched for a retrace, render an
+    // 🛡 ARMED badge in the panel header so the user knows protection is on.
+    const armedSyms = Object.keys(_positionPeakProfit || {}).filter(s => _positionPeakProfit[s].armed);
+    const guardHint = armedSyms.length
+      ? `<span style="margin-left:8px;font-size:9px;color:var(--bull);">🛡 BE GUARD ARMED: ${armedSyms.join(', ')}</span>`
+      : '';
     if (_openPositionsError && !syms.length) {
       return `
         <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
-          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}</div>
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}${guardHint}</div>
           <div style="color:var(--bear);font-size:11px;">⚠ Couldn't fetch positions: ${_openPositionsError}. The poll runs every 5s — if this clears, the panel will update.</div>
         </div>`;
     }
     if (!syms.length) {
       return `
         <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
-          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}</div>
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}${guardHint}</div>
           <div style="color:var(--text-mute);font-size:11px;">No open positions. The dashboard polls every 5s — anything you (or auto-fire) opens on MEXC will appear here.</div>
         </div>`;
     }
@@ -5043,7 +5114,7 @@
     })).join('');
     return `
       <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
-        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}</div>
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}${guardHint}</div>
         <table style="width:100%;border-collapse:collapse;">
           <thead><tr style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;text-align:left;">
             <th style="padding:4px 6px;font-weight:700;">Asset</th>
