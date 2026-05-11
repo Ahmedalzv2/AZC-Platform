@@ -5195,11 +5195,20 @@
 
   function openLiveTradingModal() {
     const existing = document.getElementById('liveTradingModal');
-    if (existing) existing.remove();
-    const modal = document.createElement('div');
-    modal.id = 'liveTradingModal';
-    modal.className = 'alert-overlay';
-    modal.addEventListener('click', e => { if (e.target === modal) closeLiveTradingModal(); });
+    // First call → create the wrapper. Subsequent calls (every 1s while
+    // open, via _refreshLiveTradingModalIfOpen) → just rewrite the inner
+    // content. Removing+recreating replayed the overlayIn + alertIn CSS
+    // animations every tick, which looked like the modal glitching open
+    // and closed. In-place innerHTML update is animation-free and
+    // preserves scroll position.
+    let modal = existing;
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'liveTradingModal';
+      modal.className = 'alert-overlay';
+      modal.addEventListener('click', e => { if (e.target === modal) closeLiveTradingModal(); });
+      document.body.appendChild(modal);
+    }
     const hasKeys = !!(getMexcApiKey() && getMexcApiSecret());
     const masterBtn = `<button onclick="setLiveTradingEnabled(${!_liveTradingEnabled});openLiveTradingModal();" style="background:${_liveTradingEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_liveTradingEnabled?'var(--bull)':'var(--border)'};color:${_liveTradingEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingEnabled?'🟢 ON':'🔴 OFF'}</button>`;
     const dryBtn = `<button onclick="setLiveTradingDryRun(${!_liveTradingDryRun});openLiveTradingModal();" style="background:${_liveTradingDryRun?'rgba(242,179,61,0.20)':'rgba(224,93,93,0.20)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingDryRun?'📝 DRY-RUN':'🔴 LIVE'}</button>`;
@@ -5278,7 +5287,8 @@
         ` : ''}
       </div>
     `;
-    document.body.appendChild(modal);
+    // (Append happens once on first create — subsequent 1s refreshes only
+    // mutate innerHTML on the existing node, no DOM churn.)
   }
   function closeLiveTradingModal() {
     const m = document.getElementById('liveTradingModal');
