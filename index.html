@@ -2420,6 +2420,25 @@
       session ? `Now active: ${session.name}` : 'Waiting for next session';
 
     renderSessionTimeline(gst, session);
+
+    // Live Trading modal: keep the diagnostic panels (Scalp Tick Diag,
+    // Last Fire, conn-test, cooldown countdowns) refreshed every second
+    // while open. Skips when the user is actively interacting with a
+    // dropdown/input so we don't yank focus mid-action.
+    try { _refreshLiveTradingModalIfOpen(); } catch (e) {}
+  }
+
+  // Re-renders the entire Live Trading modal in place so its diagnostic
+  // panels stay current. Safe-guard: skip when the user has a SELECT or
+  // INPUT focused (they'd lose their selection/typing if we re-rendered).
+  // Also skip if the user just opened a dropdown with `:focus-visible` —
+  // detected via document.activeElement.
+  function _refreshLiveTradingModalIfOpen() {
+    if (typeof document === 'undefined' || !document.getElementById) return;
+    if (!document.getElementById('liveTradingModal')) return;
+    const active = document.activeElement;
+    if (active && (active.tagName === 'SELECT' || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+    if (typeof openLiveTradingModal === 'function') openLiveTradingModal();
   }
 
   function renderSessionTimeline(gst, currentSession) {

@@ -72,7 +72,7 @@ const EXPORTS = [
   '_fastRefreshAssetEntry', '_fastRefreshTick', 'FAST_REFRESH_INTERVAL_MS',
   '_scalpProximityPct', 'SCALP_PROXIMITY_PCT', 'SCALP_PROXIMITY_PCT_HIGH_LEV',
   '_classifyConnTest', '_MEXC_FIX_HINTS',
-  'forceFireAsset', '_recordFireResult',
+  'forceFireAsset', '_recordFireResult', '_refreshLiveTradingModalIfOpen',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode + cooldown
   'getScalpTf', 'setScalpTf',
