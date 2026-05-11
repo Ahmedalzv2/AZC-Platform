@@ -74,6 +74,7 @@ const EXPORTS = [
   '_classifyConnTest', '_MEXC_FIX_HINTS',
   'forceFireAsset', '_recordFireResult', '_refreshLiveTradingModalIfOpen',
   'getFireStatus',
+  'fetchMexcOpenPositions', '_positionsTick', 'closeMexcPosition', 'POSITIONS_REFRESH_INTERVAL_MS',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode + cooldown
   'getScalpTf', 'setScalpTf',
@@ -222,6 +223,8 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set prevSpotZoneMap(v) { prevSpotZoneMap = v; },
   get _scalpDiag() { return typeof _scalpDiag === 'undefined' ? undefined : _scalpDiag; },
   get _lastFireResult() { return typeof _lastFireResult === 'undefined' ? undefined : _lastFireResult; },
+  get _openPositions() { return typeof _openPositions === 'undefined' ? undefined : _openPositions; },
+  set _openPositions(v) { _openPositions = v; },
   get _liveTradingEnabled() { return typeof _liveTradingEnabled === 'undefined' ? undefined : _liveTradingEnabled; },
   get showToast() { return typeof showToast === 'undefined' ? undefined : showToast; },
   set showToast(v) { showToast = v; },

@@ -4449,6 +4449,167 @@
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Open positions on MEXC futures — signed read.
+  //
+  // The dashboard needs to show what's actually live on the exchange so
+  // the user doesn't have to bounce to the MEXC app to know if they're
+  // up or down. Polled every 5s on the master-ON timer (POSITIONS_REFRESH_
+  // INTERVAL_MS). Returns array of normalized position objects keyed by
+  // the bare asset symbol (SILVER, SOL, GOLD, ...).
+  // ─────────────────────────────────────────────────────────────────────
+
+  let _openPositions = {};         // { [bareSymbol]: [position, ...] }
+  let _openPositionsUpdatedMs = 0; // for the modal panel age display
+  let _openPositionsError = null;  // last fetch error (if any) for the modal
+  const POSITIONS_REFRESH_INTERVAL_MS = 5000;
+
+  async function fetchMexcOpenPositions() {
+    const apiKey = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
+    if (!workerUrl) return { ok: false, error: 'no-worker' };
+    const reqTime = String(Date.now());
+    let signature;
+    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, ''); }
+    catch (e) { return { ok: false, error: 'sign-failed', detail: String((e && e.message) || e) }; }
+    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/position/open_positions';
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature },
+      });
+      const txt = await resp.text();
+      let json; try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
+      const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
+      const positions = ok && Array.isArray(json.data) ? json.data : [];
+      return { ok, status: resp.status, positions, response: json };
+    } catch (e) {
+      return { ok: false, error: 'network', detail: String((e && e.message) || e) };
+    }
+  }
+
+  // Polling tick — fetches the open-positions list and rebuilds the
+  // _openPositions map keyed by bare symbol (SOL, SILVER, GOLD), stripping
+  // the _USDT suffix MEXC returns. Gated on master switch.
+  async function _positionsTick() {
+    if (!_liveTradingEnabled) return;
+    const r = await fetchMexcOpenPositions();
+    _openPositionsUpdatedMs = Date.now();
+    if (!r.ok) {
+      _openPositionsError = r.error || (`HTTP ${r.status}`);
+      return;
+    }
+    _openPositionsError = null;
+    const next = {};
+    for (const p of r.positions) {
+      if (!p || !p.symbol) continue;
+      // MEXC returns 'SILVER_USDT', 'XAUT_USDT', 'SOL_USDT' etc. We use
+      // the asset's bare symbol everywhere else, so reverse the contract
+      // map to normalize. Falls back to stripping _USDT for unknown pairs.
+      let bare = String(p.symbol).replace(/_USDT$/, '');
+      // Special case: XAUT_USDT → GOLD (the contract is tokenized gold).
+      if (bare === 'XAUT') bare = 'GOLD';
+      if (!next[bare]) next[bare] = [];
+      next[bare].push(p);
+    }
+    _openPositions = next;
+  }
+
+  // Close one position via a market-out order. Mirrors placeMexcFuturesOrder
+  // but submits side=2 (close long) or side=4 (close short) with type=5
+  // (market) so the exit fills immediately at the best available bid/ask.
+  //
+  // currentSide is the MEXC position-side code: 1 = long, 3 = short.
+  // (positionType in the position object is also 1/2 — we coerce both.)
+  async function closeMexcPosition(symbol, vol, currentSide) {
+    if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
+    const apiKey = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
+    if (!workerUrl) return { sent: false, reason: 'no-worker' };
+    // Resolve the contract name via _resolveSymbols so XAUT/GOLD mapping etc.
+    // is handled uniformly with the rest of the auto-exec path.
+    const fake = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
+    const contract = (fake ? _mexcContractSymbol(fake) : null) || (String(symbol) + '_USDT');
+    if (!contract) return { sent: false, reason: 'unsupported-symbol' };
+    // Map open-side → close-side. positionType uses 1=long/2=short, side uses
+    // 1=open long, 3=open short. Accept both shapes by normalizing to "is long?".
+    const sideNum = Number(currentSide);
+    const isLong = sideNum === 1;
+    const isShort = sideNum === 3 || sideNum === 2;
+    if (!isLong && !isShort) return { sent: false, reason: 'bad-side', currentSide };
+    const closeSide = isLong ? 2 : 4;
+    const body = {
+      symbol: contract,
+      vol: Number(vol),
+      side: closeSide,
+      type: 5,         // market — get me out NOW
+      openType: 1,     // isolated margin (same as the open call)
+    };
+    if (_liveTradingDryRun) {
+      try {
+        const e = {
+          id: Date.now(), timestamp: Date.now(),
+          symbol, signal: 'close-dry-run',
+          analysis: `[DRY-RUN] CLOSE ${isLong ? 'LONG' : 'SHORT'} ${symbol} vol=${vol}`,
+          outcome: null, outcomeChecks: {}, live: false,
+        };
+        if (typeof journal !== 'undefined' && Array.isArray(journal)) {
+          journal.unshift(e);
+          if (typeof saveJournal === 'function') saveJournal();
+        }
+      } catch (err) {}
+      return { sent: false, dryRun: true, reason: 'dry-run' };
+    }
+    const paramJson = JSON.stringify(body);
+    const reqTime = String(Date.now());
+    let signature;
+    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson); }
+    catch (e) { return { sent: false, reason: 'sign-failed', error: String((e && e.message) || e) }; }
+    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/submit';
+    let resp, json;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ApiKey': apiKey,
+          'Request-Time': reqTime,
+          'Signature': signature,
+        },
+        body: paramJson,
+      });
+      const txt = await resp.text();
+      try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
+    } catch (e) {
+      return { sent: false, reason: 'network', error: String((e && e.message) || e) };
+    }
+    const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
+    return { sent: ok, status: resp.status, response: json };
+  }
+
+  async function _onClickClosePosition(symbol, vol, side) {
+    const live = !_liveTradingDryRun;
+    if (live) {
+      const ok = confirm(`Close the ${symbol} position on MEXC NOW?\n\nSubmits a market exit for vol ${vol}. Proceed?`);
+      if (!ok) return;
+    }
+    try { showToast(`Closing ${symbol}…`, 'info'); } catch (e) {}
+    const r = await closeMexcPosition(symbol, vol, side);
+    try {
+      if (r.dryRun)        showToast(`🧪 ${symbol} close · [DRY-RUN] logged`, 'ok');
+      else if (r.sent)     showToast(`🟢 ${symbol} close order sent`, 'ok');
+      else                 showToast(`⚠ ${symbol} close: ${r.reason || r.error || 'failed'}`, 'err');
+    } catch (e) {}
+    // Refresh positions immediately so the row updates.
+    try { await _positionsTick(); } catch (e) {}
+    try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
+    return r;
+  }
+
   // Manual SILVER test-fire — simulates the ENTER NOW path end-to-end
   // through placeMexcFuturesOrder. Honors dry-run / live just like a
   // real signal would, so a dry-run test produces a [DRY-RUN] journal
@@ -4642,6 +4803,27 @@
   //   manual    —  — asset is spot-mode, won't auto-trade
   function getFireStatus(asset) {
     if (!asset) return { state: 'blocked', color: 'var(--bear)',     label: 'NO ASSET',    detail: '' };
+    // IN POSITION takes priority — once a trade is on, the user cares about
+    // unrealized PnL, not the next-tick gate. Read from _openPositions
+    // (populated by the 5s _positionsTick) keyed by bare asset symbol.
+    const positions = (typeof _openPositions !== 'undefined') ? (_openPositions[asset.symbol] || []) : [];
+    if (positions.length) {
+      const p = positions[0]; // collapse multiple rows into a single summary
+      const pnl = Number(p.unrealised != null ? p.unrealised : (p.unrealisedProfit != null ? p.unrealisedProfit : p.float || 0));
+      const pnlColor = pnl > 0 ? 'var(--bull)' : pnl < 0 ? 'var(--bear)' : 'var(--text-mute)';
+      const posType = Number(p.positionType != null ? p.positionType : p.side);
+      const sideLabel = posType === 1 ? 'LONG' : 'SHORT';
+      // Format the dollar amount with the sign OUTSIDE the $ so negatives
+      // read "-$0.20" not "$-0.20". Tests rely on this — and so do humans.
+      const sign = pnl >= 0 ? '+' : '-';
+      const magnitude = Math.abs(pnl).toFixed(4);
+      return {
+        state: 'in-position',
+        color: pnlColor,
+        label: `🔵 IN POSITION · ${sideLabel} · ${sign}$${magnitude}`,
+        detail: `Qty ${p.holdVol} @ avg $${p.holdAvgPrice} · ${p.leverage}× · close from the Live Trading modal.`,
+      };
+    }
     if (!_isFuturesAsset(asset)) return { state: 'manual', color: 'var(--text-mute)', label: '🏦 SPOT',     detail: 'Not in auto-exec — flip to futures in the asset modal.' };
     if (!_mexcContractSymbol(asset)) return { state: 'blocked', color: 'var(--bear)',     label: '✗ NO MEXC',   detail: 'No MEXC contract for this asset (CFD-only).' };
     if (typeof _liveTradingEnabled !== 'undefined' && !_liveTradingEnabled) {
@@ -4809,6 +4991,73 @@
   // Render the last connection-test result inline in the modal. Shows
   // status, MEXC code/msg, and a one-line "what to fix" hint so the user
   // doesn't have to open browser dev tools to know which knob to turn.
+  // Render the live MEXC open positions. The user wanted to stop bouncing
+  // to the MEXC app to know if they're up or down — this panel shows each
+  // position with side / qty / avg entry / unrealized PnL / leverage and a
+  // per-row Close button that submits a market exit.
+  //
+  // MEXC's v1 contract position object uses these fields (camelCase JSON):
+  //   symbol, positionType (1=long, 2=short), holdVol, holdAvgPrice,
+  //   leverage, liquidatePrice, realised, unrealised, marginRatio, state
+  // We're defensive: missing fields render as '—' rather than NaN/undefined.
+  function _renderOpenPositionsHTML() {
+    const syms = Object.keys(_openPositions || {});
+    const headerLabel = `Open positions on MEXC${_openPositionsUpdatedMs ? ` · ${Math.max(0, Math.round((Date.now() - _openPositionsUpdatedMs)/1000))}s ago` : ''}`;
+    if (_openPositionsError && !syms.length) {
+      return `
+        <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}</div>
+          <div style="color:var(--bear);font-size:11px;">⚠ Couldn't fetch positions: ${_openPositionsError}. The poll runs every 5s — if this clears, the panel will update.</div>
+        </div>`;
+    }
+    if (!syms.length) {
+      return `
+        <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}</div>
+          <div style="color:var(--text-mute);font-size:11px;">No open positions. The dashboard polls every 5s — anything you (or auto-fire) opens on MEXC will appear here.</div>
+        </div>`;
+    }
+    const fmt = v => (v == null || !isFinite(Number(v))) ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 4 });
+    const rows = syms.flatMap(sym => (_openPositions[sym] || []).map(p => {
+      // Normalize side: positionType 1=long, 2=short on the response; side 1=long, 3=short on orders.
+      const posType = Number(p.positionType != null ? p.positionType : p.side);
+      const isLong = posType === 1;
+      const sideLabel = isLong ? 'LONG' : 'SHORT';
+      const sideColor = isLong ? 'var(--bull)' : 'var(--bear)';
+      const pnl = Number(p.unrealised != null ? p.unrealised : (p.unrealisedProfit != null ? p.unrealisedProfit : p.float || 0));
+      const pnlColor = pnl > 0 ? 'var(--bull)' : pnl < 0 ? 'var(--bear)' : 'var(--text-mute)';
+      const liq = p.liquidatePrice != null ? p.liquidatePrice : p.liqPrice;
+      // currentSide for closeMexcPosition: needs 1 (long) or 3 (short).
+      const closeSide = isLong ? 1 : 3;
+      return `<tr>
+        <td style="padding:5px 6px;color:var(--text);font-weight:700;">${sym}</td>
+        <td style="padding:5px 6px;color:${sideColor};font-weight:700;">${sideLabel}</td>
+        <td style="padding:5px 6px;color:var(--text-mute);">${fmt(p.holdVol)} @ $${fmt(p.holdAvgPrice)}</td>
+        <td style="padding:5px 6px;color:${pnlColor};font-weight:700;">${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(4)}</td>
+        <td style="padding:5px 6px;color:var(--text-mute);">×${fmt(p.leverage)}${liq ? ` · liq $${fmt(liq)}` : ''}</td>
+        <td style="padding:5px 6px;text-align:right;">
+          <button onclick="_onClickClosePosition('${sym}', ${Number(p.holdVol) || 0}, ${closeSide})"
+                  style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);padding:3px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">Close</button>
+        </td>
+      </tr>`;
+    })).join('');
+    return `
+      <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}</div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;text-align:left;">
+            <th style="padding:4px 6px;font-weight:700;">Asset</th>
+            <th style="padding:4px 6px;font-weight:700;">Side</th>
+            <th style="padding:4px 6px;font-weight:700;">Qty @ Avg</th>
+            <th style="padding:4px 6px;font-weight:700;">uPnL</th>
+            <th style="padding:4px 6px;font-weight:700;">Lev · Liq</th>
+            <th style="padding:4px 6px;font-weight:700;text-align:right;">Action</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
   // Render the most recent fire attempt per asset. Shows the user EXACTLY
   // what happened on every fire (auto / scalp / force) — so when they say
   // "did it enter or didn't it?" the answer is right there. Surfaces:
@@ -5010,6 +5259,8 @@
         </div>
 
         ${_renderConnTestHTML()}
+
+        ${_renderOpenPositionsHTML()}
 
         ${_renderLastFireHTML()}
 
@@ -10684,6 +10935,10 @@
     // 5s so the auto-fire entry zone stays current. Gated on master switch
     // inside _fastRefreshTick to avoid hammering APIs when nothing can fire.
     setInterval(() => { _fastRefreshTick().catch(()=>{}); }, FAST_REFRESH_INTERVAL_MS);
+    // Open-positions polling — keeps the dashboard's Open Positions panel
+    // in sync with whatever's actually live on MEXC. Gated on master-ON
+    // inside _positionsTick.
+    setInterval(() => { _positionsTick().catch(()=>{}); }, POSITIONS_REFRESH_INTERVAL_MS);
     fetchNonBinancePrices();
     setInterval(fetchNonBinancePrices, 8000);
     fetchFearGreed();
