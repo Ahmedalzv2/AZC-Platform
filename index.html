@@ -1644,7 +1644,10 @@
           <div class="ap-card full">
             <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
               <span>📊 ICT Analysis · Selected Asset</span>
-              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                <span id="tvFireStatusBadge"
+                      title="Fire status for the selected asset — READY = next tick fires, NEAR = closing in, WAITING = far, BLOCKED = some gate stops it"
+                      style="background:transparent;border:1px solid var(--text-mute);color:var(--text-mute);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">— pick asset</span>
                 <button id="tvForceFireBtn"
                         onclick="(function(){const sym=tvCurrentSymbol;if(!sym){alert('Select an asset first');return;}_onClickForceFire(sym);})()"
                         title="Force-fire this asset on MEXC NOW — bypasses proximity, uses live price"
@@ -2426,6 +2429,13 @@
     // while open. Skips when the user is actively interacting with a
     // dropdown/input so we don't yank focus mid-action.
     try { _refreshLiveTradingModalIfOpen(); } catch (e) {}
+
+    // Live Chart: refresh the analysis panel each tick so the FIRE STATUS
+    // badge (READY / NEAR / WAITING / BLOCKED) stays current.
+    if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol
+        && typeof updateTVAnalysis === 'function') {
+      try { updateTVAnalysis(tvCurrentSymbol); } catch (e) {}
+    }
   }
 
   // Re-renders the entire Live Trading modal in place so its diagnostic
@@ -2711,17 +2721,18 @@
   // localStorage get wiped and replaced with the new defaults. The user can
   // still flip an individual asset back via setTradeMode — that just writes
   // a new override on top of the migrated defaults.
-  // Policy v3: SOL flipped to futures so it can auto-fire on MEXC perp
-  // (SOL_USDT). Reasoning: SILVER closes on weekends, leaving the
-  // auto-execution path idle Sat–Sun; SOL trades 24/7 and gives weekend
-  // coverage. SOL gets its own per-asset leverage (default 200x) — see
-  // getAssetLeverage. The user keeps full control via setTradeMode.
+  // Policy v4: GOLD flipped to futures so the kill-switch ON enables the
+  // trio (SOL + GOLD + SILVER) trading on MEXC perp out of the box.
+  // Reasoning: SILVER closes weekends, SOL covers 24/7, GOLD on MEXC perp
+  // (XAUT_USDT) trades 24/7 too — three correlated commodities/crypto
+  // gives multiple shots at signals each session. The user keeps full
+  // control via setTradeMode + the × Remove button in the modal.
   const DEFAULT_TRADE_MODES = {
-    SILVER: 'futures', US100: 'futures', SOL: 'futures',
+    SILVER: 'futures', US100: 'futures', SOL: 'futures', GOLD: 'futures',
     BTC: 'spot', ETH: 'spot', BNB: 'spot',
-    XRP: 'spot', SUI: 'spot', ASTR: 'spot', GOLD: 'spot',
+    XRP: 'spot', SUI: 'spot', ASTR: 'spot',
   };
-  const TRADE_MODE_POLICY_VERSION = 3;
+  const TRADE_MODE_POLICY_VERSION = 4;
 
   function loadTradeModes() {
     try {
@@ -4618,6 +4629,66 @@
     } catch (e) {}
     try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
     return r;
+  }
+
+  // At-a-glance trigger state for an asset. The user said "I want the
+  // trigger to be easy and clear" — so this function answers "what would
+  // happen if the next tick evaluates this asset?" in one tag.
+  // Returns: { state, color, label, detail }
+  //   ready    🟢  — proximity met, will auto-fire next tick
+  //   near     🟡  — within 0.5%, getting close
+  //   waiting  ⚪  — out of proximity (gives the distance)
+  //   blocked  🔴  — master off / no contract / cooldown / no price / no setup
+  //   manual    —  — asset is spot-mode, won't auto-trade
+  function getFireStatus(asset) {
+    if (!asset) return { state: 'blocked', color: 'var(--bear)',     label: 'NO ASSET',    detail: '' };
+    if (!_isFuturesAsset(asset)) return { state: 'manual', color: 'var(--text-mute)', label: '🏦 SPOT',     detail: 'Not in auto-exec — flip to futures in the asset modal.' };
+    if (!_mexcContractSymbol(asset)) return { state: 'blocked', color: 'var(--bear)',     label: '✗ NO MEXC',   detail: 'No MEXC contract for this asset (CFD-only).' };
+    if (typeof _liveTradingEnabled !== 'undefined' && !_liveTradingEnabled) {
+      return { state: 'blocked', color: 'var(--text-mute)', label: '⏸ LIVE OFF',  detail: 'Tap the floating kill-switch to arm.' };
+    }
+    if (isMarketClosed && isMarketClosed(asset)) {
+      return { state: 'blocked', color: 'var(--liq)',      label: '🔒 CLOSED',   detail: 'Market closed for this asset.' };
+    }
+    if (isMexcInCooldown && isMexcInCooldown(asset.symbol)) {
+      const leftMs = Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs(asset.symbol)));
+      return { state: 'blocked', color: 'var(--liq)',      label: '⏳ COOLDOWN', detail: `Locked for ${Math.ceil(leftMs/1000)}s after the last fire.` };
+    }
+    if (!asset.price) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO PRICE',  detail: 'Awaiting first price tick.' };
+    // Pick the entry the auto-exec path would actually use. Scalp 1m uses
+    // _suggestedEntryForTf on the 1m tfEntries; HTF uses asset.entry.
+    const scalp = getScalpTf(asset.symbol);
+    let entry = null;
+    if (scalp === '1m') {
+      const tf1m = asset.tfEntries && asset.tfEntries['1m'];
+      const rawSug = (tf1m && typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tf1m, '1m') : null;
+      const sug = rawSug ? _highLevLevels(asset, rawSug) : null;
+      if (sug && sug.entry) entry = sug.entry;
+    } else {
+      // HTF auto-exec is gated off at high-lev (mechanical SL too tight),
+      // so reflect that here.
+      if (_isHighLeverage(asset.symbol)) {
+        return { state: 'blocked', color: 'var(--bear)', label: '⚠ HTF + HIGH-LEV',
+                 detail: `At ${getAssetLeverage(asset.symbol)}×, HTF SLs are too wide. Switch to Scalp 1m in the modal.` };
+      }
+      entry = asset.entry;
+    }
+    if (!entry) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO SETUP', detail: 'Waiting for a 1m FVG to form.' };
+    const distPct = Math.abs((asset.price - entry) / entry) * 100;
+    const gate = _scalpProximityPct ? _scalpProximityPct(asset.symbol) : 0.15;
+    if (distPct <= gate) {
+      return { state: 'ready', color: 'var(--bull)',
+               label: '🟢 READY · FIRE NEXT TICK',
+               detail: `${distPct.toFixed(3)}% from entry $${entry} (gate ${gate}%) — auto-fire will trigger.` };
+    }
+    if (distPct <= 0.5) {
+      return { state: 'near', color: 'var(--liq)',
+               label: `🟡 NEAR · ${distPct.toFixed(2)}% away`,
+               detail: `Closer than 0.5% from entry $${entry} (gate ${gate}%) — watch for the cross.` };
+    }
+    return { state: 'waiting', color: 'var(--text-mute)',
+             label: `⚪ WAITING · ${distPct.toFixed(2)}% away`,
+             detail: `Price is far from entry $${entry} (gate ${gate}%). Tap 🔥 Force Fire to fire now anyway.` };
   }
 
   // Modal button handlers — extracted so the inline onclick="" stays
@@ -9225,6 +9296,21 @@
 
     const analysisPanel = document.getElementById('tvAnalysisPanel');
     if (!analysisPanel) return;
+
+    // FIRE STATUS badge — at-a-glance answer to "will it fire?" The user
+    // said the trigger should be easy and clear; this surfaces the same
+    // signal the auto-exec loop reads, in plain English, refreshed every
+    // 1s by the existing tick() call.
+    const fire = (typeof getFireStatus === 'function') ? getFireStatus(asset) : null;
+    if (fire) {
+      const badge = document.getElementById('tvFireStatusBadge');
+      if (badge) {
+        const pulse = fire.state === 'ready' ? 'animation:zone-pulse 1.2s ease-in-out infinite;' : '';
+        badge.style.cssText = `background:transparent;border:1px solid ${fire.color};color:${fire.color};border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;${pulse}`;
+        badge.textContent = fire.label;
+        badge.title = fire.detail;
+      }
+    }
 
     const gst = getGST();
     const analysis = analyzeAsset(asset, gst);
