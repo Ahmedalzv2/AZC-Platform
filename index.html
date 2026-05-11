@@ -1598,13 +1598,13 @@
             <div style="flex:1;"></div>
             <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Timeframe:</div>
             <div style="display:flex;gap:6px;">
-              <button class="tf-btn" data-tf="1" onclick="switchTVTimeframe('1')">1m</button>
+              <button class="tf-btn active" data-tf="1" onclick="switchTVTimeframe('1')">1m</button>
               <button class="tf-btn" data-tf="5" onclick="switchTVTimeframe('5')">5m</button>
               <button class="tf-btn" data-tf="15" onclick="switchTVTimeframe('15')">15m</button>
               <button class="tf-btn" data-tf="60" onclick="switchTVTimeframe('60')">1H</button>
               <button class="tf-btn" data-tf="240" onclick="switchTVTimeframe('240')">4H</button>
               <button class="tf-btn" data-tf="D" onclick="switchTVTimeframe('D')">Daily</button>
-              <button class="tf-btn active" data-tf="W" onclick="switchTVTimeframe('W')">Weekly</button>
+              <button class="tf-btn" data-tf="W" onclick="switchTVTimeframe('W')">Weekly</button>
             </div>
           </div>
           <style>
@@ -8956,7 +8956,9 @@
 
   let tvChartLoaded = false;
   let tvCurrentSymbol = 'BTC'; // Changes to best-signal asset on load
-  let tvCurrentTimeframe = 'W';
+  let tvCurrentTimeframe = '1'; // default to 1m — matches the scalp setup the dashboard
+                                 // actually trades on. Weekly view hid the FVG/OB
+                                 // structure we care about.
   let tvWidget = null;
 
   // Sidebar asset list — replaces the old dashboard cards. Each row is a
