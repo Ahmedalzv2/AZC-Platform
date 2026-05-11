@@ -1219,14 +1219,19 @@
       padding-bottom: 64px;
     }
 
-    /* Compact top bar */
+    /* Compact top bar. Brand collapses to flex:0 so the timing segments
+       (Clock, Session, Next KZ) take their natural width and fit on a
+       375px phone. Sync stays hidden — debug surface, not actionable. */
     .autopilot-bar { height: 44px; }
-    .ap-brand { padding: 0 14px; }
-    .ap-brand .logo { font-size: 15px; }
+    .ap-brand { padding: 0 10px; flex: 0 1 auto; min-width: 0; }
+    .ap-brand .logo { font-size: 13px; white-space: nowrap; }
     .ap-brand .v { display: none; }
-    .ap-segment { padding: 0 12px; font-size: 11px; }
-    /* Hide Next KZ + Sync on mobile — keep Session + Clock */
-    .ap-seg-nextkz, .ap-seg-sync { display: none; }
+    .ap-segment { padding: 0 10px; font-size: 11px; gap: 6px; }
+    .ap-label { font-size: 9px; }
+    .ap-seg-sync { display: none; }
+    /* Next KZ is the most actionable mobile info during sessions —
+       gold value + slightly bolder so it pops when scanning fast. */
+    .ap-seg-nextkz .ap-value { color: var(--gold); font-weight: 700; }
 
     /* Main content padding */
     main { padding: 14px 12px; }
