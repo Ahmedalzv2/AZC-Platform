@@ -102,7 +102,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.equal(after, before + 1, 'one [DRY-RUN] entry appended');
   });
 
-  test('pre-records cooldown so auto-exec does not double-fire on top of force-fire', async () => {
+  test('cooldown disabled → force-fire never arms a blocking cooldown', async () => {
     const { app, sandbox } = loadApp();
     const s = bootSilverLive(app);
     s.price = 80; s.bias = 'BULLISH';
@@ -110,7 +110,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     sandbox.localStorage.setItem('ict_calc_risk', '100');
     assert.equal(app.isMexcInCooldown('SILVER'), false, 'pre-condition: not in cooldown');
     await app.forceFireAsset('SILVER');
-    assert.equal(app.isMexcInCooldown('SILVER'), true, 'force-fire arms the cooldown');
+    assert.equal(app.isMexcInCooldown('SILVER'), false, 'cooldown disabled → still false post-fire');
   });
 });
 

@@ -4190,11 +4190,11 @@
     return { ...sug, sl: round(sl), tp: round(tp), rr: +(tpPct / slPct).toFixed(3), source: (sug.source || '') + '+highlev' };
   }
 
-  // Per-asset cooldown so a flickering price around an entry doesn't fire
-  // 10 orders in a row. 60s is enough to skip the next 1m candle's wick
-  // re-test; the new global one-at-a-time gate handles the bigger risk of
-  // stacking on an open position.
-  const MEXC_COOLDOWN_MS = 60 * 1000;
+  // Cooldown disabled per user request — re-enter immediately when conditions
+  // allow. Safety still comes from the global one-at-a-time gate (no fire
+  // while a position is open) and the proximity gate. Timestamp tracking
+  // remains for "Last Fire" diagnostics.
+  const MEXC_COOLDOWN_MS = 0;
   const _lastMexcFireMs = {};   // in-memory; reloads pick up from localStorage
   function _mexcCooldownKey(sym) { return 'ict_mexc_last_fire_' + String(sym || ''); }
   function _getLastMexcFireMs(sym) {
