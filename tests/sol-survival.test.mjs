@@ -177,10 +177,29 @@ describe('computeMexcOrderQty margin-aware cap at high leverage', () => {
     assert.ok(qty > 0);
   });
 
-  test('returns null when calc settings missing', () => {
+  test('returns null when calc settings missing AND lev is low (high-lev auto-defaults to $0.20)', () => {
     const { app, sandbox } = loadApp();
     try { sandbox.localStorage.removeItem('ict_calc_account'); } catch (e) {}
     try { sandbox.localStorage.removeItem('ict_calc_risk');    } catch (e) {}
-    assert.equal(app.computeMexcOrderQty({ symbol: 'SOL' }, 86, 85.7, 200), null);
+    // Low-lev with no calc settings → legacy null
+    assert.equal(app.computeMexcOrderQty({ symbol: 'BTC' }, 86, 85.7, 10), null);
+    // High-lev with no calc settings → $0.20 target margin auto-default → qty > 0
+    assert.ok(app.computeMexcOrderQty({ symbol: 'SOL' }, 86, 85.7, 200) > 0);
+  });
+
+  test('high-lev default $0.20 target margin → qty sized for $0.20 × lev / entry', () => {
+    const { app, sandbox } = loadApp();
+    // SOL @ $86 at 200× → units = 0.20 × 200 / 86 = 0.465 → floored to 1 (min qty)
+    const qty = app.computeMexcOrderQty({ symbol: 'SOL' }, 86, 85.7, 200);
+    assert.ok(qty >= 1, `qty floor at 1, got ${qty}`);
+    assert.ok(qty < 2, `at $86 entry, 1 unit covers the $0.20 target (got ${qty})`);
+  });
+
+  test('user override via ict_target_margin_usdt is respected', () => {
+    const { app, sandbox } = loadApp();
+    sandbox.localStorage.setItem('ict_target_margin_usdt', '1.00');
+    // $1 × 200 / $86 = 2.33 → rounded to 2.33
+    const qty = app.computeMexcOrderQty({ symbol: 'SOL' }, 86, 85.7, 200);
+    assert.ok(qty > 2 && qty < 3, `expected ~2.33 with $1 target, got ${qty}`);
   });
 });
