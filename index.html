@@ -337,26 +337,26 @@
       50%      { opacity: 0.55; }
     }
 
-    /* Live-trading kill-switch — always-visible floating button.
-       OFF state: green/calm so it's not alarming when system is idle.
-       ON  state: red + slow pulse so it's impossible to miss while
-                  auto-execution can fire. */
+    /* Live-trading kill-switch — always-visible button anchored to the
+       top-right of the page so it lives in the same spot as the rest of
+       the status bar. OFF state is green/calm; ON state is red with a
+       slow pulse so it's impossible to miss while auto-execution can fire. */
     #liveKillSwitch {
       position: fixed;
       right: 16px;
-      bottom: 16px;
+      top: 9px;
       z-index: 5000;
-      padding: 14px 22px;
+      padding: 8px 16px;
       border-radius: 999px;
       border: 2px solid var(--bull);
       background: rgba(92,184,138,0.18);
       color: var(--bull);
       font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 800;
       letter-spacing: 0.06em;
       cursor: pointer;
-      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
       user-select: none;
       transition: transform 0.12s ease, background 0.12s ease;
     }
@@ -1219,10 +1219,14 @@
       padding-bottom: 64px;
     }
 
-    /* Kill-switch clears the 64px bottom nav + iOS home-indicator
-       safe area so it never sits on top of the tab strip. */
+    /* Top-right kill-switch shrinks slightly on phones so it fits the
+       44px AP bar and leaves room for the timing segments on the left. */
     #liveKillSwitch {
-      bottom: calc(80px + env(safe-area-inset-bottom));
+      top: 6px;
+      right: 10px;
+      padding: 5px 12px;
+      font-size: 10px;
+      letter-spacing: 0.04em;
     }
 
     /* Compact top bar. Brand collapses to flex:0 so the timing segments
@@ -1400,12 +1404,9 @@
       <span class="ap-label">Next KZ</span>
       <span class="ap-value" id="barNextKZ">—</span>
     </div>
-    <div class="ap-segment ap-seg-sync" style="border-right:none;">
+    <div class="ap-segment ap-seg-sync" style="border-right:none;margin-right:auto;">
       <span class="ap-label">Sync</span>
       <span class="ap-value" id="barSyncTime">—</span>
-    </div>
-    <div class="ap-segment" style="border-left:1px solid var(--border);border-right:none;margin-left:auto;">
-      <span id="liveIndicator" style="font-size:11px;color:#888;font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;">⟳ SYNC</span>
     </div>
   </div>
 
