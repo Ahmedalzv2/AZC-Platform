@@ -73,3 +73,33 @@ risk on every fire — just ship the feature they asked for.
 - Floating kill-switch (bottom-right): one-tap master STOP/START.
 - Spot Watch: HTF-derived buy/sell zones for spot assets, quiet toasts
   on AT BUY / AT SELL transitions, sell-zone narrative.
+
+## Recent shipments (handoff for next session)
+
+Last work session was diagnostic visibility on the Live Chart's FIRE
+STATUS badge — user said "live but not initiating trades" and couldn't
+see why without digging into the Live Trading modal. Three PRs landed:
+
+- **#68** — Position sizing: lowered the qty floor from 1 → 0.01 so MEXC
+  accepts fractional contracts (SILVER ≈ 0.47 units at $0.20 margin/200×).
+- **#69** — FIRE STATUS badge surfaces the one-at-a-time gate as
+  `⏸ WAITING ON {sym}`. Was: SILVER read READY while SOL held a position;
+  scalp tick silently skipped with `reason=in-position`.
+- **#70** — Cooldown surfacing + auto-rollback. The pre-cooldown was
+  eating 60s on sign-failed / no-keys / no-worker / bad-side even though
+  no request reached MEXC. Now rolls back for those, and the badge reads
+  `⏳ COOLDOWN · ORDER SENT` / `[DRY-RUN]` / `⚠ LAST FIRE FAILED · {reason}`
+  so failed fires don't look like throttling. Scalp ticks now also write
+  `_lastFireResult` (previously only force-fires did).
+
+### Where the user left off
+
+Testing live on the trio. After PR #70 reload the FIRE STATUS badge for
+each trio asset should tell them directly why nothing's firing. They
+asked for `/compact` to carry context — if you're picking this up fresh,
+ask what the badge for SOL / SILVER / GOLD currently says and act on
+that. Force Fire is the immediate bypass.
+
+### Tests
+
+370 passing in ~2s.
