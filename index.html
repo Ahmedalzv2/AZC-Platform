@@ -8628,15 +8628,22 @@
     }
     const syms = _resolveSymbols(asset);
     if (!syms.binance && !syms.mexc && !syms.mexcSpot && !syms.binanceFallback) { asset.tfEntries = null; return; }
-    const tfEntries = {};
-    const sourceLog = {}; // {tf: 'binance'|'mexc-perp'|'mexc-spot'|'binance-fallback'|'fail'}
-    let totalFails = 0;
-    for (const tf of TF_LIST) {
+    // TFs are independent reads (different `interval` param) — fetching all
+    // 6 in parallel is ~6× faster than the sequential await chain. Public
+    // weight-1 endpoints handle 6 concurrent fine; the fallback chain inside
+    // each TF stays sequential so we don't hammer secondaries needlessly.
+    const tfResults = await Promise.all(TF_LIST.map(async tf => {
       let kl = null, src = 'fail';
       if (syms.binance)         { kl = await fetchBinanceKlines(syms.binance, tf, 50);     if (kl && kl.length >= 22) src = 'binance'; }
       if ((!kl || kl.length < 22) && syms.mexc)            { const k2 = await fetchMexcKlines(syms.mexc, tf, 50);          if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-perp'; } }
       if ((!kl || kl.length < 22) && syms.mexcSpot)        { const k2 = await fetchMexcSpotKlines(syms.mexcSpot, tf, 50);  if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-spot'; } }
       if ((!kl || kl.length < 22) && syms.binanceFallback) { const k2 = await fetchBinanceKlines(syms.binanceFallback, tf, 50); if (k2 && k2.length >= 22) { kl = k2; src = 'binance-fallback'; } }
+      return { tf, kl, src };
+    }));
+    const tfEntries = {};
+    const sourceLog = {};
+    let totalFails = 0;
+    for (const { tf, kl, src } of tfResults) {
       sourceLog[tf] = src;
       if (!kl || kl.length < 22) totalFails++;
       tfEntries[tf] = _analyzeKlines(kl);
