@@ -299,11 +299,12 @@ describe('scalpMonitorTick', () => {
     const body = JSON.parse(calls[0].init.body);
     assert.equal(body.symbol, 'SILVER_USDT');
     assert.equal(body.side, 3); // 3 = open short
-    // SILVER defaults to 200× (trio) → mechanical SL/TP at 1:2 R:R.
-    // entry 75.65 SHORT, SL = entry × 1.0035 ≈ 75.92, TP = entry × 0.993 ≈ 75.12.
+    // SILVER defaults to 200× (trio) → mechanical SL/TP with quick-take TP.
+    // entry 75.65 SHORT, SL = entry × 1.0035 ≈ 75.92,
+    // TP = entry × (1 - 0.035/100) ≈ 75.62 (7% margin at 200×).
     assert.equal(body.price, 75.65);
     assert.ok(Math.abs(body.stopLossPrice - 75.92) < 0.02, `sl ${body.stopLossPrice}`);
-    assert.ok(Math.abs(body.takeProfitPrice - 75.12) < 0.02, `tp ${body.takeProfitPrice}`);
+    assert.ok(Math.abs(body.takeProfitPrice - 75.62) < 0.02, `tp ${body.takeProfitPrice}`);
   });
 
   test('cooldown blocks a SECOND fire within window even with fresh setup', async () => {

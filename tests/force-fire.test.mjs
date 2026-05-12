@@ -53,7 +53,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     const slPct = ((80 - r.sl) / 80) * 100;
     assert.ok(Math.abs(slPct - 0.35) < 0.01, `expected SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
     const tpPct = ((r.tp - 80) / 80) * 100;
-    assert.ok(Math.abs(tpPct - 0.70) < 0.01, '1:2 R:R — TP at 0.70% (2× SL)');
+    assert.ok(Math.abs(tpPct - 0.035) < 0.005, `Quick-take TP ≈ 0.035% (7% margin at 200×), got ${tpPct.toFixed(4)}%`);
   });
 
   test('low-lev asset: SL/TP use the flat 0.4% mechanical default', async () => {
