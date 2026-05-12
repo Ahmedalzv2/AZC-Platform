@@ -10948,17 +10948,20 @@
   let binanceWS = null;
 
   // Sub-second kline pipeline. SOL is the only trio asset on Binance —
-  // SILVER and GOLD stay on the 5s MEXC HTTP polling for now (MEXC contract
-  // WS is a follow-up). Each kline tick updates the buffer in place, re-runs
-  // _analyzeKlines, then triggers scalpMonitorTick — no 1s timer wait.
+  // SILVER and GOLD stay on the 5s/60s MEXC HTTP path (MEXC contract WS
+  // is a follow-up). Every WS kline tick patches the matching per-TF buffer
+  // in place, re-runs _analyzeKlines, and (on 1m only) triggers
+  // scalpMonitorTick — no 1s timer wait.
   function _onWsKline(payload) {
     if (!payload || !payload.k) return;
     const symbol = String(payload.s || '').replace('USDT', '');
     const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
-    if (!asset || !_isFuturesAsset(asset)) return;
-    const cache = asset._tfCache;
-    const hit = cache && cache['1m'];
-    if (!hit || !Array.isArray(hit.kl)) return; // wait for the first HTTP sweep to populate
+    if (!asset) return;
+    const tf = payload.k.i;
+    if (!tf || (typeof TF_LIST !== 'undefined' && !TF_LIST.includes(tf))) return;
+    asset._tfCache = asset._tfCache || {};
+    const hit = asset._tfCache[tf];
+    if (!hit || !Array.isArray(hit.kl)) return; // wait for the HTTP sweep to seed the buffer
     const k = payload.k;
     const candle = { t: +k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v };
     const last = hit.kl[hit.kl.length - 1];
@@ -10967,8 +10970,9 @@
     hit.ts = Date.now();
     hit.src = 'binance-ws';
     asset.tfEntries = asset.tfEntries || {};
-    asset.tfEntries['1m'] = _analyzeKlines(hit.kl);
-    if (typeof scalpMonitorTick === 'function') {
+    asset.tfEntries[tf] = _analyzeKlines(hit.kl);
+    asset.tfEntriesUpdated = Date.now();
+    if (tf === '1m' && _isFuturesAsset(asset) && typeof scalpMonitorTick === 'function') {
       scalpMonitorTick(asset).then(r => {
         if (r && r.fired) console.log('[mexc scalp 1m · ws]', asset.symbol, r);
       }).catch(() => {});
@@ -10978,9 +10982,9 @@
   function initBinanceWebSocket() {
     const tickerStreams = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt', 'suiusdt', 'astrusdt']
       .map(s => s + '@miniTicker');
-    // 1m kline stream for SOL (the trio member on Binance). Pushed every ~1s
-    // while the candle is in-flight, plus a final close payload.
-    const klineStreams = ['solusdt@kline_1m'];
+    // 1m / 5m / 15m / 1h / 4h / 1d kline streams for SOL so every TF in the
+    // modal stays sub-second fresh, not 5-minute-stale per the HTF cache.
+    const klineStreams = ['1m', '5m', '15m', '1h', '4h', '1d'].map(iv => `solusdt@kline_${iv}`);
     const streams = [...tickerStreams, ...klineStreams].join('/');
 
     const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
@@ -10991,7 +10995,7 @@
       binanceWS.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.stream && msg.stream.endsWith('@kline_1m')) {
+          if (msg.stream && msg.stream.includes('@kline_')) {
             _onWsKline(msg.data);
             return;
           }
@@ -11020,10 +11024,11 @@
               if (typeof updateTVAnalysis === 'function') updateTVAnalysis(symbol);
             }
 
-            // Refresh open modal analysis on live price tick (throttled 2.5s)
+            // Refresh open modal analysis on live price tick (throttled 1s
+            // — user wants near-realtime values in the per-TF table).
             if (_openModalSymbol === symbol) {
               const _now = Date.now();
-              if (!window._wsModalRefreshTs || _now - window._wsModalRefreshTs > 2500) {
+              if (!window._wsModalRefreshTs || _now - window._wsModalRefreshTs > 1000) {
                 window._wsModalRefreshTs = _now;
                 // Preserve any unsaved textarea before full re-render
                 const _ta = document.getElementById(`remarkInput_${symbol}`);
