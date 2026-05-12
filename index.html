@@ -4182,10 +4182,10 @@
   }
 
   // Per-asset cooldown so a flickering price around an entry doesn't fire
-  // 10 orders in a row. Default 5 minutes. The cooldown applies to both
-  // HTF and scalp paths — once SILVER fires anywhere, no more SILVER
-  // orders for COOLDOWN_MS.
-  const MEXC_COOLDOWN_MS = 5 * 60 * 1000;
+  // 10 orders in a row. 60s is enough to skip the next 1m candle's wick
+  // re-test; the new global one-at-a-time gate handles the bigger risk of
+  // stacking on an open position.
+  const MEXC_COOLDOWN_MS = 60 * 1000;
   const _lastMexcFireMs = {};   // in-memory; reloads pick up from localStorage
   function _mexcCooldownKey(sym) { return 'ict_mexc_last_fire_' + String(sym || ''); }
   function _getLastMexcFireMs(sym) {
@@ -4475,6 +4475,16 @@
   let _openPositionsUpdatedMs = 0; // for the modal panel age display
   let _openPositionsError = null;  // last fetch error (if any) for the modal
   const POSITIONS_REFRESH_INTERVAL_MS = 5000;
+
+  // One-at-a-time gate. Returns the bare symbol holding the live position,
+  // or null when nothing is open. Both auto-exec and force-fire skip when
+  // this returns a symbol so the user can stay focused on the single trade.
+  function _findBlockingPosition() {
+    for (const sym in _openPositions) {
+      if ((_openPositions[sym] || []).length > 0) return sym;
+    }
+    return null;
+  }
 
   async function fetchMexcOpenPositions() {
     const apiKey = getMexcApiKey();
@@ -4774,6 +4784,12 @@
     const proximityPct = _scalpProximityPct(sym);
     if (distPct > proximityPct)      return _recordScalpDiag(sym, { fired: false, reason: 'too-far', distPct, proximityPct, sugEntry: sug.entry, price: asset.price });
 
+    // Global one-at-a-time gate — focus on one trade. If ANY asset is in a
+    // live position, skip; the user explicitly asked to wait until the
+    // current trade closes before opening another anywhere.
+    const blockingSym = _findBlockingPosition();
+    if (blockingSym) return _recordScalpDiag(sym, { fired: false, reason: 'in-position', blockingSym });
+
     // Cooldown — once any order fires (HTF or scalp) for this asset, no more
     // for MEXC_COOLDOWN_MS regardless of which path tried to fire.
     if (isMexcInCooldown(sym))       return _recordScalpDiag(sym, { fired: false, reason: 'cooldown' });
@@ -4823,6 +4839,10 @@
     if (!asset)                       return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-asset' });
     if (!_liveTradingEnabled)         return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'master-off' });
     if (!_mexcContractSymbol(asset))  return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'unsupported-symbol' });
+    // One-at-a-time policy: force-fire respects it too, otherwise the gate
+    // leaks. User can close the live position from the modal first.
+    const blockingSym = _findBlockingPosition();
+    if (blockingSym) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'in-position', blockingSym });
     const price = Number(asset.price);
     if (!isFinite(price) || price <= 0) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-price' });
     const dir = (asset.bias || '').toUpperCase().includes('BULL') ? 'LONG' : 'SHORT';
