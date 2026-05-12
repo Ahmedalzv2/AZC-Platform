@@ -11068,6 +11068,107 @@
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // MEXC contract WS — SILVER + GOLD live klines on every TF. The HTTP path
+  // for MEXC needs CORS proxies (contract.mexc.com doesn't return headers),
+  // but WebSockets don't enforce CORS so the browser can connect directly.
+  // Falls back silently to the existing 5s/60s HTTP polling on any failure.
+  // ─────────────────────────────────────────────────────────────────────
+  let mexcWS = null;
+  let _mexcWsPingTimer = null;
+  const MEXC_WS_INTERVAL_TO_TF = {
+    Min1: '1m', Min5: '5m', Min15: '15m', Min60: '1h', Hour4: '4h', Day1: '1d',
+  };
+  const MEXC_WS_TFS = ['Min1', 'Min5', 'Min15', 'Min60', 'Hour4', 'Day1'];
+  const MEXC_WS_SUBSCRIPTIONS = [
+    { symbol: 'SILVER_USDT', asset: 'SILVER' },
+    { symbol: 'XAUT_USDT',   asset: 'GOLD'   },
+  ];
+
+  function initMexcWebSocket() {
+    try {
+      mexcWS = new WebSocket('wss://contract.mexc.com/edge');
+      mexcWS.onopen = () => {
+        console.log('MEXC contract WS connected');
+        MEXC_WS_SUBSCRIPTIONS.forEach(s => {
+          MEXC_WS_TFS.forEach(iv => {
+            try {
+              mexcWS.send(JSON.stringify({
+                method: 'sub.kline',
+                param: { symbol: s.symbol, interval: iv },
+              }));
+            } catch (e) {}
+          });
+        });
+        // MEXC contract WS closes connections that go quiet — ping every 15s.
+        if (_mexcWsPingTimer) clearInterval(_mexcWsPingTimer);
+        _mexcWsPingTimer = setInterval(() => {
+          if (mexcWS && mexcWS.readyState === 1) {
+            try { mexcWS.send(JSON.stringify({ method: 'ping' })); } catch (e) {}
+          }
+        }, 15000);
+      };
+      mexcWS.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.channel === 'push.kline' && msg.data) _onMexcWsKline(msg.data, msg.symbol);
+        } catch (e) { /* silent — most messages won't match */ }
+      };
+      mexcWS.onerror = (e) => console.warn('MEXC contract WS error:', e);
+      mexcWS.onclose = () => {
+        console.log('MEXC contract WS closed, reconnecting in 5s...');
+        if (_mexcWsPingTimer) { clearInterval(_mexcWsPingTimer); _mexcWsPingTimer = null; }
+        setTimeout(initMexcWebSocket, 5000);
+      };
+      return mexcWS;
+    } catch (e) {
+      console.warn('MEXC contract WS init failed:', e);
+      return null;
+    }
+  }
+
+  function _onMexcWsKline(data, topSymbol) {
+    if (!data) return;
+    // The push payload sometimes carries the symbol on the data object,
+    // sometimes only on the top-level msg.symbol — accept either.
+    const mexcSym = data.symbol || topSymbol;
+    const sub = MEXC_WS_SUBSCRIPTIONS.find(s => s.symbol === mexcSym);
+    if (!sub) return;
+    const tf = MEXC_WS_INTERVAL_TO_TF[data.interval];
+    if (!tf || (typeof TF_LIST !== 'undefined' && !TF_LIST.includes(tf))) return;
+    const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === sub.asset) : null;
+    if (!asset) return;
+    asset._tfCache = asset._tfCache || {};
+    const hit = asset._tfCache[tf];
+    if (!hit || !Array.isArray(hit.kl)) return; // wait for the HTTP sweep to seed the buffer
+    // MEXC timestamps come in seconds; Binance buffer uses ms. Normalize.
+    const rawT = data.t != null ? data.t : data.time;
+    const tsMs = (rawT && String(rawT).length <= 10) ? rawT * 1000 : rawT;
+    const o = +(data.o != null ? data.o : data.open);
+    const h = +(data.h != null ? data.h : data.high);
+    const l = +(data.l != null ? data.l : data.low);
+    const c = +(data.c != null ? data.c : data.close);
+    const v = +(data.q != null ? data.q : (data.vol != null ? data.vol : (data.volume || 0)));
+    if (!isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c)) return;
+    const candle = { t: +tsMs, o, h, l, c, v };
+    const last = hit.kl[hit.kl.length - 1];
+    if (last && last.t === candle.t) hit.kl[hit.kl.length - 1] = candle;
+    else { hit.kl.push(candle); if (hit.kl.length > 60) hit.kl.shift(); }
+    hit.ts = Date.now();
+    hit.src = 'mexc-ws';
+    asset.tfEntries = asset.tfEntries || {};
+    asset.tfEntries[tf] = _analyzeKlines(hit.kl);
+    asset.tfEntriesUpdated = Date.now();
+    // Mirror the live price off the latest close so the rest of the UI
+    // (FIRE STATUS, proximity gate, modal header) stays in sync.
+    if (tf === '1m') asset.price = c;
+    if (tf === '1m' && _isFuturesAsset(asset) && typeof scalpMonitorTick === 'function') {
+      scalpMonitorTick(asset).then(r => {
+        if (r && r.fired) console.log('[mexc scalp 1m · mexc-ws]', asset.symbol, r);
+      }).catch(() => {});
+    }
+  }
+
   // Update just the price in an asset tile (lightweight, no full re-render)
   function updateAssetTilePrice(symbol, price, change24h) {
     const tile = document.querySelector(`[data-symbol="${symbol}"]`);
@@ -11176,6 +11277,7 @@
     tickInterval = setInterval(tick, 1000);
     _try('initNotifications', initNotifications);
     _try('initBinanceWebSocket', initBinanceWebSocket);
+    _try('initMexcWebSocket', initMexcWebSocket);
     _try('initTVPriceListener', initTVPriceListener);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
