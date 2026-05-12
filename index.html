@@ -4958,6 +4958,17 @@
     if (typeof _liveTradingEnabled !== 'undefined' && !_liveTradingEnabled) {
       return { state: 'blocked', color: 'var(--text-mute)', label: '⏸ LIVE OFF',  detail: 'Tap the floating kill-switch to arm.' };
     }
+    // One-at-a-time gate — if any OTHER asset holds a live position, this
+    // asset's scalp tick silently skips with reason='in-position'. Surface
+    // it on the badge so the gate is visible from the main dashboard.
+    if (typeof _findBlockingPosition === 'function') {
+      const blockingSym = _findBlockingPosition();
+      if (blockingSym && blockingSym !== asset.symbol) {
+        return { state: 'blocked', color: 'var(--liq)',
+                 label: `⏸ WAITING ON ${blockingSym}`,
+                 detail: `${blockingSym} has an open position — one-at-a-time gate. Close it from the Live Trading modal to free this slot.` };
+      }
+    }
     if (isMarketClosed && isMarketClosed(asset)) {
       return { state: 'blocked', color: 'var(--liq)',      label: '🔒 CLOSED',   detail: 'Market closed for this asset.' };
     }
