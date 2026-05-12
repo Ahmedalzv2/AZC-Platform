@@ -142,19 +142,17 @@ describe('computeMexcOrderQty margin-aware cap at high leverage', () => {
     sandbox.localStorage.setItem('ict_calc_risk',    String(riskPct));
   }
 
-  test('200×: qty capped by margin (account × lev / entry), not risk', () => {
+  test('200×: high-lev path uses target margin (legacy margin-cap test now covered by target-margin tests)', () => {
     const { app, sandbox } = loadApp();
     setupSol(app, 200);
-    // Account $1.20, full risk, but mechanical SL of 0.35% on $86 = $0.30
-    // Risk-based: 1.20 / 0.30 = 4 SOL → notional = 4 × 86 = $344
-    // Margin-based at 200×: max notional = 1.20 × 200 = $240 → max qty = $240/86 = 2.79 SOL
-    // Margin cap should win.
+    // At high lev the auto-default target margin ($0.20) wins; the legacy
+    // account×risk%-based margin cap doesn't apply on this path. Verify the
+    // qty is a small fractional contract sized to the target margin.
     withCalc(sandbox, 1.20, 100);
     const entry = 86, sl = 86 * (1 - 0.0035);
     const qty = app.computeMexcOrderQty({ symbol: 'SOL' }, entry, sl, 200);
-    const maxMargin = (1.20 * 200) / 86; // ≈ 2.79
-    assert.ok(qty <= maxMargin + 0.01, `qty ${qty} must respect margin cap ${maxMargin.toFixed(2)}`);
-    assert.ok(qty >= 1, 'min qty 1');
+    // 0.20 × 200 / 86 = 0.465 → rounded to 0.47
+    assert.ok(qty > 0.40 && qty < 0.55, `expected ~0.47 fractional contract, got ${qty}`);
   });
 
   test('low-lev (3×): risk cap wins (margin cap is huge)', () => {
@@ -187,12 +185,11 @@ describe('computeMexcOrderQty margin-aware cap at high leverage', () => {
     assert.ok(app.computeMexcOrderQty({ symbol: 'SOL' }, 86, 85.7, 200) > 0);
   });
 
-  test('high-lev default $0.20 target margin → qty sized for $0.20 × lev / entry', () => {
+  test('high-lev default $0.20 target margin → qty sized as fractional contracts', () => {
     const { app, sandbox } = loadApp();
-    // SOL @ $86 at 200× → units = 0.20 × 200 / 86 = 0.465 → floored to 1 (min qty)
+    // SOL @ $86 at 200× → units = 0.20 × 200 / 86 = 0.465 → rounded to 0.47
     const qty = app.computeMexcOrderQty({ symbol: 'SOL' }, 86, 85.7, 200);
-    assert.ok(qty >= 1, `qty floor at 1, got ${qty}`);
-    assert.ok(qty < 2, `at $86 entry, 1 unit covers the $0.20 target (got ${qty})`);
+    assert.ok(qty > 0.40 && qty < 0.55, `expected ~0.47 fractional contracts, got ${qty}`);
   });
 
   test('user override via ict_target_margin_usdt is respected', () => {
