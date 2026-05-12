@@ -4258,6 +4258,19 @@
   // leverage isn't passed (legacy callers) only the risk cap applies.
   function computeMexcOrderQty(asset, entry, sl, leverage) {
     try {
+      const lev = Number(leverage);
+      // High-leverage trio defaults to a fixed $0.20 margin per trade so
+      // every fire commits the same chunk regardless of total balance. User
+      // can override the amount via localStorage('ict_target_margin_usdt').
+      // Lower leverage (<100×) keeps the legacy account×risk%-based sizing.
+      const targetRaw = parseFloat(localStorage.getItem('ict_target_margin_usdt'));
+      const targetMargin = isFinite(targetRaw) && targetRaw > 0
+        ? targetRaw
+        : (isFinite(lev) && lev >= LEVERAGE_HIGH_THRESHOLD ? 0.20 : null);
+      if (targetMargin != null && isFinite(lev) && lev > 0 && Number(entry) > 0) {
+        const units = (targetMargin * lev) / Number(entry);
+        return Math.max(1, Math.round(units * 100) / 100);
+      }
       const account = parseFloat(localStorage.getItem('ict_calc_account'));
       const riskPct = parseFloat(localStorage.getItem('ict_calc_risk'));
       if (!account || !riskPct) return null;
@@ -4266,7 +4279,6 @@
       const riskUnits = (account * riskPct / 100) / dist;
       if (!isFinite(riskUnits) || riskUnits <= 0) return null;
       let units = riskUnits;
-      const lev = Number(leverage);
       if (isFinite(lev) && lev > 0 && Number(entry) > 0) {
         const marginUnits = (account * lev) / Number(entry);
         if (isFinite(marginUnits) && marginUnits > 0 && marginUnits < units) {
