@@ -58,6 +58,7 @@ const EXPORTS = [
   // advanced gap theory (iFVG, BPR, Liquidity Void, NDOG, NWOG)
   '_collectFVGs', '_detectInversionFVG', '_detectBPR', '_analyzeKlines',
   '_detectLiquidityVoid', '_detectNDOG', '_detectNWOG', '_detectFVG',
+  '_classifyPhase',
   // live trading (real signed call via user-deployed Worker)
   'loadLiveTradingState', 'liveTradingStatus',
   'setLiveTradingEnabled', 'setLiveTradingDryRun',

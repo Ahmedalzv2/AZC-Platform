@@ -8552,6 +8552,45 @@
     return null;
   }
 
+  // LumiTraders 4-state phase model surfaced as info, not a gate.
+  // Returns one of: consolidation | expansion | retracement | reversal-suspect
+  //                | continuation | unknown
+  // `dir` carries the expected/observed direction:
+  //   expansion / continuation / reversal-suspect → the moving direction NOW
+  //   retracement                                 → the prior expansion's dir
+  //                                                  (= expected continuation)
+  function _classifyPhase(k) {
+    if (!k || k.length < 16) return { phase: 'unknown', dir: null };
+    const atr = _atr(k, 14);
+    if (!atr || atr <= 0) return { phase: 'unknown', dir: null };
+    const DISP_MULT = 1.5;
+    const windowStart = Math.max(0, k.length - 1 - Math.min(10, k.length - 1));
+    const disps = [];
+    for (let i = windowStart; i <= k.length - 1; i++) {
+      const c = k[i];
+      const body = Math.abs(c.c - c.o);
+      if (body > DISP_MULT * atr) {
+        disps.push({ idx: i, dir: c.c > c.o ? 'bull' : 'bear' });
+      }
+    }
+    if (disps.length === 0) return { phase: 'consolidation', dir: null };
+    const lastDisp = disps[disps.length - 1];
+    const barsSinceLastDisp = k.length - 1 - lastDisp.idx;
+    if (barsSinceLastDisp <= 2) {
+      // Latest displacement is fresh. If there's an earlier counter-direction
+      // displacement in the same window, the move is reversing the prior
+      // trend — LumiTraders' "speed = reversal filter" rule.
+      const earlierCounter = disps.slice(0, -1).find(d => d.dir !== lastDisp.dir);
+      if (earlierCounter) return { phase: 'reversal-suspect', dir: lastDisp.dir };
+      return { phase: 'expansion', dir: lastDisp.dir };
+    }
+    const last3 = k.slice(-3);
+    const net = last3[last3.length - 1].c - last3[0].o;
+    const recentDir = net > 0 ? 'bull' : 'bear';
+    if (recentDir !== lastDisp.dir) return { phase: 'retracement', dir: lastDisp.dir };
+    return { phase: 'continuation', dir: lastDisp.dir };
+  }
+
   function _detectCHoCH(k) {
     if (k.length < 10) return null;
     const recent = k.slice(-5), prior = k.slice(-10, -5);
@@ -8610,6 +8649,7 @@
     // they surface in the methodology line and bump confidence via proximity
     // checks downstream.
     const liqVoidAligned = !!(liqVoid && liqVoid.dir === dir);
+    const phase = _classifyPhase(k);
     return {
       bias: last.c > last.o ? 'bull' : 'bear',
       dir,
@@ -8619,6 +8659,7 @@
       iFVGZone: iFVG, bprZone: bpr, liqVoidZone: liqVoid,
       ndog, nwog,
       score,
+      phase: phase.phase, phaseDir: phase.dir,
       entryReady: score >= 3 && dir !== null,
       price: last.c
     };
@@ -8803,6 +8844,22 @@
     } finally { _autoAnalysisRunning = false; }
   }
 
+  // Compact LumiTraders 4-phase chip for the per-TF row.
+  // Pure display — does not gate fires, just surfaces context.
+  function _phaseChip(phase, dir) {
+    if (!phase || phase === 'unknown') return '';
+    const arrow = dir === 'bull' ? '↑' : dir === 'bear' ? '↓' : '';
+    const map = {
+      'consolidation':    { txt: '▭ CHOP',              color: 'var(--text-mute)' },
+      'expansion':        { txt: arrow + ' EXPAND',     color: 'var(--gold)' },
+      'retracement':      { txt: arrow + ' RETRACE',    color: 'var(--liq)' },
+      'reversal-suspect': { txt: arrow + ' REV?',       color: 'var(--bear)' },
+      'continuation':     { txt: arrow + ' CONT',       color: 'var(--bull)' },
+    };
+    const l = map[phase] || { txt: phase, color: 'var(--text-mute)' };
+    return `<div style="font-size:8px;font-weight:700;color:${l.color};letter-spacing:0.05em;margin-top:2px;" title="LumiTraders 4-phase model · informational">${l.txt}</div>`;
+  }
+
   // Render the per-TF entry table for the modal
   function renderTFEntryHTML(tfEntries) {
     if (!tfEntries) return '<div style="font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;">⟳ Auto-analyzing across timeframes…</div>';
@@ -8824,7 +8881,7 @@
         : `<span style="color:var(--text-mute);">${e.score}/4</span>`;
       const tick = v => v ? '<span style="color:var(--bull);">✓</span>' : '<span style="color:var(--text-mute);">·</span>';
       return `<tr style="${e.entryReady?'background:rgba(92,184,138,0.06);':''}border-top:1px solid var(--border);">
-        <td style="padding:6px 8px;color:var(--gold);font-weight:600;">${TF_LABELS[tf]}</td>
+        <td style="padding:6px 8px;color:var(--gold);font-weight:600;">${TF_LABELS[tf]}${_phaseChip(e.phase, e.phaseDir)}</td>
         <td style="padding:6px 8px;color:${dirColor};">${dirLabel}</td>
         <td style="padding:6px 8px;text-align:center;">${tick(e.fvg)}</td>
         <td style="padding:6px 8px;text-align:center;">${tick(e.sweep)}</td>
