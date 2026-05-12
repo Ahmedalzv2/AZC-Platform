@@ -40,11 +40,11 @@ describe('_mexcContractSymbol generalised', () => {
 });
 
 describe('getAssetLeverage / setAssetLeverage per-asset cap', () => {
-  test('SILVER cap raised to 200x to join SOL YOLO (default stays 3x)', () => {
+  test('SILVER default and cap are both 200x (trio scalp loop)', () => {
     const { app } = loadApp();
     assert.equal(app.ASSET_LEVERAGE_SPEC.SILVER.max, 200);
-    assert.equal(app.ASSET_LEVERAGE_SPEC.SILVER.def, 3,  'default stays conservative — must opt in to YOLO');
-    assert.equal(app.setAssetLeverage('SILVER', 200), 200, 'accepts the YOLO 200x');
+    assert.equal(app.ASSET_LEVERAGE_SPEC.SILVER.def, 200, 'default is now 200x — trio policy');
+    assert.equal(app.setAssetLeverage('SILVER', 200), 200);
     assert.equal(app.setAssetLeverage('SILVER', 500), 200, 'clamped to SILVER cap');
     assert.equal(app.setAssetLeverage('SILVER', 5),   5);
   });

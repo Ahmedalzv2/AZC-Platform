@@ -4018,9 +4018,9 @@
   // 200× on SOL — that's the explicit YOLO test the user signed up for.
   // Storage key: ict_mexc_<symbol>_leverage.
   const ASSET_LEVERAGE_SPEC = {
-    SILVER: { def: 3,   max: 200 },  // raised cap so SILVER can join SOL's YOLO test;
-                                     // default stays conservative (3×) — opt-in to high-lev
-    SOL:    { def: 200, max: 200 },  // YOLO test (user-confirmed: no rails)
+    SILVER: { def: 200, max: 200 },  // trio scalp loop — full YOLO test
+    SOL:    { def: 200, max: 200 },  // trio scalp loop
+    GOLD:   { def: 200, max: 200 },  // trio scalp loop
     US100:  { def: 5,   max: 30  },  // CFD-style — leveraged but bounded
   };
   // Default for any asset not explicitly listed above. The user wanted to be
@@ -4172,13 +4172,13 @@
     const lev = getAssetLeverage(asset.symbol);
     if (lev < LEVERAGE_HIGH_THRESHOLD) return sug;
     const slPct = (100 / lev) * 0.7;   // e.g. 200× → 0.35%
-    const tpPct = slPct;               // 1:1 R:R — neutral expectancy at break-even win rate
+    const tpPct = slPct * 2;           // 1:2 R:R — bigger reward per winner, breakeven win-rate drops to 33%
     const slDist = sug.entry * (slPct / 100);
     const tpDist = sug.entry * (tpPct / 100);
     const sl = sug.dir === 'bull' ? sug.entry - slDist : sug.entry + slDist;
     const tp = sug.dir === 'bull' ? sug.entry + tpDist : sug.entry - tpDist;
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
-    return { ...sug, sl: round(sl), tp: round(tp), rr: 1.0, source: (sug.source || '') + '+highlev' };
+    return { ...sug, sl: round(sl), tp: round(tp), rr: 2.0, source: (sug.source || '') + '+highlev' };
   }
 
   // Per-asset cooldown so a flickering price around an entry doesn't fire
@@ -4851,7 +4851,7 @@
     // a flat 0.4% otherwise.
     const slPct = _isHighLeverage(symbol) ? (100 / lev) * 0.7 / 100 : 0.004;
     const slDist = price * slPct;
-    const tpDist = slDist; // 1:1 R:R — fast realization
+    const tpDist = slDist * 2; // 1:2 R:R — bigger reward per winner
     const entry = price;
     const sl = dir === 'LONG' ? price - slDist : price + slDist;
     const tp = dir === 'LONG' ? price + tpDist : price - tpDist;

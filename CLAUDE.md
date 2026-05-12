@@ -14,18 +14,19 @@
 5. **Skip Monitor polling when CI is short.** A single `get_check_runs`
    call after ~10s is fine; reserve Monitor for genuinely long waits.
 
-## Trade-mode policy (v4 + onward)
+## Trade-mode policy (v5 + onward)
 
-- Auto-exec set on MEXC perp: **SOL, SILVER, GOLD** (XAUT_USDT).
-  US100 stays futures-mode for trade-call signals but doesn't auto-fire
+- Auto-exec trio on MEXC perp: **SOL, SILVER, GOLD** — all default 200×
+  for the ultra-trade scalp loop. Cap 200×.
+- US100 stays futures-mode for trade-call signals but doesn't auto-fire
   (CFD-only, not on MEXC).
 - Everything else (BTC, ETH, BNB, XRP, SUI, ASTR) = spot, buy-low /
-  sell-high accumulation.
-- Default leverage: SOL 200×, SILVER 3× (user-overrideable to 200×),
-  GOLD 10× default. Cap 200× on all auto-exec assets.
+  sell-high accumulation. No auto-exec.
 - High-Leverage Survival Mode kicks in at ≥ 100×: mechanical SL/TP
-  (0.7 × 100/lev %), 1:1 R:R, Scalp 1m auto-default, HTF auto-fire
-  skipped, 1m kline fast-refresh every 5s.
+  (SL = 0.7 × 100/lev %, **TP = 2× SL for 1:2 R:R**), Scalp 1m auto-
+  default, HTF auto-fire skipped, 1m kline fast-refresh every 5s.
+- One-at-a-time gate: scalp + force-fire skip while any asset holds an
+  open position. 60s per-asset cooldown post-fire.
 
 ## YOLO test is on (don't re-warn)
 

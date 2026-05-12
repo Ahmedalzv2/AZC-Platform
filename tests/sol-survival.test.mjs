@@ -15,6 +15,7 @@ describe('LEVERAGE_HIGH_THRESHOLD + _isHighLeverage', () => {
     const { app, sandbox } = loadApp();
     assert.equal(app.LEVERAGE_HIGH_THRESHOLD, 100);
     setupSol(app, 200);
+    app.setAssetLeverage('SILVER', 3); // override 200× trio default for the threshold check
     assert.equal(app._isHighLeverage('SOL'),    true);
     assert.equal(app._isHighLeverage('SILVER'), false);
   });
@@ -62,15 +63,15 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     assert.ok(Math.abs(actualSlPct - expectedSlPct) < 0.01, `SL should be ~${expectedSlPct}% from entry, got ${actualSlPct.toFixed(3)}%`);
   });
 
-  test('1:1 R:R — TP distance equals SL distance at 200×', () => {
+  test('1:2 R:R — TP distance is 2× SL distance at 200×', () => {
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bull', 0.8);
     const out = app._highLevLevels(sol, raw);
     const slDist = Math.abs(out.entry - out.sl);
     const tpDist = Math.abs(out.tp - out.entry);
-    assert.ok(Math.abs(slDist - tpDist) < 0.001, `SL dist (${slDist}) should ≈ TP dist (${tpDist})`);
-    assert.equal(out.rr, 1.0);
+    assert.ok(Math.abs(tpDist - 2 * slDist) < 0.001, `TP dist (${tpDist}) should ≈ 2× SL dist (${slDist})`);
+    assert.equal(out.rr, 2.0);
   });
 
   test('bear setup: SL above entry, TP below', () => {
@@ -127,6 +128,7 @@ describe('getScalpTf auto-defaults to 1m for high-lev assets', () => {
 
   test('SILVER@3x defaults to htf (low-lev fall-through)', () => {
     const { app, sandbox } = loadApp();
+    app.setAssetLeverage('SILVER', 3); // override 200× trio default
     try { sandbox.localStorage.removeItem('ict_scalp_tf_SILVER'); } catch (e) {}
     assert.equal(app.getScalpTf('SILVER'), 'htf');
   });

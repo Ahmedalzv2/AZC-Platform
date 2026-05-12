@@ -3,25 +3,34 @@ import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
 describe('scalp mode storage', () => {
-  test('default is "htf" when not set', () => {
+  // BTC + ETH are non-trio (default 10×), so their default scalp TF stays 'htf'.
+  // SILVER/GOLD/SOL are 200× by default → auto-'1m' (covered in its own test).
+  test('default is "htf" when not set (non-trio asset)', () => {
     const { app } = loadApp();
-    assert.equal(app.getScalpTf('SILVER'), 'htf');
-    assert.equal(app.getScalpTf('GOLD'), 'htf');
+    assert.equal(app.getScalpTf('BTC'), 'htf');
+    assert.equal(app.getScalpTf('ETH'), 'htf');
+  });
+
+  test('trio assets auto-default to "1m" because they sit at 200×', () => {
+    const { app } = loadApp();
+    assert.equal(app.getScalpTf('SILVER'), '1m');
+    assert.equal(app.getScalpTf('GOLD'), '1m');
+    assert.equal(app.getScalpTf('SOL'), '1m');
   });
 
   test('valid values persist; invalid values are coerced to "htf"', () => {
     const { app } = loadApp();
-    assert.equal(app.setScalpTf('SILVER', '1m'), '1m');
-    assert.equal(app.getScalpTf('SILVER'), '1m');
-    assert.equal(app.setScalpTf('SILVER', 'bogus'), 'htf');
-    assert.equal(app.getScalpTf('SILVER'), 'htf');
+    assert.equal(app.setScalpTf('BTC', '1m'), '1m');
+    assert.equal(app.getScalpTf('BTC'), '1m');
+    assert.equal(app.setScalpTf('BTC', 'bogus'), 'htf');
+    assert.equal(app.getScalpTf('BTC'), 'htf');
   });
 
-  test('per-asset isolation — SILVER scalp does not affect GOLD', () => {
+  test('per-asset isolation — explicit SILVER override does not affect BTC', () => {
     const { app } = loadApp();
-    app.setScalpTf('SILVER', '1m');
-    assert.equal(app.getScalpTf('SILVER'), '1m');
-    assert.equal(app.getScalpTf('GOLD'), 'htf');
+    app.setScalpTf('SILVER', 'htf');  // override the 200× auto-default
+    assert.equal(app.getScalpTf('SILVER'), 'htf');
+    assert.equal(app.getScalpTf('BTC'), 'htf'); // BTC stays at its own default
   });
 });
 
@@ -123,7 +132,9 @@ describe('scalpMonitorTick', () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
-    // setScalpTf default — leave as 'htf'
+    // SILVER auto-defaults to '1m' (200× trio) — explicitly override to 'htf'
+    // so we hit the scalp-off gate.
+    app.setScalpTf('SILVER', 'htf');
     const r = await app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.reason, 'scalp-off');
   });
@@ -286,11 +297,11 @@ describe('scalpMonitorTick', () => {
     const body = JSON.parse(calls[0].init.body);
     assert.equal(body.symbol, 'SILVER_USDT');
     assert.equal(body.side, 3); // 3 = open short
-    // 1m setup: entry 75.65, sl ≈ 75.90, tp ≈ 75.27 (per _suggestedEntryForTf math).
-    // Tolerance loose because rounding lives inside _suggestedEntryForTf.
+    // SILVER defaults to 200× (trio) → mechanical SL/TP at 1:2 R:R.
+    // entry 75.65 SHORT, SL = entry × 1.0035 ≈ 75.92, TP = entry × 0.993 ≈ 75.12.
     assert.equal(body.price, 75.65);
-    assert.ok(Math.abs(body.stopLossPrice - 75.90) < 0.01, `sl ${body.stopLossPrice}`);
-    assert.ok(Math.abs(body.takeProfitPrice - 75.27) < 0.01, `tp ${body.takeProfitPrice}`);
+    assert.ok(Math.abs(body.stopLossPrice - 75.92) < 0.02, `sl ${body.stopLossPrice}`);
+    assert.ok(Math.abs(body.takeProfitPrice - 75.12) < 0.02, `tp ${body.takeProfitPrice}`);
   });
 
   test('cooldown blocks a SECOND fire within window even with fresh setup', async () => {
