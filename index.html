@@ -4269,7 +4269,11 @@
         : (isFinite(lev) && lev >= LEVERAGE_HIGH_THRESHOLD ? 0.20 : null);
       if (targetMargin != null && isFinite(lev) && lev > 0 && Number(entry) > 0) {
         const units = (targetMargin * lev) / Number(entry);
-        return Math.max(1, Math.round(units * 100) / 100);
+        // MEXC SILVER_USDT (and most contract pairs) accept 0.01 lot
+        // increments — flooring to whole units forced the position 2-3×
+        // too large. Round to 2 decimals; reject if math underflows.
+        const rounded = Math.round(units * 100) / 100;
+        return rounded >= 0.01 ? rounded : null;
       }
       const account = parseFloat(localStorage.getItem('ict_calc_account'));
       const riskPct = parseFloat(localStorage.getItem('ict_calc_risk'));
