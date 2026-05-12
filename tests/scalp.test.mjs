@@ -249,6 +249,26 @@ describe('scalpMonitorTick', () => {
     assert.equal(r.blockingSym, 'SILVER');
   });
 
+  test('pre-flight failure (no keys) auto-clears the cooldown — next tick can retry without waiting 60s', async () => {
+    const { app } = loadApp({
+      storage: {
+        // Master ON + live (not dry-run), but NO keys → placeMexcFuturesOrder
+        // returns { sent:false, reason:'no-keys' } BEFORE any HTTP call.
+        // The pre-set cooldown should roll back so the next tick can fire
+        // immediately once the user adds keys, rather than eating 60s.
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+    });
+    app.loadLiveTradingState();
+    const r = await app.scalpMonitorTick(silverWithBear1m());
+    assert.equal(r.fired, true, 'tick still records itself as fired (the path was traversed)');
+    assert.equal(r.result.sent, false);
+    assert.equal(r.result.reason, 'no-keys');
+    assert.equal(app.isMexcInCooldown('SILVER'), false,
+      'pre-flight failure should roll back the cooldown so the next tick can retry');
+  });
+
   test('happy path + dry-run → fires, journals [DRY-RUN], sets cooldown', async () => {
     const ctx = loadApp({
       storage: {

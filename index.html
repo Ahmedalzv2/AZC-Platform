@@ -4219,6 +4219,28 @@
     try { localStorage.removeItem(_mexcCooldownKey(sym)); } catch (e) {}
   }
 
+  // The scalp tick and force-fire pre-set the cooldown BEFORE the API
+  // round-trip, so a slow in-flight order can't double-fire. But if the
+  // order never actually reached MEXC (sign failed, no keys/worker, bad
+  // side, master flipped off mid-flight), eating a 60s lock for nothing
+  // just blocks the next legitimate retry. This rolls back the cooldown
+  // for failures where we know no request hit the exchange.
+  //
+  // Conservative: keep cooldown for network errors (request may have
+  // landed even if the response didn't come back) and MEXC rejections
+  // (their server saw the request and we should not hammer it).
+  function _isPreFlightFailure(r) {
+    if (!r) return false;
+    if (r.sent === true) return false;
+    if (r.dryRun === true) return false;
+    return r.reason === 'no-keys'
+        || r.reason === 'no-worker'
+        || r.reason === 'sign-failed'
+        || r.reason === 'bad-side'
+        || r.reason === 'master-off'
+        || r.reason === 'unsupported-symbol';
+  }
+
   // HMAC-SHA256(secret, message) → lowercase hex via SubtleCrypto.
   async function _hmacSha256Hex(secret, message) {
     const c = (typeof crypto !== 'undefined' && crypto.subtle) ? crypto : null;
@@ -4835,6 +4857,8 @@
     _setLastMexcFireMs(sym, Date.now());
 
     const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
+    if (_isPreFlightFailure(r)) clearMexcCooldown(sym);
+    _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
     return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
 
@@ -4896,8 +4920,10 @@
     try {
       r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), round(tp), qty, lev, { force: true });
     } catch (e) {
+      clearMexcCooldown(symbol);
       return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });
     }
+    if (_isPreFlightFailure(r)) clearMexcCooldown(symbol);
     return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
   }
 
@@ -4974,7 +5000,24 @@
     }
     if (isMexcInCooldown && isMexcInCooldown(asset.symbol)) {
       const leftMs = Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs(asset.symbol)));
-      return { state: 'blocked', color: 'var(--liq)',      label: '⏳ COOLDOWN', detail: `Locked for ${Math.ceil(leftMs/1000)}s after the last fire.` };
+      const leftS = Math.ceil(leftMs / 1000);
+      const lf = (typeof _lastFireResult !== 'undefined') ? _lastFireResult[asset.symbol] : null;
+      // Surface the outcome of the fire that triggered this cooldown — was
+      // it a real order, a dry-run, or did it fail? "Cooldown" alone makes
+      // failed fires look like throttling.
+      if (lf && lf.sent) {
+        return { state: 'blocked', color: 'var(--bull)', label: `⏳ COOLDOWN · ORDER SENT`,
+                 detail: `${lf.side || ''} ${lf.qty || ''} @ $${lf.entry || '?'} · ${lf.leverage || '?'}× · locked for ${leftS}s.` };
+      }
+      if (lf && lf.dryRun) {
+        return { state: 'blocked', color: 'var(--liq)', label: `⏳ COOLDOWN · [DRY-RUN]`,
+                 detail: `Dry-run logged for ${lf.side || ''} ${lf.qty || ''} @ $${lf.entry || '?'} · locked for ${leftS}s.` };
+      }
+      if (lf && lf.reason) {
+        return { state: 'blocked', color: 'var(--bear)', label: `⚠ LAST FIRE FAILED · ${lf.reason}`,
+                 detail: `${lf.error || ''} Cooldown locked for ${leftS}s — tap Clear to retry now.` };
+      }
+      return { state: 'blocked', color: 'var(--liq)', label: '⏳ COOLDOWN', detail: `Locked for ${leftS}s after the last fire.` };
     }
     if (!asset.price) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO PRICE',  detail: 'Awaiting first price tick.' };
     // Pick the entry the auto-exec path would actually use. Scalp 1m uses
