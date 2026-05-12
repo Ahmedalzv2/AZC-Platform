@@ -32,7 +32,7 @@ describe('MEXC cooldown', () => {
   });
 
   test('persists across reloads via localStorage', () => {
-    const ts = Date.now() - 60_000; // 60s ago
+    const ts = Date.now() - 30_000; // 30s ago — well inside the 60s cooldown
     const { app } = loadApp({
       storage: { ict_mexc_last_fire_SILVER: String(ts) },
     });
@@ -202,6 +202,38 @@ describe('scalpMonitorTick', () => {
     app.loadLiveTradingState();
     const r = await app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.reason, 'cooldown');
+  });
+
+  test('global one-at-a-time → other asset in position → in-position', async () => {
+    const { app } = loadApp({
+      storage: {
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+    });
+    app.loadLiveTradingState();
+    app._openPositions = { GOLD: [{ holdVol: 1, holdAvgPrice: 4715, leverage: 10 }] };
+    const r = await app.scalpMonitorTick(silverWithBear1m());
+    assert.equal(r.fired, false);
+    assert.equal(r.reason, 'in-position');
+    assert.equal(r.blockingSym, 'GOLD');
+  });
+
+  test('global one-at-a-time → same asset in position → in-position', async () => {
+    const { app } = loadApp({
+      storage: {
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+    });
+    app.loadLiveTradingState();
+    app._openPositions = { SILVER: [{ holdVol: 2, holdAvgPrice: 75.7, leverage: 200 }] };
+    const r = await app.scalpMonitorTick(silverWithBear1m());
+    assert.equal(r.fired, false);
+    assert.equal(r.reason, 'in-position');
+    assert.equal(r.blockingSym, 'SILVER');
   });
 
   test('happy path + dry-run → fires, journals [DRY-RUN], sets cooldown', async () => {
