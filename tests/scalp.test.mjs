@@ -170,11 +170,13 @@ describe('scalpMonitorTick', () => {
     assert.equal(r.reason, 'no-1m-setup');
   });
 
-  test('HTF disagrees (1m bull, HTF BEARISH) → htf-disagrees', async () => {
+  test('HTF disagrees (1m bull, HTF BEARISH) → htf-disagrees (low-lev only)', async () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
     app.setScalpTf('SILVER', '1m');
+    // HTF gate is enforced only on non-high-lev paths. Drop SILVER to 50×.
+    app.setAssetLeverage('SILVER', 50);
     const r = await app.scalpMonitorTick({
       symbol: 'SILVER', bias: 'BEARISH', price: 75.65,
       tfEntries: {

@@ -25,6 +25,9 @@
 - High-Leverage Survival Mode kicks in at ≥ 100×: mechanical SL/TP
   (SL = 0.7 × 100/lev %, **TP = 2× SL for 1:2 R:R**), Scalp 1m auto-
   default, HTF auto-fire skipped, 1m kline fast-refresh every 5s.
+- **Ultra-trade scalp gates** on high-lev assets: proximity widened to
+  **0.50%**, HTF agreement check skipped — the 1m FVG signal alone fires,
+  accepting counter-bias scalps for more total trades.
 - One-at-a-time gate: scalp + force-fire skip while any asset holds an
   open position. 60s per-asset cooldown post-fire.
 

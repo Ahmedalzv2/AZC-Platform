@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
 describe('_scalpProximityPct widens for high-lev', () => {
-  test('SOL@200x → 0.30 (wider tolerance)', () => {
+  test('SOL@200x → 0.50 (wider tolerance for the trio ultra-trade loop)', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     app.setAssetLeverage('SOL', 200);
-    assert.equal(app._scalpProximityPct('SOL'), 0.30);
+    assert.equal(app._scalpProximityPct('SOL'), 0.50);
   });
   test('SILVER@3x → 0.15 (default tolerance)', () => {
     const { app } = loadApp();
@@ -21,10 +21,10 @@ describe('_scalpProximityPct widens for high-lev', () => {
     app.setAssetLeverage('SOL', 50);
     assert.equal(app._scalpProximityPct('SOL'), 0.15);
   });
-  test('threshold constants match: SCALP_PROXIMITY_PCT=0.15, SCALP_PROXIMITY_PCT_HIGH_LEV=0.30', () => {
+  test('threshold constants match: SCALP_PROXIMITY_PCT=0.15, SCALP_PROXIMITY_PCT_HIGH_LEV=0.50', () => {
     const { app } = loadApp();
     assert.equal(app.SCALP_PROXIMITY_PCT, 0.15);
-    assert.equal(app.SCALP_PROXIMITY_PCT_HIGH_LEV, 0.30);
+    assert.equal(app.SCALP_PROXIMITY_PCT_HIGH_LEV, 0.50);
   });
 });
 
@@ -71,29 +71,32 @@ describe('scalpMonitorTick records to _scalpDiag on every return path', () => {
   test('too-far path captures distPct + threshold for the modal', async () => {
     const { app } = loadApp();
     const sol = bootSolHigh(app);
-    // Build a 1m setup whose entry is 0.5% above current price (within
-    // SOL@200x's widened 0.30% threshold? No — 0.5% > 0.30%, so too-far).
+    // Entry 1% above current price — outside SOL@200x's widened 0.50% gate.
     sol.price = 86;
     sol.bias  = 'BULLISH';
     sol.tfEntries = {
       '1m': {
         dir: 'bull', entryReady: true, score: 4,
-        fvgZone: { dir: 'bull', lo: 86.4, hi: 86.6, mid: 86.5 },
-        // no obZone, no sweep — falls through to fvg-edge in _suggestedEntryForTf
+        fvgZone: { dir: 'bull', lo: 86.8, hi: 87.0, mid: 86.9 },
       },
     };
     const r = await app.scalpMonitorTick(sol);
     assert.equal(r.reason, 'too-far');
     const d = app._scalpDiag.SOL;
-    assert.ok(d.distPct > 0.30, `expected distPct > 0.30 (the SOL high-lev threshold), got ${d.distPct}`);
-    assert.equal(d.proximityPct, 0.30, 'records the high-lev threshold so the modal shows the right gate');
+    assert.ok(d.distPct > 0.50, `expected distPct > 0.50 (the SOL high-lev threshold), got ${d.distPct}`);
+    assert.equal(d.proximityPct, 0.50, 'records the high-lev threshold so the modal shows the right gate');
     assert.ok(d.sugEntry, 'records the suggested entry so the modal can show the absolute price');
     assert.equal(d.price, 86);
   });
 
-  test('htf-disagrees path captures sugDir + htfDir', async () => {
+  test('htf-disagrees path captures sugDir + htfDir (low-lev path)', async () => {
+    // HTF gate is only enforced on non-high-lev assets — drop SOL to 50× so
+    // the gate fires. Re-pin scalp TF to '1m' since the auto-default flips
+    // back to 'htf' when leverage falls below the threshold.
     const { app } = loadApp();
     const sol = bootSolHigh(app);
+    app.setAssetLeverage('SOL', 50);
+    app.setScalpTf('SOL', '1m');
     sol.bias  = 'BEARISH';
     sol.price = 86;
     sol.tfEntries = {
@@ -109,30 +112,36 @@ describe('scalpMonitorTick records to _scalpDiag on every return path', () => {
     assert.equal(d.htfDir, 'bear');
   });
 
-  test('a tick that would have fired on 0.15% gate now fires on the 0.30% gate at 200x', async () => {
-    // Regression for the user's "good call but missed it" — at 200x with
-    // mechanical SL = 0.35%, the 0.30% proximity is still inside the SL.
+  test('high-lev trio skips HTF gate — fires even on counter-bias 1m setup', async () => {
+    const { app } = loadApp();
+    const sol = bootSolHigh(app); // 200× → high-lev → skips HTF
+    sol.bias  = 'BEARISH';        // HTF says bear, but 1m says bull
+    sol.price = 85.95;            // at the FVG mid
+    sol.tfEntries = {
+      '1m': {
+        dir: 'bull', entryReady: true, score: 4,
+        fvgZone: { dir: 'bull', lo: 85.9, hi: 86.0, mid: 85.95 },
+      },
+    };
+    const r = await app.scalpMonitorTick(sol);
+    assert.notEqual(r.reason, 'htf-disagrees', `HTF gate should be skipped at 200×, got reason=${r.reason}`);
+    assert.notEqual(r.reason, 'no-htf-bias');
+  });
+
+  test('a tick at 0.40% off entry passes the 0.50% high-lev gate at 200x', async () => {
     const { app } = loadApp();
     const sol = bootSolHigh(app);
     sol.bias  = 'BULLISH';
-    // Put price 0.20% off the suggested entry — too far for the old 0.15
-    // gate, but inside the new 0.30 high-lev gate.
+    // Put price 0.40% off the suggested entry — outside old 0.30 gate,
+    // inside the new 0.50 high-lev gate.
     sol.price = 86;
     sol.tfEntries = {
       '1m': {
         dir: 'bull', entryReady: true, score: 4,
-        fvgZone: { dir: 'bull', lo: 86.16, hi: 86.18, mid: 86.17 },
+        fvgZone: { dir: 'bull', lo: 86.33, hi: 86.35, mid: 86.34 },
       },
     };
-    // Mock placeMexcFuturesOrder so the test stays hermetic — return a
-    // pretend-success without touching the (mock) network.
     const r = await app.scalpMonitorTick(sol);
-    // At 0.30 gate, distPct ≈ 0.20% should pass proximity. The next gate
-    // is cooldown (it's empty so OK), then qty (no calc settings → 1),
-    // then the actual fire — which will hit the placeMexcFuturesOrder
-    // path. The harness's fetch is undefined so that throws/network-errs;
-    // either way, scalpMonitorTick returns fired=true with the result
-    // attached. We just need to check we passed the proximity gate.
-    assert.notEqual(r.reason, 'too-far', `expected to pass 0.30 gate, got reason=${r.reason}, dist=${r.distPct}`);
+    assert.notEqual(r.reason, 'too-far', `expected to pass 0.50 gate, got reason=${r.reason}, dist=${r.distPct}`);
   });
 });

@@ -97,20 +97,20 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /READY/);
   });
 
-  test('SOL @ 200× scalp 1m 0.4% away → NEAR (within 0.5% but outside 0.30% gate)', () => {
+  test('SOL @ 200× scalp 1m 0.4% away → READY (now inside the widened 0.50% gate)', () => {
     const { app } = loadApp();
     const sol = bootLive(app, 200);
     sol.bias = 'BULLISH';
     sol.tfEntries = {
       '1m': {
         dir: 'bull', entryReady: true, score: 4,
-        // FVG mid at ~100.4 → 0.4% above current price 100
+        // FVG mid at ~100.4 → 0.4% above current price 100; inside the new 0.50% gate
         fvgZone: { dir: 'bull', lo: 100.35, hi: 100.45, mid: 100.40 },
       },
     };
     const s = app.getFireStatus(sol);
-    assert.equal(s.state, 'near');
-    assert.match(s.label, /NEAR/);
+    assert.equal(s.state, 'ready');
+    assert.match(s.label, /READY/);
   });
 
   test('SOL @ 200× scalp 1m far → WAITING', () => {

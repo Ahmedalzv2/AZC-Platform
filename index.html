@@ -4728,7 +4728,7 @@
   // SL band, so the wider proximity catches fast-moving 1m setups that the
   // tight 0.15% threshold blows past. Trade-off: entry is up to 0.30% off
   // the structural mid, but the SL absorbs it.
-  const SCALP_PROXIMITY_PCT_HIGH_LEV = 0.30;
+  const SCALP_PROXIMITY_PCT_HIGH_LEV = 0.50;
   function _scalpProximityPct(symbol) {
     return _isHighLeverage(symbol) ? SCALP_PROXIMITY_PCT_HIGH_LEV : SCALP_PROXIMITY_PCT;
   }
@@ -4772,10 +4772,15 @@
     // fit inside the liquidation buffer. Pass-through when leverage < threshold.
     const sug = _highLevLevels(asset, rawSug);
 
-    // HTF agreement: 1m direction must match the asset's HTF bias.
-    const htfDir = _normalizeBiasDir(asset.bias);
-    if (!htfDir)                     return _recordScalpDiag(sym, { fired: false, reason: 'no-htf-bias', sugDir: sug.dir });
-    if (sug.dir !== htfDir)          return _recordScalpDiag(sym, { fired: false, reason: 'htf-disagrees', sugDir: sug.dir, htfDir });
+    // HTF agreement is enforced only for non-high-lev futures lanes.
+    // Trio (200×) is the ultra-trade scalp loop — the 1m FVG signal alone
+    // fires, accepting counter-bias scalps for more total trades. The
+    // mechanical SL/TP at 0.35%/0.70% absorbs the per-trade asymmetry.
+    if (!_isHighLeverage(sym)) {
+      const htfDir = _normalizeBiasDir(asset.bias);
+      if (!htfDir)                   return _recordScalpDiag(sym, { fired: false, reason: 'no-htf-bias', sugDir: sug.dir });
+      if (sug.dir !== htfDir)        return _recordScalpDiag(sym, { fired: false, reason: 'htf-disagrees', sugDir: sug.dir, htfDir });
+    }
 
     // Proximity check — only fire when live price is at the 1m entry. Wider
     // tolerance for high-lev mode because the mechanical SL absorbs the slip.
