@@ -10947,9 +10947,41 @@
   // ═══════════════════════════════════════
   let binanceWS = null;
 
+  // Sub-second kline pipeline. SOL is the only trio asset on Binance —
+  // SILVER and GOLD stay on the 5s MEXC HTTP polling for now (MEXC contract
+  // WS is a follow-up). Each kline tick updates the buffer in place, re-runs
+  // _analyzeKlines, then triggers scalpMonitorTick — no 1s timer wait.
+  function _onWsKline(payload) {
+    if (!payload || !payload.k) return;
+    const symbol = String(payload.s || '').replace('USDT', '');
+    const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
+    if (!asset || !_isFuturesAsset(asset)) return;
+    const cache = asset._tfCache;
+    const hit = cache && cache['1m'];
+    if (!hit || !Array.isArray(hit.kl)) return; // wait for the first HTTP sweep to populate
+    const k = payload.k;
+    const candle = { t: +k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v };
+    const last = hit.kl[hit.kl.length - 1];
+    if (last && last.t === candle.t) hit.kl[hit.kl.length - 1] = candle;
+    else { hit.kl.push(candle); if (hit.kl.length > 60) hit.kl.shift(); }
+    hit.ts = Date.now();
+    hit.src = 'binance-ws';
+    asset.tfEntries = asset.tfEntries || {};
+    asset.tfEntries['1m'] = _analyzeKlines(hit.kl);
+    if (typeof scalpMonitorTick === 'function') {
+      scalpMonitorTick(asset).then(r => {
+        if (r && r.fired) console.log('[mexc scalp 1m · ws]', asset.symbol, r);
+      }).catch(() => {});
+    }
+  }
+
   function initBinanceWebSocket() {
-    const streams = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt', 'suiusdt', 'astrusdt']
-      .map(s => s + '@miniTicker').join('/');
+    const tickerStreams = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt', 'suiusdt', 'astrusdt']
+      .map(s => s + '@miniTicker');
+    // 1m kline stream for SOL (the trio member on Binance). Pushed every ~1s
+    // while the candle is in-flight, plus a final close payload.
+    const klineStreams = ['solusdt@kline_1m'];
+    const streams = [...tickerStreams, ...klineStreams].join('/');
 
     const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
 
@@ -10959,6 +10991,10 @@
       binanceWS.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (msg.stream && msg.stream.endsWith('@kline_1m')) {
+            _onWsKline(msg.data);
+            return;
+          }
           const ticker = msg.data;
           if (!ticker || !ticker.s) return;
 
