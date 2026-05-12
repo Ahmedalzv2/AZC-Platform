@@ -63,15 +63,17 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     assert.ok(Math.abs(actualSlPct - expectedSlPct) < 0.01, `SL should be ~${expectedSlPct}% from entry, got ${actualSlPct.toFixed(3)}%`);
   });
 
-  test('1:2 R:R — TP distance is 2× SL distance at 200×', () => {
+  test('Quick-take TP — targets +7% margin gain at 200× (≈0.035% price)', () => {
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bull', 0.8);
     const out = app._highLevLevels(sol, raw);
-    const slDist = Math.abs(out.entry - out.sl);
-    const tpDist = Math.abs(out.tp - out.entry);
-    assert.ok(Math.abs(tpDist - 2 * slDist) < 0.001, `TP dist (${tpDist}) should ≈ 2× SL dist (${slDist})`);
-    assert.equal(out.rr, 2.0);
+    const slPct = (Math.abs(out.entry - out.sl) / out.entry) * 100;
+    const tpPct = (Math.abs(out.tp - out.entry) / out.entry) * 100;
+    assert.ok(Math.abs(slPct - 0.35) < 0.01, `SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
+    assert.ok(Math.abs(tpPct - 0.035) < 0.005, `TP ≈ 0.035% at 200× + 7% margin, got ${tpPct.toFixed(4)}%`);
+    // R:R is asymmetric — 0.035 / 0.35 = 0.10
+    assert.ok(Math.abs(out.rr - 0.10) < 0.01, `rr ≈ 0.10, got ${out.rr}`);
   });
 
   test('bear setup: SL above entry, TP below', () => {

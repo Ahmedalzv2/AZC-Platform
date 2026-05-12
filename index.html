@@ -4167,18 +4167,27 @@
   // Override SL/TP to mechanical leverage-fit levels. Returns a new sug
   // object (does not mutate input). When leverage < threshold, returns the
   // input unchanged — no behaviour change for SILVER's normal 3× path.
+  // Quick-take target: close at +N% of margin (not price). Matches the
+  // user's observed manual pattern — closing at +2-7% margin per scalp
+  // instead of waiting for the wider 1:2 R:R target. Convert margin% to
+  // price% by dividing by leverage:
+  //   200× + 7% margin = 0.035% price (~$0.14 on a $2 margin position)
+  //   100× + 7% margin = 0.07%  price
+  // The mechanical SL stays wide (0.7 × 100/lev) — accept the asymmetric
+  // R:R; rely on win-rate.
+  const QUICK_TAKE_MARGIN_PCT = 7;
   function _highLevLevels(asset, sug) {
     if (!asset || !sug) return sug;
     const lev = getAssetLeverage(asset.symbol);
     if (lev < LEVERAGE_HIGH_THRESHOLD) return sug;
-    const slPct = (100 / lev) * 0.7;   // e.g. 200× → 0.35%
-    const tpPct = slPct * 2;           // 1:2 R:R — bigger reward per winner, breakeven win-rate drops to 33%
+    const slPct = (100 / lev) * 0.7;             // e.g. 200× → 0.35% price
+    const tpPct = QUICK_TAKE_MARGIN_PCT / lev;   // e.g. 200× + 15% margin → 0.075% price
     const slDist = sug.entry * (slPct / 100);
     const tpDist = sug.entry * (tpPct / 100);
     const sl = sug.dir === 'bull' ? sug.entry - slDist : sug.entry + slDist;
     const tp = sug.dir === 'bull' ? sug.entry + tpDist : sug.entry - tpDist;
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
-    return { ...sug, sl: round(sl), tp: round(tp), rr: 2.0, source: (sug.source || '') + '+highlev' };
+    return { ...sug, sl: round(sl), tp: round(tp), rr: +(tpPct / slPct).toFixed(3), source: (sug.source || '') + '+highlev' };
   }
 
   // Per-asset cooldown so a flickering price around an entry doesn't fire
@@ -4856,7 +4865,10 @@
     // a flat 0.4% otherwise.
     const slPct = _isHighLeverage(symbol) ? (100 / lev) * 0.7 / 100 : 0.004;
     const slDist = price * slPct;
-    const tpDist = slDist * 2; // 1:2 R:R — bigger reward per winner
+    // Quick-take target: +QUICK_TAKE_MARGIN_PCT% of margin (matches the
+    // auto-exec _highLevLevels math above when high-lev).
+    const tpPct = _isHighLeverage(symbol) ? (QUICK_TAKE_MARGIN_PCT / lev) / 100 : 0.004;
+    const tpDist = price * tpPct;
     const entry = price;
     const sl = dir === 'LONG' ? price - slDist : price + slDist;
     const tp = dir === 'LONG' ? price + tpDist : price - tpDist;
