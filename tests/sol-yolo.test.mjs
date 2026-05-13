@@ -107,9 +107,9 @@ describe('_mexcContractSymbol — any asset with a MEXC contract is eligible', (
     assert.equal(app._mexcContractSymbol({ symbol: 'ASTR' }),   'ASTR_USDT');
   });
 
-  test('GOLD maps to the tokenized-gold contract (XAUT_USDT)', () => {
+  test('GOLD maps to GOLD_USDT on MEXC', () => {
     const { app } = loadApp();
-    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), 'XAUT_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), 'GOLD_USDT');
   });
 
   test('US100 returns null (CFD-only, not on MEXC)', () => {
