@@ -3929,7 +3929,25 @@
   function _persistLiveTradingState() {
     try { localStorage.setItem('ict_live_trading_v2', JSON.stringify({ enabled: _liveTradingEnabled, dryRun: _liveTradingDryRun })); } catch (e) {}
   }
-  function setLiveTradingEnabled(on) { _liveTradingEnabled = !!on; _persistLiveTradingState(); _updateLiveTradingBadge(); }
+  function setLiveTradingEnabled(on) {
+    const wasOff = !_liveTradingEnabled;
+    _liveTradingEnabled = !!on;
+    _persistLiveTradingState();
+    _updateLiveTradingBadge();
+    if (_liveTradingEnabled && wasOff) {
+      // Pre-warm contract-detail for every futures auto-exec asset so the
+      // FIRST fire doesn't pay the ~100-200ms /contract/detail lookup. The
+      // call goes through MEXC_PROXIES which is the slow path; warming once
+      // up-front means every subsequent fire reads the cached scale instead.
+      try {
+        const eligible = (typeof ASSETS !== 'undefined') ? ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a)) : [];
+        for (const a of eligible) {
+          const cs = _mexcContractSymbol(a);
+          if (cs) getMexcContractDetail(cs).catch(() => {});
+        }
+      } catch (e) {}
+    }
+  }
   function setLiveTradingDryRun(on)   { _liveTradingDryRun = !!on;   _persistLiveTradingState(); _updateLiveTradingBadge(); }
 
   function getMexcApiKey()    { try { return localStorage.getItem('ict_mexc_api_key')    || ''; } catch (e) { return ''; } }
@@ -4118,7 +4136,7 @@
   // Gated on _liveTradingEnabled — no point thrashing the API when nothing
   // can fire anyway.
   // ─────────────────────────────────────────────────────────────────────
-  const FAST_REFRESH_INTERVAL_MS = 5000;
+  const FAST_REFRESH_INTERVAL_MS = 2000;
 
   async function _fastRefreshAssetEntry(asset) {
     if (!asset || !_isFuturesAsset(asset)) return { refreshed: false, reason: 'not-futures' };
@@ -4146,16 +4164,13 @@
   async function _fastRefreshTick() {
     if (!_liveTradingEnabled) return;
     if (typeof ASSETS === 'undefined') return;
-    // Any auto-exec eligible asset (futures-mode + MEXC contract) gets the
-    // 5s 1m-kline pull. Low-lev assets need this too — a stale 30s entry
-    // zone can drift past current price by the time auto-exec evaluates
-    // proximity. Sequential to avoid stampeding the upstream APIs (one
-    // fetch every ~50ms across the auto-exec set).
-    for (const a of ASSETS) {
-      if (!_isFuturesAsset(a)) continue;
-      if (!_mexcContractSymbol(a)) continue;
-      try { await _fastRefreshAssetEntry(a); } catch (e) {}
-    }
+    // Refresh all auto-exec eligible assets in PARALLEL — the trio of 1m
+    // klines are independent fetches against different endpoints. Sequential
+    // was leaking ~200ms of evaluation skew across the trio per cycle (SOL
+    // saw its FVG ~200ms before GOLD on every tick). MEXC public klines is
+    // 20 req/s rate-limited; trio at 2s interval = 1.5 req/s, well under.
+    const eligible = ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a));
+    await Promise.all(eligible.map(a => _fastRefreshAssetEntry(a).catch(() => {})));
   }
 
   const LEVERAGE_HIGH_THRESHOLD = 100;
@@ -5810,7 +5825,8 @@
           //     scalp path with mechanical SL can).
           if (_mexcContractSymbol(asset) && _liveTradingEnabled
               && getScalpTf(asset.symbol) === 'htf'
-              && !_isHighLeverage(asset.symbol)) {
+              && !_isHighLeverage(asset.symbol)
+              && !_isPendingFire(asset.symbol)) {
             const tp = asset.tp || asset.tp1 || 0;
             const lev = getAssetLeverage(asset.symbol);
             const qty = computeMexcOrderQty(asset, asset.entry, asset.sl, lev) || 1;
@@ -5818,6 +5834,7 @@
             // Fire-and-forget — don't block the alert overlay on the round-trip.
             placeMexcFuturesOrder(asset, side, asset.entry, asset.sl, tp, qty, lev)
               .then(r => {
+                if (r && (r.sent || r.dryRun)) _markPendingFire(asset.symbol);
                 console.log('[mexc auto-exec htf]', asset.symbol, r);
                 try {
                   if (r.dryRun) showToast(`🧪 ${asset.symbol} ENTER NOW · [DRY-RUN] logged`, 'ok');
