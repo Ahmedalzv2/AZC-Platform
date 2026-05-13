@@ -281,7 +281,11 @@ describe('scalpMonitorTick', () => {
     assert.ok(Math.abs(body.takeProfitPrice - 75.62) < 0.02, `tp ${body.takeProfitPrice}`);
   });
 
-  test('SECOND fire on the same setup also fires (re-entry always allowed)', async () => {
+  test('SECOND fire within pending-fire lock is BLOCKED (closes the duplicate-fire race)', async () => {
+    // Real-world bug: user ended up with 12 stacked SILVER trades because
+    // _positionsTick (5s poll) didn't reflect the new position before the
+    // next scalp tick fired. The pending-fire lock blocks until either the
+    // poll catches up or PENDING_FIRE_LOCK_MS elapses.
     const ctx = loadApp({
       storage: {
         journal: '[]',
@@ -293,8 +297,32 @@ describe('scalpMonitorTick', () => {
     ctx.app.loadLiveTradingState();
     const a = silverWithBear1m();
     const first = await ctx.app.scalpMonitorTick(a);
-    assert.equal(first.fired, true);
+    assert.equal(first.fired, true, 'first fire goes through');
+    // _openPositions still empty here — exactly the race the old code lost.
+    assert.equal(Object.keys(ctx.app._openPositions).length, 0);
     const second = await ctx.app.scalpMonitorTick(a);
-    assert.equal(second.fired, true);
+    assert.equal(second.fired, false, 'second fire blocked by pending lock');
+    assert.equal(second.reason, 'in-position');
+    assert.equal(second.blockingSym, 'SILVER');
+  });
+
+  test('pending-fire lock expires after PENDING_FIRE_LOCK_MS', async () => {
+    const ctx = loadApp({
+      storage: {
+        journal: '[]',
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+    });
+    ctx.app.loadLiveTradingState();
+    const a = silverWithBear1m();
+    await ctx.app.scalpMonitorTick(a);
+    assert.equal(ctx.app._isPendingFire('SILVER'), true);
+    // Backdate the lock past expiry — _isPendingFire should evict it
+    ctx.app._pendingFires.SILVER = Date.now() - ctx.app.PENDING_FIRE_LOCK_MS - 1000;
+    assert.equal(ctx.app._isPendingFire('SILVER'), false);
+    const r = await ctx.app.scalpMonitorTick(a);
+    assert.equal(r.fired, true, 'fires again after lock expires');
   });
 });
