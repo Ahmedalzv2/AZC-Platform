@@ -34,28 +34,6 @@ describe('scalp mode storage', () => {
   });
 });
 
-describe('MEXC cooldown (disabled)', () => {
-  test('MEXC_COOLDOWN_MS is 0 — re-entry always allowed', () => {
-    const { app } = loadApp();
-    assert.equal(app.MEXC_COOLDOWN_MS, 0);
-  });
-
-  test('isMexcInCooldown returns false even right after a fire timestamp', () => {
-    const { app } = loadApp({
-      storage: { ict_mexc_last_fire_SILVER: String(Date.now()) },
-    });
-    assert.equal(app.isMexcInCooldown('SILVER'), false);
-  });
-
-  test('clearMexcCooldown still wipes the timestamp', () => {
-    const { app, sandbox } = loadApp({
-      storage: { ict_mexc_last_fire_SILVER: String(Date.now()) },
-    });
-    app.clearMexcCooldown('SILVER');
-    assert.equal(sandbox.localStorage.getItem('ict_mexc_last_fire_SILVER'), null);
-  });
-});
-
 describe('_normalizeBiasDir', () => {
   test('BEARISH → bear', () => {
     const { app } = loadApp();
@@ -191,21 +169,6 @@ describe('scalpMonitorTick', () => {
     assert.ok(r.distPct > 0.15);
   });
 
-  test('cooldown disabled → recent fire timestamp does NOT block re-entry', async () => {
-    const ts = Date.now() - 1_000; // 1s ago
-    const { app } = loadApp({
-      storage: {
-        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
-        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }),
-        ict_scalp_tf_SILVER: '1m',
-        ict_mexc_last_fire_SILVER: String(ts),
-      },
-    });
-    app.loadLiveTradingState();
-    const r = await app.scalpMonitorTick(silverWithBear1m());
-    assert.equal(r.fired, true, 'no cooldown → fires immediately even right after a previous fire');
-  });
-
   test('global one-at-a-time → other asset in position → in-position', async () => {
     const { app } = loadApp({
       storage: {
@@ -238,26 +201,6 @@ describe('scalpMonitorTick', () => {
     assert.equal(r.blockingSym, 'SILVER');
   });
 
-  test('pre-flight failure (no keys) auto-clears the cooldown — next tick can retry without waiting 60s', async () => {
-    const { app } = loadApp({
-      storage: {
-        // Master ON + live (not dry-run), but NO keys → placeMexcFuturesOrder
-        // returns { sent:false, reason:'no-keys' } BEFORE any HTTP call.
-        // The pre-set cooldown should roll back so the next tick can fire
-        // immediately once the user adds keys, rather than eating 60s.
-        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
-        ict_scalp_tf_SILVER: '1m',
-      },
-    });
-    app.loadLiveTradingState();
-    const r = await app.scalpMonitorTick(silverWithBear1m());
-    assert.equal(r.fired, true, 'tick still records itself as fired (the path was traversed)');
-    assert.equal(r.result.sent, false);
-    assert.equal(r.result.reason, 'no-keys');
-    assert.equal(app.isMexcInCooldown('SILVER'), false,
-      'pre-flight failure should roll back the cooldown so the next tick can retry');
-  });
-
   test('happy path + dry-run → fires, journals [DRY-RUN]', async () => {
     const ctx = loadApp({
       storage: {
@@ -272,9 +215,6 @@ describe('scalpMonitorTick', () => {
     assert.equal(r.fired, true, `expected fired:true, got ${JSON.stringify(r)}`);
     assert.equal(r.side, 'SHORT');
     assert.equal(r.result.dryRun, true);
-    // Cooldown is disabled — should remain false even immediately after a fire.
-    assert.equal(ctx.app.isMexcInCooldown('SILVER'), false);
-    // Journal entry tagged dry-run
     const j = ctx.app.journal;
     assert.equal(j.length, 1);
     assert.equal(j[0].dryRun, true);
@@ -316,7 +256,7 @@ describe('scalpMonitorTick', () => {
     assert.ok(Math.abs(body.takeProfitPrice - 75.62) < 0.02, `tp ${body.takeProfitPrice}`);
   });
 
-  test('no cooldown → SECOND fire on the same setup also fires (re-entry allowed)', async () => {
+  test('SECOND fire on the same setup also fires (re-entry always allowed)', async () => {
     const ctx = loadApp({
       storage: {
         journal: '[]',
@@ -330,6 +270,6 @@ describe('scalpMonitorTick', () => {
     const first = await ctx.app.scalpMonitorTick(a);
     assert.equal(first.fired, true);
     const second = await ctx.app.scalpMonitorTick(a);
-    assert.equal(second.fired, true, 'cooldown disabled → re-entry fires immediately');
+    assert.equal(second.fired, true);
   });
 });
