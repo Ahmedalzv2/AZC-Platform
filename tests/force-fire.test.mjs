@@ -102,16 +102,6 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.equal(after, before + 1, 'one [DRY-RUN] entry appended');
   });
 
-  test('cooldown disabled → force-fire never arms a blocking cooldown', async () => {
-    const { app, sandbox } = loadApp();
-    const s = bootSilverLive(app);
-    s.price = 80; s.bias = 'BULLISH';
-    sandbox.localStorage.setItem('ict_calc_account', '10');
-    sandbox.localStorage.setItem('ict_calc_risk', '100');
-    assert.equal(app.isMexcInCooldown('SILVER'), false, 'pre-condition: not in cooldown');
-    await app.forceFireAsset('SILVER');
-    assert.equal(app.isMexcInCooldown('SILVER'), false, 'cooldown disabled → still false post-fire');
-  });
 });
 
 describe('_fastRefreshTick covers low-lev futures assets too', () => {

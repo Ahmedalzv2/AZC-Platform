@@ -2437,7 +2437,7 @@
     renderSessionTimeline(gst, session);
 
     // Live Trading modal: keep the diagnostic panels (Scalp Tick Diag,
-    // Last Fire, conn-test, cooldown countdowns) refreshed every second
+    // Last Fire, conn-test) refreshed every second
     // while open. Skips when the user is actively interacting with a
     // dropdown/input so we don't yank focus mid-action.
     try { _refreshLiveTradingModalIfOpen(); } catch (e) {}
@@ -4190,57 +4190,6 @@
     return { ...sug, sl: round(sl), tp: round(tp), rr: +(tpPct / slPct).toFixed(3), source: (sug.source || '') + '+highlev' };
   }
 
-  // Cooldown disabled per user request — re-enter immediately when conditions
-  // allow. Safety still comes from the global one-at-a-time gate (no fire
-  // while a position is open) and the proximity gate. Timestamp tracking
-  // remains for "Last Fire" diagnostics.
-  const MEXC_COOLDOWN_MS = 0;
-  const _lastMexcFireMs = {};   // in-memory; reloads pick up from localStorage
-  function _mexcCooldownKey(sym) { return 'ict_mexc_last_fire_' + String(sym || ''); }
-  function _getLastMexcFireMs(sym) {
-    if (_lastMexcFireMs[sym]) return _lastMexcFireMs[sym];
-    try {
-      const v = parseInt(localStorage.getItem(_mexcCooldownKey(sym)) || '0', 10);
-      _lastMexcFireMs[sym] = isFinite(v) ? v : 0;
-      return _lastMexcFireMs[sym];
-    } catch (e) { return 0; }
-  }
-  function _setLastMexcFireMs(sym, ts) {
-    _lastMexcFireMs[sym] = ts;
-    try { localStorage.setItem(_mexcCooldownKey(sym), String(ts)); } catch (e) {}
-  }
-  function isMexcInCooldown(sym, nowMs) {
-    const now = (typeof nowMs === 'number') ? nowMs : Date.now();
-    const last = _getLastMexcFireMs(sym);
-    return last > 0 && (now - last) < MEXC_COOLDOWN_MS;
-  }
-  function clearMexcCooldown(sym) {
-    _lastMexcFireMs[sym] = 0;
-    try { localStorage.removeItem(_mexcCooldownKey(sym)); } catch (e) {}
-  }
-
-  // The scalp tick and force-fire pre-set the cooldown BEFORE the API
-  // round-trip, so a slow in-flight order can't double-fire. But if the
-  // order never actually reached MEXC (sign failed, no keys/worker, bad
-  // side, master flipped off mid-flight), eating a 60s lock for nothing
-  // just blocks the next legitimate retry. This rolls back the cooldown
-  // for failures where we know no request hit the exchange.
-  //
-  // Conservative: keep cooldown for network errors (request may have
-  // landed even if the response didn't come back) and MEXC rejections
-  // (their server saw the request and we should not hammer it).
-  function _isPreFlightFailure(r) {
-    if (!r) return false;
-    if (r.sent === true) return false;
-    if (r.dryRun === true) return false;
-    return r.reason === 'no-keys'
-        || r.reason === 'no-worker'
-        || r.reason === 'sign-failed'
-        || r.reason === 'bad-side'
-        || r.reason === 'master-off'
-        || r.reason === 'unsupported-symbol';
-  }
-
   // HMAC-SHA256(secret, message) → lowercase hex via SubtleCrypto.
   async function _hmacSha256Hex(secret, message) {
     const c = (typeof crypto !== 'undefined' && crypto.subtle) ? crypto : null;
@@ -4777,7 +4726,6 @@
   //   3. _suggestedEntryForTf returned a clean 1m setup (FVG present)
   //   4. 1m direction matches HTF bias (no counter-trend scalps)
   //   5. live price within ARMED proximity of the 1m entry (0.15%)
-  //   6. asset not in 5-min cooldown from a previous fire
   // Returns the placeMexcFuturesOrder result for visibility, or a
   // skip-shape { fired:false, reason } when any gate fails.
   // ─────────────────────────────────────────────────────────────────────
@@ -4854,22 +4802,11 @@
     const blockingSym = _findBlockingPosition();
     if (blockingSym) return _recordScalpDiag(sym, { fired: false, reason: 'in-position', blockingSym });
 
-    // Cooldown — once any order fires (HTF or scalp) for this asset, no more
-    // for MEXC_COOLDOWN_MS regardless of which path tried to fire.
-    if (isMexcInCooldown(sym))       return _recordScalpDiag(sym, { fired: false, reason: 'cooldown' });
-
     const side = sug.dir === 'bull' ? 'LONG' : 'SHORT';
     const lev = getAssetLeverage(sym);
     const qty = computeMexcOrderQty(asset, sug.entry, sug.sl, lev) || 1;
 
-    // Pre-record cooldown so a slow round-trip doesn't fire twice. If
-    // placeMexcFuturesOrder returns a hard "skip" (e.g. master flipped
-    // off mid-flight), we'd still hold cooldown — that's safer than the
-    // alternative.
-    _setLastMexcFireMs(sym, Date.now());
-
     const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
-    if (_isPreFlightFailure(r)) clearMexcCooldown(sym);
     _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
     return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
@@ -4887,7 +4824,7 @@
   }
 
   // Manual force-fire — the explicit "I want it to fire NOW" button.
-  // Skips every gate (proximity, cooldown, HTF agreement) except the master
+  // Skips every gate (proximity, HTF agreement) except the master
   // switch and contract eligibility. Builds the entry/SL/TP fresh from the
   // CURRENT live price (not the stale FVG mid) so the fill is realistic:
   //   bullish bias → LONG, mechanical SL = current × (1 - margin),
@@ -4897,7 +4834,7 @@
   // low-lev mode uses 0.4% as a sensible default tight stop.
   //
   // Always writes a _lastFireResult entry so the modal panel shows what
-  // happened. Pre-sets the cooldown so the auto-exec doesn't immediately
+  // happened. The auto-exec doesn't immediately
   // double-fire on top of this manual one.
   async function forceFireAsset(symbol, opts) {
     opts = opts || {};
@@ -4927,15 +4864,12 @@
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
     const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
     const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev };
-    _setLastMexcFireMs(symbol, Date.now()); // pre-record so auto-exec doesn't dogpile
     let r;
     try {
       r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), round(tp), qty, lev, { force: true });
     } catch (e) {
-      clearMexcCooldown(symbol);
       return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });
     }
-    if (_isPreFlightFailure(r)) clearMexcCooldown(symbol);
     return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
   }
 
@@ -4970,7 +4904,7 @@
   //   ready    🟢  — proximity met, will auto-fire next tick
   //   near     🟡  — within 0.5%, getting close
   //   waiting  ⚪  — out of proximity (gives the distance)
-  //   blocked  🔴  — master off / no contract / cooldown / no price / no setup
+  //   blocked  🔴  — master off / no contract / no price / no setup
   //   manual    —  — asset is spot-mode, won't auto-trade
   function getFireStatus(asset) {
     if (!asset) return { state: 'blocked', color: 'var(--bear)',     label: 'NO ASSET',    detail: '' };
@@ -5013,27 +4947,6 @@
     }
     if (isMarketClosed && isMarketClosed(asset)) {
       return { state: 'blocked', color: 'var(--liq)',      label: '🔒 CLOSED',   detail: 'Market closed for this asset.' };
-    }
-    if (isMexcInCooldown && isMexcInCooldown(asset.symbol)) {
-      const leftMs = Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs(asset.symbol)));
-      const leftS = Math.ceil(leftMs / 1000);
-      const lf = (typeof _lastFireResult !== 'undefined') ? _lastFireResult[asset.symbol] : null;
-      // Surface the outcome of the fire that triggered this cooldown — was
-      // it a real order, a dry-run, or did it fail? "Cooldown" alone makes
-      // failed fires look like throttling.
-      if (lf && lf.sent) {
-        return { state: 'blocked', color: 'var(--bull)', label: `⏳ COOLDOWN · ORDER SENT`,
-                 detail: `${lf.side || ''} ${lf.qty || ''} @ $${lf.entry || '?'} · ${lf.leverage || '?'}× · locked for ${leftS}s.` };
-      }
-      if (lf && lf.dryRun) {
-        return { state: 'blocked', color: 'var(--liq)', label: `⏳ COOLDOWN · [DRY-RUN]`,
-                 detail: `Dry-run logged for ${lf.side || ''} ${lf.qty || ''} @ $${lf.entry || '?'} · locked for ${leftS}s.` };
-      }
-      if (lf && lf.reason) {
-        return { state: 'blocked', color: 'var(--bear)', label: `⚠ LAST FIRE FAILED · ${lf.reason}`,
-                 detail: `${lf.error || ''} Cooldown locked for ${leftS}s — tap Clear to retry now.` };
-      }
-      return { state: 'blocked', color: 'var(--liq)', label: '⏳ COOLDOWN', detail: `Locked for ${leftS}s after the last fire.` };
     }
     if (!asset.price) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO PRICE',  detail: 'Awaiting first price tick.' };
     // Pick the entry the auto-exec path would actually use. Scalp 1m uses
@@ -5120,8 +5033,6 @@
     const spec = _leverageSpec(sym);
     const lev  = getAssetLeverage(sym);
     const scalp = getScalpTf(sym);
-    const inCD = isMexcInCooldown(sym);
-    const cdLeftMs = inCD ? Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs(sym))) : 0;
     const hiLev = lev >= LEVERAGE_HIGH_THRESHOLD;
     // Dropdown options — full leverage ladder when the asset's cap allows
     // it, trimmed to the cap when it doesn't.
@@ -5158,11 +5069,6 @@
             ? '⚡ <strong>Scalp 1m active.</strong> Fires on the per-TF 1m FVG/OB setup, only when 1m direction matches HTF bias.'
             : 'HTF mode — fires on the main asset entry/SL/TP, killzone-timed.'}
           ${survivalHint}
-        </div>
-        <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${sym} cooldown</div>
-        <div style="display:flex;align-items:center;gap:10px;">
-          <span style="font-size:11px;color:${inCD?'var(--liq)':'var(--text-mute)'};">${inCD ? '⏳ Locked for ' + Math.ceil(cdLeftMs/1000) + 's' : '✓ Ready to fire'}</span>
-          ${inCD ? `<button onclick="clearMexcCooldown('${sym}');openLiveTradingModal();" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:3px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">Clear</button>` : ''}
         </div>
       </div>`;
   }
@@ -5329,7 +5235,7 @@
   // each MEXC-eligible asset on its most recent tick. The whole point: when
   // the user says "good call but missed it", they need to see WHY. The
   // panel surfaces the skip reason + the distPct gap so the next adjustment
-  // is obvious (proximity? cooldown? HTF disagrees?).
+  // is obvious (proximity? HTF disagrees?).
   function _renderScalpDiagHTML() {
     if (typeof ASSETS === 'undefined') return '';
     const eligible = ASSETS.filter(a => _mexcContractSymbol && _mexcContractSymbol(a));
@@ -5344,7 +5250,6 @@
       'htf-disagrees':      '⚠ 1m vs HTF disagrees',
       'no-price':           '⟳ awaiting price',
       'too-far':            '· out of proximity',
-      'cooldown':           '⏳ cooldown',
     };
     const rows = eligible.map(a => {
       const d = _scalpDiag[a.symbol];
@@ -5357,7 +5262,6 @@
       const reasonColor = d.fired ? 'var(--bull)'
         : d.reason === 'too-far' ? 'var(--liq)'
         : d.reason === 'htf-disagrees' ? 'var(--bear)'
-        : d.reason === 'cooldown' ? 'var(--liq)'
         : 'var(--text-mute)';
       // Detail column: distPct vs threshold for too-far; sugDir vs htfDir
       // for htf-disagrees; otherwise empty.
@@ -5487,7 +5391,7 @@
           ℹ Auto-execution is wired for <strong style="color:var(--text);">SILVER + SOL</strong>.
           HTF mode fires on the main entry; Scalp 1m fires on the per-TF
           1m FVG/OB setup. Both require 1m or HTF direction to match the
-          asset's HTF bias, and obey a 5-min cooldown so a flickering
+          asset's HTF bias so a flickering
           price can't fire repeated orders. SOL covers weekends when SILVER
           is closed (200× YOLO test — see kill-switch). Other assets stay
           manual (use 🔗 Open on MEXC).
@@ -5818,25 +5722,19 @@
 
           // ── AUTO-EXECUTE — any contract-supported asset, HTF path ───
           // Asset is eligible for auto-exec when _mexcContractSymbol returns
-          // truthy (currently SILVER + SOL — see MEXC_CONTRACT_MAP). Each
-          // uses its own per-asset leverage from getAssetLeverage. Skips:
+          // truthy. Skips:
           //   - master switch off (also enforced inside placeMexcFutures)
           //   - scalp mode is on for this asset (scalp monitor owns it)
-          //   - in cooldown from a recent fire (HTF or scalp)
           //   - asset is at high leverage (HTF SLs are always wider than the
           //     liquidation buffer at ≥ 100× — HTF can't survive, only the
-          //     scalp path with mechanical SL can). For SOL@200x specifically
-          //     the scalp path is the auto-default — see getScalpTf.
+          //     scalp path with mechanical SL can).
           if (_mexcContractSymbol(asset) && _liveTradingEnabled
               && getScalpTf(asset.symbol) === 'htf'
-              && !_isHighLeverage(asset.symbol)
-              && !isMexcInCooldown(asset.symbol)) {
+              && !_isHighLeverage(asset.symbol)) {
             const tp = asset.tp || asset.tp1 || 0;
             const lev = getAssetLeverage(asset.symbol);
             const qty = computeMexcOrderQty(asset, asset.entry, asset.sl, lev) || 1;
             const side = String(asset.bias || '').toUpperCase() === 'BEARISH' ? 'SHORT' : 'LONG';
-            // Pre-record cooldown so a slow round-trip doesn't fire twice.
-            _setLastMexcFireMs(asset.symbol, Date.now());
             // Fire-and-forget — don't block the alert overlay on the round-trip.
             placeMexcFuturesOrder(asset, side, asset.entry, asset.sl, tp, qty, lev)
               .then(r => {
