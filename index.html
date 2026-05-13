@@ -4582,6 +4582,59 @@
     return true;
   }
 
+  // Open limit orders waiting to fill on MEXC. Populated when
+  // placeMexcFuturesOrder returns sent:true with a parseable orderId.
+  // Used to cancel stale pendings when the 1m setup invalidates (direction
+  // flips) before the limit fills — without this the order sits on MEXC's
+  // book and fills on dead logic if price comes back.
+  // { [sym]: { orderId, side, contractSym, ts } }
+  const _pendingOrders = {};
+  function _extractOrderId(json) {
+    if (!json) return null;
+    const d = json.data;
+    if (typeof d === 'string' || typeof d === 'number') return String(d);
+    if (d && (d.orderId || d.order_id)) return String(d.orderId || d.order_id);
+    return null;
+  }
+  function _markPendingOrder(sym, info) {
+    if (sym && info && info.orderId) _pendingOrders[sym] = { ...info, ts: Date.now() };
+  }
+  function _clearPendingOrder(sym) { if (sym) delete _pendingOrders[sym]; }
+
+  async function cancelMexcOrder(contractSym, orderId) {
+    if (!contractSym || !orderId) return { ok: false, error: 'missing-args' };
+    const apiKey = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
+    if (!workerUrl) return { ok: false, error: 'no-worker' };
+    const reqTime = String(Date.now());
+    const paramJson = JSON.stringify([String(orderId)]);
+    let signature;
+    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson); }
+    catch (e) { return { ok: false, error: 'sign-failed', detail: String((e && e.message) || e) }; }
+    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/cancel';
+    let resp, json;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ApiKey': apiKey,
+          'Request-Time': reqTime,
+          'Signature': signature,
+        },
+        body: paramJson,
+      });
+      const txt = await resp.text();
+      try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
+    } catch (e) {
+      return { ok: false, error: 'network', detail: String((e && e.message) || e) };
+    }
+    const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
+    return { ok, status: resp.status, response: json };
+  }
+
   // One-at-a-time gate. Returns the bare symbol that blocks `targetSym` from
   // firing, or null when nothing's in the way.
   //
@@ -4891,6 +4944,22 @@
     const tfData = asset.tfEntries && asset.tfEntries['1m'];
     if (!tfData || tfData.error)     return _recordScalpDiag(sym, { fired: false, reason: 'no-1m-data' });
     const rawSug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, '1m') : null;
+
+    // Cancel-on-invalid: a previously-placed limit is still resting on MEXC.
+    // If the fresh 1m setup flipped direction, that limit will fill on dead
+    // logic if price comes back. Cancel it before evaluating the new side.
+    // Fire-and-forget so the tick isn't blocked by the cancel round-trip.
+    const pending = _pendingOrders[sym];
+    if (pending && rawSug && rawSug.dir && pending.side) {
+      const pendingDir = pending.side === 'LONG' ? 'bull' : 'bear';
+      if (rawSug.dir !== pendingDir) {
+        const oid = pending.orderId;
+        const csym = pending.contractSym;
+        _clearPendingOrder(sym);
+        Promise.resolve(cancelMexcOrder(csym, oid)).catch(() => {});
+      }
+    }
+
     if (!rawSug)                     return _recordScalpDiag(sym, { fired: false, reason: 'no-1m-setup' });
     // High-leverage survival mode: rewrite SL/TP to mechanical levels that
     // fit inside the liquidation buffer. Pass-through when leverage < threshold.
@@ -4925,6 +4994,10 @@
 
     const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
     if (r && (r.sent || r.dryRun)) _markPendingFire(sym);
+    if (r && r.sent) {
+      const oid = _extractOrderId(r.response);
+      if (oid) _markPendingOrder(sym, { orderId: oid, side, contractSym: _mexcContractSymbol(asset) });
+    }
     _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
     return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }

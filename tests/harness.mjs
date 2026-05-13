@@ -77,6 +77,8 @@ const EXPORTS = [
   '_classifyConnTest', '_MEXC_FIX_HINTS',
   'forceFireAsset', '_recordFireResult', '_refreshLiveTradingModalIfOpen',
   '_markPendingFire', '_isPendingFire', 'PENDING_FIRE_LOCK_MS',
+  '_pendingOrders', '_markPendingOrder', '_clearPendingOrder',
+  '_extractOrderId', 'cancelMexcOrder',
   'getFireStatus',
   'fetchMexcOpenPositions', '_positionsTick', 'closeMexcPosition', 'POSITIONS_REFRESH_INTERVAL_MS',
   '_profitGuardian', 'BREAK_EVEN_TRIGGER_PCT', 'BREAK_EVEN_CLOSE_PCT',

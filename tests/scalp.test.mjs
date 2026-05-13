@@ -282,6 +282,96 @@ describe('scalpMonitorTick', () => {
     assert.ok(Math.abs(body.takeProfitPrice - 75.55) < 0.02, `tp ${body.takeProfitPrice}`);
   });
 
+  test('after live fire, _pendingOrders is populated with orderId/side/contractSym', async () => {
+    const ctx = loadApp({
+      storage: {
+        journal: '[]',
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_mexc_worker_url: 'https://my.workers.dev',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+      fetch: async (url) => {
+        const u = String(url);
+        if (u.includes('/contract/detail')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ data: { priceScale: 4, volScale: 2, minVol: 0.01 } }) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, code: 0, data: { orderId: 'limit-42' } }) };
+      },
+    });
+    ctx.app.loadLiveTradingState();
+    await ctx.app.scalpMonitorTick(silverWithBear1m());
+    const p = ctx.app._pendingOrders.SILVER;
+    assert.ok(p, 'expected _pendingOrders.SILVER to be set');
+    assert.equal(p.orderId, 'limit-42');
+    assert.equal(p.side, 'SHORT');
+    assert.equal(p.contractSym, 'SILVER_USDT');
+  });
+
+  test('next tick with flipped direction cancels the stale pending limit', async () => {
+    const calls = [];
+    const ctx = loadApp({
+      storage: {
+        journal: '[]',
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_mexc_worker_url: 'https://my.workers.dev',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init });
+        if (String(url).includes('/contract/detail')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ data: { priceScale: 4, volScale: 2, minVol: 0.01 } }) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, code: 0, data: { orderId: 'limit-99' } }) };
+      },
+    });
+    ctx.app.loadLiveTradingState();
+    // First tick: bear setup fires a SHORT limit, pending stored.
+    await ctx.app.scalpMonitorTick(silverWithBear1m());
+    assert.equal(ctx.app._pendingOrders.SILVER.side, 'SHORT');
+    // Second tick: 1m flipped bull. The pending SHORT is stale → cancel.
+    const bullAsset = {
+      symbol: 'SILVER', bias: 'BULLISH', price: 75.65, grade: 'b',
+      tfEntries: { '1m': { dir: 'bull', fvgZone: { dir: 'bull', lo: 75.55, mid: 75.65, hi: 75.75 } } },
+    };
+    await ctx.app.scalpMonitorTick(bullAsset);
+    // Let the fire-and-forget cancel fetch drain.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const cancels = calls.filter((c) => c.url.includes('/order/cancel'));
+    assert.equal(cancels.length, 1, `expected 1 cancel call, got ${cancels.length}`);
+    assert.equal(JSON.parse(cancels[0].init.body)[0], 'limit-99');
+    assert.equal(ctx.app._pendingOrders.SILVER, undefined, 'pending cleared after cancel');
+  });
+
+  test('next tick with same direction does NOT cancel the pending limit', async () => {
+    const calls = [];
+    const ctx = loadApp({
+      storage: {
+        journal: '[]',
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_mexc_worker_url: 'https://my.workers.dev',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+      fetch: async (url) => {
+        calls.push({ url: String(url) });
+        if (String(url).includes('/contract/detail')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ data: { priceScale: 4, volScale: 2, minVol: 0.01 } }) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, code: 0, data: { orderId: 'limit-7' } }) };
+      },
+    });
+    ctx.app.loadLiveTradingState();
+    await ctx.app.scalpMonitorTick(silverWithBear1m());
+    await ctx.app.scalpMonitorTick(silverWithBear1m()); // same SHORT setup
+    await new Promise((r) => setImmediate(r));
+    const cancels = calls.filter((c) => c.url.includes('/order/cancel'));
+    assert.equal(cancels.length, 0, 'same direction must not trigger cancel');
+    assert.equal(ctx.app._pendingOrders.SILVER.side, 'SHORT', 'pending still tracked');
+  });
+
   test('SECOND fire within pending-fire lock is BLOCKED (closes the duplicate-fire race)', async () => {
     // Real-world bug: user ended up with 12 stacked SILVER trades because
     // _positionsTick (5s poll) didn't reflect the new position before the
