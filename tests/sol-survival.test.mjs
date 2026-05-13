@@ -53,12 +53,12 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     assert.equal(out.source, 'fvg-edge', 'no +highlev tag below threshold');
   });
 
-  test('overrides SL to liquidation buffer × 0.7 at 200× (≈ 0.35%)', () => {
+  test('overrides SL to liquidation buffer × 0.4 at 200× (≈ 0.20%)', () => {
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bull', 0.8); // structural SL = 0.8% — way wider than buffer
     const out = app._highLevLevels(sol, raw);
-    const expectedSlPct = (100 / 200) * 0.7; // 0.35
+    const expectedSlPct = (100 / 200) * 0.4; // 0.20
     const actualSlPct = ((SOL_ENTRY - out.sl) / SOL_ENTRY) * 100;
     assert.ok(Math.abs(actualSlPct - expectedSlPct) < 0.01, `SL should be ~${expectedSlPct}% from entry, got ${actualSlPct.toFixed(3)}%`);
   });
@@ -67,16 +67,17 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     // QUICK_TAKE_NET_MARGIN_PCT = 10 (net of fees).
     // Round-trip fee = (0.02 + 0.06) × 200 = 16% margin.
     // Gross TP = 10 + 16 = 26% margin = 0.13% price at 200×.
+    // SL at 0.4 × buffer = 0.20% price.
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bull', 0.8);
     const out = app._highLevLevels(sol, raw);
     const slPct = (Math.abs(out.entry - out.sl) / out.entry) * 100;
     const tpPct = (Math.abs(out.tp - out.entry) / out.entry) * 100;
-    assert.ok(Math.abs(slPct - 0.35) < 0.01, `SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
+    assert.ok(Math.abs(slPct - 0.20) < 0.01, `SL ≈ 0.20% at 200×, got ${slPct.toFixed(3)}%`);
     assert.ok(Math.abs(tpPct - 0.13) < 0.005, `gross TP ≈ 0.13% at 200×, got ${tpPct.toFixed(4)}%`);
-    // R:R now 0.13 / 0.35 ≈ 0.371
-    assert.ok(Math.abs(out.rr - 0.371) < 0.01, `rr ≈ 0.371 (gross), got ${out.rr}`);
+    // R:R now 0.13 / 0.20 ≈ 0.65 (still asymmetric but ~75% better than 0.10)
+    assert.ok(Math.abs(out.rr - 0.65) < 0.02, `rr ≈ 0.65 (gross), got ${out.rr}`);
   });
 
   test('Quick-take TP — NET still 10% margin AFTER round-trip fees deducted', () => {
@@ -109,8 +110,8 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     const raw = rawSug('bull', 0.8);
     const out = app._highLevLevels(sol, raw);
     const slPct = ((SOL_ENTRY - out.sl) / SOL_ENTRY) * 100;
-    // 100× → buffer 1%, × 0.7 = 0.7%
-    assert.ok(Math.abs(slPct - 0.7) < 0.02, `100× SL should be ~0.7% wide, got ${slPct.toFixed(3)}%`);
+    // 100× → buffer 1%, × 0.4 = 0.4%
+    assert.ok(Math.abs(slPct - 0.4) < 0.02, `100× SL should be ~0.4% wide, got ${slPct.toFixed(3)}%`);
   });
 
   test('source tag flags the override (+highlev)', () => {

@@ -39,7 +39,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.equal(r.reason, 'no-price');
   });
 
-  test('high-lev asset: SL/TP use mechanical buffer (≈0.35% at 200×)', async () => {
+  test('high-lev asset: SL/TP use mechanical buffer (≈0.20% at 200× with 0.4 mult)', async () => {
     const { app, sandbox } = loadApp();
     const s = bootSilverLive(app);
     app.setAssetLeverage('SILVER', 200);   // becomes high-lev
@@ -51,7 +51,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.equal(r.side, 'LONG');
     assert.equal(r.entry, 80, 'fires at LIVE price, not stale FVG mid');
     const slPct = ((80 - r.sl) / 80) * 100;
-    assert.ok(Math.abs(slPct - 0.35) < 0.01, `expected SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
+    assert.ok(Math.abs(slPct - 0.20) < 0.01, `expected SL ≈ 0.20% at 200× (mult 0.4), got ${slPct.toFixed(3)}%`);
     const tpPct = ((r.tp - 80) / 80) * 100;
     // Fee-aware: NET 10% margin + 16% round-trip fee at 200× = 26% gross
     // margin → 0.13% price.

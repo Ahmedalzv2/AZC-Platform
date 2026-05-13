@@ -4207,10 +4207,14 @@
   // added back so the actual fill yields the configured net %.
   //   200× + 10% net + 16% fees = 26% gross margin = 0.13% price
   //   100× + 10% net + 8%  fees = 18% gross margin = 0.18% price
-  // Mechanical SL stays wide (0.7 × 100/lev price%) — accept the asymmetric
-  // R:R; rely on win-rate. SL math doesn't add fees back; the SL price is
-  // the trigger and the realised loss is (price loss + taker fee).
+  //
+  // SL multiplier 0.4 tightens stops vs the old 0.7. At 200×:
+  //   old: 0.35% price = 70% margin gross = 86% margin net (with fees)
+  //   new: 0.20% price = 40% margin gross = 56% margin net
+  // Break-even win rate drops from ~90% to ~85%; trade-off is more SL hits
+  // per session because price has half the room before stopping out.
   const QUICK_TAKE_NET_MARGIN_PCT = 10;
+  const SL_LIQ_BUFFER_MULT = 0.4;
   // Legacy alias preserved so any external code reading the constant still
   // works; semantically it now means the NET target.
   const QUICK_TAKE_MARGIN_PCT = QUICK_TAKE_NET_MARGIN_PCT;
@@ -4218,7 +4222,7 @@
     if (!asset || !sug) return sug;
     const lev = getAssetLeverage(asset.symbol);
     if (lev < LEVERAGE_HIGH_THRESHOLD) return sug;
-    const slPct = (100 / lev) * 0.7;
+    const slPct = (100 / lev) * SL_LIQ_BUFFER_MULT;
     const grossTpMarginPct = QUICK_TAKE_NET_MARGIN_PCT + _roundTripFeePctMargin(lev);
     const tpPct = grossTpMarginPct / lev;
     const slDist = sug.entry * (slPct / 100);
@@ -4970,7 +4974,7 @@
     const lev = getAssetLeverage(symbol);
     // SL/TP distance: mechanical liquidation-buffer math when high-lev,
     // a flat 0.4% otherwise.
-    const slPct = _isHighLeverage(symbol) ? (100 / lev) * 0.7 / 100 : 0.004;
+    const slPct = _isHighLeverage(symbol) ? (100 / lev) * SL_LIQ_BUFFER_MULT / 100 : 0.004;
     const slDist = price * slPct;
     // Quick-take target: NET +QUICK_TAKE_NET_MARGIN_PCT% of margin after
     // round-trip fees (matches _highLevLevels). Add fees back to get the
