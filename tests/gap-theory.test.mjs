@@ -268,4 +268,27 @@ describe('_suggestedEntryForTf preference ladder (BPR > iFVG > OB > FVG)', () =>
     assert.equal(sug.source, 'fvg-edge');
     assert.equal(sug.entry, 105);
   });
+
+  // The dir-vote in _analyzeKlines can return null on quiet 1m candles where
+  // FVG/sweep/displacement/CHoCH don't agree. Used to kill every scalp tick.
+  // _suggestedEntryForTf now derives the dir from fvgZone when analysis.dir
+  // is null, so a lone 1m FVG is still a tradable setup.
+  test('uses FVG dir when analysis.dir is null (tied vote / silent detectors)', () => {
+    const { app } = loadApp();
+    const analysis = {
+      dir: null,
+      fvgZone: baseFvg, // bull
+      obZone: null, iFVGZone: null, bprZone: null,
+    };
+    const sug = app._suggestedEntryForTf(analysis, '1m');
+    assert.ok(sug, 'should return a suggestion');
+    assert.equal(sug.dir, 'bull');
+    assert.equal(sug.source, 'fvg-edge');
+  });
+
+  test('returns null when both analysis.dir and fvgZone are absent', () => {
+    const { app } = loadApp();
+    const sug = app._suggestedEntryForTf({ dir: null, fvgZone: null }, '1m');
+    assert.equal(sug, null);
+  });
 });

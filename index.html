@@ -8473,9 +8473,15 @@
   // its own FVG/OB/sweep, so each TF gets its own price targets — lower TFs
   // are tighter (1.5 R:R), higher TFs target wider runs (2.0 R:R).
   function _suggestedEntryForTf(analysis, tf) {
-    if (!analysis || !analysis.dir) return null;
-    const dir = analysis.dir;
+    if (!analysis) return null;
+    // Prefer the analyzed dir (vote across FVG/sweep/displacement/CHoCH).
+    // Fall back to the FVG dir alone when the vote ties or is silent — on
+    // quiet 1m candles the other detectors return null and the vote ends up
+    // null, which used to kill every scalp tick with no-1m-setup. The FVG
+    // direction is enough on its own for a 1m scalp entry.
     const fvg = analysis.fvgZone;
+    const dir = analysis.dir || (fvg && fvg.dir) || null;
+    if (!dir) return null;
     const ob = analysis.obZone;
     const sweep = analysis.sweepLevel;
     const bpr  = analysis.bprZone;
