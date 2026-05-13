@@ -70,6 +70,8 @@ const EXPORTS = [
   'ASSET_LEVERAGE_DEFAULT',
   'toggleLiveTradingKillSwitch',
   '_isHighLeverage', '_highLevLevels', 'LEVERAGE_HIGH_THRESHOLD',
+  'QUICK_TAKE_NET_MARGIN_PCT', 'QUICK_TAKE_MARGIN_PCT',
+  'MEXC_MAKER_FEE_PCT', 'MEXC_TAKER_FEE_PCT', '_roundTripFeePctMargin',
   '_fastRefreshAssetEntry', '_fastRefreshTick', 'FAST_REFRESH_INTERVAL_MS',
   '_scalpProximityPct', 'SCALP_PROXIMITY_PCT', 'SCALP_PROXIMITY_PCT_HIGH_LEV',
   '_classifyConnTest', '_MEXC_FIX_HINTS',
