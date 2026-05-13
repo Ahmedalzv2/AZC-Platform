@@ -224,10 +224,10 @@ describe('getFireStatus — IN POSITION state', () => {
     assert.equal(s.state, 'in-position');
   });
 
-  test('Other asset in position blocks SILVER with WAITING ON {sym} (one-at-a-time gate visible)', () => {
+  test('Low-lev: other asset in position blocks SILVER with WAITING ON {sym}', () => {
     const { app } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SILVER', 200);
+    app.setAssetLeverage('SILVER', 10);  // low-lev → cross-asset gate applies
     app.setLiveTradingEnabled(true);
     const silver = app.ASSETS.find(a => a.symbol === 'SILVER');
     silver.price = 32.5;
@@ -238,15 +238,33 @@ describe('getFireStatus — IN POSITION state', () => {
         fvgZone: { dir: 'bull', lo: 32.48, hi: 32.52, mid: 32.50 },
       },
     };
-    // SOL holds an open position — the one-at-a-time gate blocks every
-    // other asset's scalp tick. The badge must surface this; otherwise
-    // SILVER reads as READY but silently skips on the next tick.
     app._openPositions = {
       SOL: [{ positionType: 1, holdVol: 1, holdAvgPrice: 100, leverage: 200, unrealised: 0 }],
     };
     const s = app.getFireStatus(silver);
     assert.equal(s.state, 'blocked');
     assert.match(s.label, /WAITING ON SOL/);
+  });
+
+  test('High-lev trio: SOL in position does NOT block SILVER badge (READY)', () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    app.setAssetLeverage('SILVER', 200);  // high-lev → independent fires
+    app.setLiveTradingEnabled(true);
+    const silver = app.ASSETS.find(a => a.symbol === 'SILVER');
+    silver.price = 32.5;
+    silver.bias = 'BULLISH';
+    silver.tfEntries = {
+      '1m': {
+        dir: 'bull', entryReady: true, score: 4,
+        fvgZone: { dir: 'bull', lo: 32.48, hi: 32.52, mid: 32.50 },
+      },
+    };
+    app._openPositions = {
+      SOL: [{ positionType: 1, holdVol: 1, holdAvgPrice: 100, leverage: 200, unrealised: 0 }],
+    };
+    const s = app.getFireStatus(silver);
+    assert.notEqual(s.state, 'blocked', 'high-lev SILVER fires independently of SOL position');
   });
 
   test('SILVER own position still shows IN POSITION (not WAITING ON SILVER)', () => {
