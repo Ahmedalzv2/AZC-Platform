@@ -290,8 +290,31 @@ describe('placeMexcFuturesOrder', () => {
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.5, 75.9, 1, 3);
     assert.equal(r.sent, false);
     assert.equal(r.status, 401);
+    // MEXC rejection details must flow through so the toast/badge don't fall
+    // back to the generic "failed" string. reason carries the code; error
+    // carries the human-readable msg.
+    assert.equal(r.reason, 'mexc-401');
+    assert.equal(r.error, 'invalid signature');
     const j = ctx.app.journal;
     assert.match(j[0].analysis, /\[LIVE-ERR\]/);
+  });
+
+  test('live + MEXC business error (code 600 insufficient margin) → reason+error surfaced', async () => {
+    const ctx = loadApp({
+      storage: { journal: '[]' },
+      fetch: async () => ({
+        ok: true, status: 200,
+        text: async () => JSON.stringify({ success: false, code: 600, message: 'Insufficient margin' }),
+      }),
+    });
+    ctx.app.saveMexcKeys('k', 's');
+    ctx.app.setMexcWorkerUrl('https://my.workers.dev');
+    ctx.app.setLiveTradingEnabled(true);
+    ctx.app.setLiveTradingDryRun(false);
+    const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.5, 75.9, 1, 3);
+    assert.equal(r.sent, false);
+    assert.equal(r.reason, 'mexc-600');
+    assert.equal(r.error, 'Insufficient margin');
   });
 
   test('LONG bias is encoded as side=1 (open long)', async () => {

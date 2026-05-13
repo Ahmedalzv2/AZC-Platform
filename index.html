@@ -4434,6 +4434,13 @@
       }
     } catch (err) {}
 
+    if (!ok) {
+      const code = (json && (json.code != null ? json.code : (json.errorCode != null ? json.errorCode : null)));
+      const msg  = (json && (json.message || json.msg || json.errorMsg || ''));
+      const reason = code != null ? `mexc-${code}` : 'mexc-rejected';
+      const error  = msg || (json && json.raw ? String(json.raw).slice(0, 200) : `HTTP ${resp.status}`);
+      return { sent: false, status: resp.status, response: json, reason, error };
+    }
     return { sent: ok, status: resp.status, response: json };
   }
 
@@ -4721,6 +4728,13 @@
       return { sent: false, reason: 'network', error: String((e && e.message) || e) };
     }
     const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
+    if (!ok) {
+      const code = (json && (json.code != null ? json.code : (json.errorCode != null ? json.errorCode : null)));
+      const msg  = (json && (json.message || json.msg || json.errorMsg || ''));
+      const reason = code != null ? `mexc-${code}` : 'mexc-rejected';
+      const error  = msg || (json && json.raw ? String(json.raw).slice(0, 200) : `HTTP ${resp.status}`);
+      return { sent: false, status: resp.status, response: json, reason, error };
+    }
     return { sent: ok, status: resp.status, response: json };
   }
 
@@ -4941,7 +4955,11 @@
     try {
       if (r.dryRun)        showToast(`🧪 ${symbol} force-fire · [DRY-RUN] logged`, 'ok');
       else if (r.sent)     showToast(`🟢 ${symbol} order sent (${r.side} ${r.qty} @ $${r.entry} · ${r.leverage}×)`, 'ok');
-      else                 showToast(`⚠ ${symbol} force-fire skipped: ${r.reason || r.error || 'failed'}`, 'err');
+      else {
+        const parts = [r.reason, r.error].filter(Boolean);
+        const detail = parts.length ? parts.join(' · ') : 'failed';
+        showToast(`⚠ ${symbol} force-fire skipped: ${detail}`, 'err');
+      }
     } catch (e) {}
     try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
     return r;
