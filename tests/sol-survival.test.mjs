@@ -63,7 +63,10 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     assert.ok(Math.abs(actualSlPct - expectedSlPct) < 0.01, `SL should be ~${expectedSlPct}% from entry, got ${actualSlPct.toFixed(3)}%`);
   });
 
-  test('Quick-take TP — targets +7% margin gain at 200× (≈0.035% price)', () => {
+  test('Quick-take TP — NET +10% margin after fees → 26% gross at 200× (≈0.13% price)', () => {
+    // QUICK_TAKE_NET_MARGIN_PCT = 10 (net of fees).
+    // Round-trip fee = (0.02 + 0.06) × 200 = 16% margin.
+    // Gross TP = 10 + 16 = 26% margin = 0.13% price at 200×.
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bull', 0.8);
@@ -71,9 +74,24 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     const slPct = (Math.abs(out.entry - out.sl) / out.entry) * 100;
     const tpPct = (Math.abs(out.tp - out.entry) / out.entry) * 100;
     assert.ok(Math.abs(slPct - 0.35) < 0.01, `SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
-    assert.ok(Math.abs(tpPct - 0.035) < 0.005, `TP ≈ 0.035% at 200× + 7% margin, got ${tpPct.toFixed(4)}%`);
-    // R:R is asymmetric — 0.035 / 0.35 = 0.10
-    assert.ok(Math.abs(out.rr - 0.10) < 0.01, `rr ≈ 0.10, got ${out.rr}`);
+    assert.ok(Math.abs(tpPct - 0.13) < 0.005, `gross TP ≈ 0.13% at 200×, got ${tpPct.toFixed(4)}%`);
+    // R:R now 0.13 / 0.35 ≈ 0.371
+    assert.ok(Math.abs(out.rr - 0.371) < 0.01, `rr ≈ 0.371 (gross), got ${out.rr}`);
+  });
+
+  test('Quick-take TP — NET still 10% margin AFTER round-trip fees deducted', () => {
+    // Sanity check: paying fees out of the gross gain leaves the configured
+    // net target. At 200×, gross 26% margin − 16% fees = 10% net.
+    const { app, sandbox } = loadApp();
+    const sol = setupSol(app, 200);
+    const lev = 200;
+    const raw = rawSug('bull', 0.8);
+    const out = app._highLevLevels(sol, raw);
+    const tpPriceMovePct = (Math.abs(out.tp - out.entry) / out.entry) * 100;
+    const grossMarginGain = tpPriceMovePct * lev;
+    const feeBurden = (app.MEXC_MAKER_FEE_PCT + app.MEXC_TAKER_FEE_PCT) * lev;
+    const netMargin = grossMarginGain - feeBurden;
+    assert.ok(Math.abs(netMargin - 10) < 0.5, `net margin gain at TP ≈ 10%, got ${netMargin.toFixed(2)}%`);
   });
 
   test('bear setup: SL above entry, TP below', () => {
