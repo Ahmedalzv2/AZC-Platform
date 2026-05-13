@@ -4205,12 +4205,15 @@
   //
   // Quick-take target is NET of round-trip fees. Gross TP price has fees
   // added back so the actual fill yields the configured net %.
-  //   200× + 10% net + 16% fees = 26% gross margin = 0.13% price
-  //   100× + 10% net + 8%  fees = 18% gross margin = 0.18% price
-  // Mechanical SL stays wide (0.7 × 100/lev price%) — accept the asymmetric
-  // R:R; rely on win-rate. SL math doesn't add fees back; the SL price is
-  // the trigger and the realised loss is (price loss + taker fee).
-  const QUICK_TAKE_NET_MARGIN_PCT = 10;
+  //   200× + 50% net + 16% fees = 66% gross margin = 0.33% price
+  //   100× + 50% net + 8%  fees = 58% gross margin = 0.58% price
+  // SL is mechanical (0.7 × 100/lev price%). At 200× that's 0.35% — wider
+  // than the 0.33% TP, so this is sub-1:1 RR. The backtest justifies it:
+  // ~80% win-rate observed IS+OOS on SOL/SILVER at NET 50% vs a 63%
+  // break-even (was ~90% at NET 10%, with actuals failing to clear it).
+  // SL math doesn't add fees back; the SL price is the trigger and the
+  // realised loss is (price loss + taker fee).
+  const QUICK_TAKE_NET_MARGIN_PCT = 50;
   // Legacy alias preserved so any external code reading the constant still
   // works; semantically it now means the NET target.
   const QUICK_TAKE_MARGIN_PCT = QUICK_TAKE_NET_MARGIN_PCT;
