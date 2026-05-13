@@ -82,6 +82,11 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.ok(r1.sl < r1.entry, 'long SL below entry');
     assert.ok(r1.tp > r1.entry, 'long TP above entry');
 
+    // Clear the post-fire lock so the second leg of this property test fires.
+    // In production a duplicate within 60s is blocked on purpose; here we're
+    // verifying bias→side mapping, not the gate.
+    delete app._pendingFires.SILVER;
+
     s.bias = 'BEARISH';
     const r2 = await app.forceFireAsset('SILVER');
     assert.equal(r2.side, 'SHORT');

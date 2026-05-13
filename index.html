@@ -3929,7 +3929,25 @@
   function _persistLiveTradingState() {
     try { localStorage.setItem('ict_live_trading_v2', JSON.stringify({ enabled: _liveTradingEnabled, dryRun: _liveTradingDryRun })); } catch (e) {}
   }
-  function setLiveTradingEnabled(on) { _liveTradingEnabled = !!on; _persistLiveTradingState(); _updateLiveTradingBadge(); }
+  function setLiveTradingEnabled(on) {
+    const wasOff = !_liveTradingEnabled;
+    _liveTradingEnabled = !!on;
+    _persistLiveTradingState();
+    _updateLiveTradingBadge();
+    if (_liveTradingEnabled && wasOff) {
+      // Pre-warm contract-detail for every futures auto-exec asset so the
+      // FIRST fire doesn't pay the ~100-200ms /contract/detail lookup. The
+      // call goes through MEXC_PROXIES which is the slow path; warming once
+      // up-front means every subsequent fire reads the cached scale instead.
+      try {
+        const eligible = (typeof ASSETS !== 'undefined') ? ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a)) : [];
+        for (const a of eligible) {
+          const cs = _mexcContractSymbol(a);
+          if (cs) getMexcContractDetail(cs).catch(() => {});
+        }
+      } catch (e) {}
+    }
+  }
   function setLiveTradingDryRun(on)   { _liveTradingDryRun = !!on;   _persistLiveTradingState(); _updateLiveTradingBadge(); }
 
   function getMexcApiKey()    { try { return localStorage.getItem('ict_mexc_api_key')    || ''; } catch (e) { return ''; } }
@@ -4118,7 +4136,7 @@
   // Gated on _liveTradingEnabled — no point thrashing the API when nothing
   // can fire anyway.
   // ─────────────────────────────────────────────────────────────────────
-  const FAST_REFRESH_INTERVAL_MS = 5000;
+  const FAST_REFRESH_INTERVAL_MS = 2000;
 
   async function _fastRefreshAssetEntry(asset) {
     if (!asset || !_isFuturesAsset(asset)) return { refreshed: false, reason: 'not-futures' };
@@ -4146,16 +4164,13 @@
   async function _fastRefreshTick() {
     if (!_liveTradingEnabled) return;
     if (typeof ASSETS === 'undefined') return;
-    // Any auto-exec eligible asset (futures-mode + MEXC contract) gets the
-    // 5s 1m-kline pull. Low-lev assets need this too — a stale 30s entry
-    // zone can drift past current price by the time auto-exec evaluates
-    // proximity. Sequential to avoid stampeding the upstream APIs (one
-    // fetch every ~50ms across the auto-exec set).
-    for (const a of ASSETS) {
-      if (!_isFuturesAsset(a)) continue;
-      if (!_mexcContractSymbol(a)) continue;
-      try { await _fastRefreshAssetEntry(a); } catch (e) {}
-    }
+    // Refresh all auto-exec eligible assets in PARALLEL — the trio of 1m
+    // klines are independent fetches against different endpoints. Sequential
+    // was leaking ~200ms of evaluation skew across the trio per cycle (SOL
+    // saw its FVG ~200ms before GOLD on every tick). MEXC public klines is
+    // 20 req/s rate-limited; trio at 2s interval = 1.5 req/s, well under.
+    const eligible = ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a));
+    await Promise.all(eligible.map(a => _fastRefreshAssetEntry(a).catch(() => {})));
   }
 
   const LEVERAGE_HIGH_THRESHOLD = 100;
@@ -4522,6 +4537,27 @@
   let _openPositionsError = null;  // last fetch error (if any) for the modal
   const POSITIONS_REFRESH_INTERVAL_MS = 5000;
 
+  // Pending-fire lock. _positionsTick polls every 5s; between a successful
+  // submission and the next poll, _openPositions doesn't yet reflect the new
+  // position — and on limit orders that haven't filled, it won't reflect for
+  // longer. The one-at-a-time gate reads _openPositions, so without this lock
+  // every 5s scalp tick fires another duplicate while we wait. The user hit
+  // exactly this — 12 stacked SILVER trades.
+  //
+  // Mark on any sent:true OR dryRun:true. Expires after PENDING_FIRE_LOCK_MS
+  // so a stuck/cancelled limit eventually re-opens the gate.
+  const _pendingFires = {};
+  const PENDING_FIRE_LOCK_MS = 60_000;
+  function _markPendingFire(sym) {
+    if (sym) _pendingFires[sym] = Date.now();
+  }
+  function _isPendingFire(sym) {
+    const t = _pendingFires[sym];
+    if (!t) return false;
+    if (Date.now() - t > PENDING_FIRE_LOCK_MS) { delete _pendingFires[sym]; return false; }
+    return true;
+  }
+
   // One-at-a-time gate. Returns the bare symbol that blocks `targetSym` from
   // firing, or null when nothing's in the way.
   //
@@ -4530,7 +4566,12 @@
   // per fire ($0.20 each), so three trio assets firing in parallel is still
   // <$1 of total exposure. At low-lev the original focus rule still applies:
   // any open position blocks every asset.
+  //
+  // Pending-fire lock applies regardless of leverage tier — a fresh
+  // submission on `targetSym` always blocks `targetSym` until the next poll
+  // observes the position (or the lock expires).
   function _findBlockingPosition(targetSym) {
+    if (targetSym && _isPendingFire(targetSym)) return targetSym;
     if (targetSym && typeof _isHighLeverage === 'function' && _isHighLeverage(targetSym)) {
       const own = _openPositions[targetSym];
       return (own && own.length > 0) ? targetSym : null;
@@ -4859,6 +4900,7 @@
     const qty = computeMexcOrderQty(asset, sug.entry, sug.sl, lev) || 1;
 
     const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
+    if (r && (r.sent || r.dryRun)) _markPendingFire(sym);
     _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
     return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
@@ -4922,6 +4964,7 @@
     } catch (e) {
       return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });
     }
+    if (r && (r.sent || r.dryRun)) _markPendingFire(symbol);
     return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
   }
 
@@ -5782,7 +5825,8 @@
           //     scalp path with mechanical SL can).
           if (_mexcContractSymbol(asset) && _liveTradingEnabled
               && getScalpTf(asset.symbol) === 'htf'
-              && !_isHighLeverage(asset.symbol)) {
+              && !_isHighLeverage(asset.symbol)
+              && !_isPendingFire(asset.symbol)) {
             const tp = asset.tp || asset.tp1 || 0;
             const lev = getAssetLeverage(asset.symbol);
             const qty = computeMexcOrderQty(asset, asset.entry, asset.sl, lev) || 1;
@@ -5790,6 +5834,7 @@
             // Fire-and-forget — don't block the alert overlay on the round-trip.
             placeMexcFuturesOrder(asset, side, asset.entry, asset.sl, tp, qty, lev)
               .then(r => {
+                if (r && (r.sent || r.dryRun)) _markPendingFire(asset.symbol);
                 console.log('[mexc auto-exec htf]', asset.symbol, r);
                 try {
                   if (r.dryRun) showToast(`🧪 ${asset.symbol} ENTER NOW · [DRY-RUN] logged`, 'ok');
