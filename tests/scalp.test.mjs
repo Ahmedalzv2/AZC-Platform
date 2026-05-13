@@ -169,12 +169,28 @@ describe('scalpMonitorTick', () => {
     assert.ok(r.distPct > 0.15);
   });
 
-  test('global one-at-a-time → other asset in position → in-position', async () => {
+  test('high-lev trio: GOLD in position does NOT block SILVER (independent fires)', async () => {
     const { app } = loadApp({
       storage: {
         ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
         ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }),
         ict_scalp_tf_SILVER: '1m',
+      },
+    });
+    app.loadLiveTradingState();
+    // SILVER defaults to 200× — high-lev → cross-asset gate disabled.
+    app._openPositions = { GOLD: [{ holdVol: 1, holdAvgPrice: 4715, leverage: 10 }] };
+    const r = await app.scalpMonitorTick(silverWithBear1m());
+    assert.equal(r.fired, true, 'SILVER@200× fires while GOLD holds');
+  });
+
+  test('low-lev cross-asset gate still applies (focus discipline)', async () => {
+    const { app } = loadApp({
+      storage: {
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }),
+        ict_scalp_tf_SILVER: '1m',
+        ict_mexc_silver_leverage: '10',
       },
     });
     app.loadLiveTradingState();

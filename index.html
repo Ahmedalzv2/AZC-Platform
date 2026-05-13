@@ -4479,10 +4479,19 @@
   let _openPositionsError = null;  // last fetch error (if any) for the modal
   const POSITIONS_REFRESH_INTERVAL_MS = 5000;
 
-  // One-at-a-time gate. Returns the bare symbol holding the live position,
-  // or null when nothing is open. Both auto-exec and force-fire skip when
-  // this returns a symbol so the user can stay focused on the single trade.
-  function _findBlockingPosition() {
+  // One-at-a-time gate. Returns the bare symbol that blocks `targetSym` from
+  // firing, or null when nothing's in the way.
+  //
+  // For high-lev assets (trio at 200×), only the SAME asset's open position
+  // blocks — sibling trio assets can fire independently. Margin is bounded
+  // per fire ($0.20 each), so three trio assets firing in parallel is still
+  // <$1 of total exposure. At low-lev the original focus rule still applies:
+  // any open position blocks every asset.
+  function _findBlockingPosition(targetSym) {
+    if (targetSym && typeof _isHighLeverage === 'function' && _isHighLeverage(targetSym)) {
+      const own = _openPositions[targetSym];
+      return (own && own.length > 0) ? targetSym : null;
+    }
     for (const sym in _openPositions) {
       if ((_openPositions[sym] || []).length > 0) return sym;
     }
@@ -4797,9 +4806,9 @@
     if (distPct > proximityPct)      return _recordScalpDiag(sym, { fired: false, reason: 'too-far', distPct, proximityPct, sugEntry: sug.entry, price: asset.price });
 
     // Global one-at-a-time gate — focus on one trade. If ANY asset is in a
-    // live position, skip; the user explicitly asked to wait until the
-    // current trade closes before opening another anywhere.
-    const blockingSym = _findBlockingPosition();
+    // live position, skip. High-lev assets only block on their own symbol —
+    // trio members fire independently. See _findBlockingPosition.
+    const blockingSym = _findBlockingPosition(sym);
     if (blockingSym) return _recordScalpDiag(sym, { fired: false, reason: 'in-position', blockingSym });
 
     const side = sug.dir === 'bull' ? 'LONG' : 'SHORT';
@@ -4843,8 +4852,8 @@
     if (!_liveTradingEnabled)         return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'master-off' });
     if (!_mexcContractSymbol(asset))  return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'unsupported-symbol' });
     // One-at-a-time policy: force-fire respects it too, otherwise the gate
-    // leaks. User can close the live position from the modal first.
-    const blockingSym = _findBlockingPosition();
+    // leaks. High-lev only blocks on the same symbol.
+    const blockingSym = _findBlockingPosition(symbol);
     if (blockingSym) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'in-position', blockingSym });
     const price = Number(asset.price);
     if (!isFinite(price) || price <= 0) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-price' });
@@ -4938,7 +4947,7 @@
     // asset's scalp tick silently skips with reason='in-position'. Surface
     // it on the badge so the gate is visible from the main dashboard.
     if (typeof _findBlockingPosition === 'function') {
-      const blockingSym = _findBlockingPosition();
+      const blockingSym = _findBlockingPosition(asset.symbol);
       if (blockingSym && blockingSym !== asset.symbol) {
         return { state: 'blocked', color: 'var(--liq)',
                  label: `⏸ WAITING ON ${blockingSym}`,
