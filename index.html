@@ -4286,6 +4286,34 @@
   //   live, no worker → { sent:false, reason:'no-worker' }
   //   live OK         → { sent:true, response, status }; also journals [LIVE-OK]
   //   live ERR        → { sent:false, response, status }; also journals [LIVE-ERR]
+
+  // Cache of contract-precision metadata. Populated lazily on first order;
+  // re-used until reload. Public endpoint, no auth needed. Without this,
+  // MEXC rejects orders with code 2015 when price/vol decimals exceed the
+  // contract's scale (SILVER price tick is 0.001 but vol must be integer
+  // for some contracts, etc.).
+  const _mexcContractDetails = {};
+  async function getMexcContractDetail(contractSym) {
+    if (!contractSym) return null;
+    if (_mexcContractDetails[contractSym]) return _mexcContractDetails[contractSym];
+    try {
+      const j = await fetchMexcContract(`/api/v1/contract/detail?symbol=${contractSym}`);
+      const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
+      if (!d) return null;
+      const detail = {
+        priceScale: Number(d.priceScale),
+        volScale:   Number(d.volScale),
+        minVol:     Number(d.minVol),
+        maxVol:     Number(d.maxVol),
+        contractSize: Number(d.contractSize) || 1,
+      };
+      _mexcContractDetails[contractSym] = detail;
+      return detail;
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function placeMexcFuturesOrder(asset, side, entry, sl, tp, qty, leverage, opts) {
     opts = opts || {};
     if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
@@ -4297,16 +4325,31 @@
     const mexcSide = sideUp === 'LONG' ? 1 : sideUp === 'SHORT' ? 3 : null;
     if (mexcSide === null) return { sent: false, reason: 'bad-side' };
 
+    // Per-contract precision (price + vol decimals + min lot). MEXC rejects
+    // with code 2015 "Price or quantity precision error" if any field has
+    // more decimals than the contract allows. Cache lookup populates on the
+    // first order attempt; subsequent orders re-use it.
+    const detail = await getMexcContractDetail(mexcSymbol);
+    const pScale = detail && Number.isFinite(detail.priceScale) ? detail.priceScale : 4;
+    const vScale = detail && Number.isFinite(detail.volScale)   ? detail.volScale   : 2;
+    const minVol = detail && Number.isFinite(detail.minVol) && detail.minVol > 0 ? detail.minVol : null;
+    const roundTo = (v, scale) => {
+      const f = Math.pow(10, scale);
+      return Math.round(Number(v) * f) / f;
+    };
+    let volRounded = roundTo(qty, vScale);
+    if (minVol != null && volRounded < minVol) volRounded = minVol;
+
     const body = {
       symbol: mexcSymbol,
-      price: Number(entry),
-      vol: Number(qty),
+      price: roundTo(entry, pScale),
+      vol: volRounded,
       leverage: Number(leverage),
       side: mexcSide,
       type: 1,         // 1 = limit
       openType: 1,     // 1 = isolated margin
-      stopLossPrice: Number(sl),
-      takeProfitPrice: Number(tp),
+      stopLossPrice: roundTo(sl, pScale),
+      takeProfitPrice: roundTo(tp, pScale),
     };
 
     // ── DRY-RUN PATH ─────────────────────────────────────────────

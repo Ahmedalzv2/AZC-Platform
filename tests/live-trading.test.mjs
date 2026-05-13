@@ -236,6 +236,15 @@ describe('placeMexcFuturesOrder', () => {
       storage: { journal: '[]' },
       fetch: async (url, init) => {
         calls.push({ url, init });
+        const u = String(url);
+        // Contract-detail probe (precision lookup) — return a stub.
+        if (u.includes('/contract/detail')) {
+          return {
+            ok: true, status: 200,
+            json: async () => ({ data: { symbol: 'SILVER_USDT', priceScale: 4, volScale: 2, minVol: 0.01 } }),
+            text: async () => JSON.stringify({ data: { symbol: 'SILVER_USDT', priceScale: 4, volScale: 2, minVol: 0.01 } }),
+          };
+        }
         return {
           ok: true, status: 200,
           text: async () => JSON.stringify({ success: true, code: 0, data: { orderId: 'abc123' } }),
@@ -248,8 +257,9 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setLiveTradingDryRun(false);
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.5, 75.9, 2, 3);
     assert.equal(r.sent, true, `expected sent:true, got ${JSON.stringify(r)}`);
-    assert.equal(calls.length, 1);
-    const { url, init } = calls[0];
+    const orderCalls = calls.filter(c => String(c.url).includes('/order/submit'));
+    assert.equal(orderCalls.length, 1);
+    const { url, init } = orderCalls[0];
     assert.equal(url, 'https://my.workers.dev/api/v1/private/order/submit');
     assert.equal(init.method, 'POST');
     assert.equal(init.headers['ApiKey'], 'mykey');
@@ -324,6 +334,42 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setLiveTradingDryRun(true);
     await ctx.app.placeMexcFuturesOrder(silver(), 'LONG', 75.0, 74.8, 75.5, 1, 3);
     assert.equal(ctx.app.journal[0].mexcBody.side, 1);
+  });
+
+  test('contract precision: rounds price/vol to MEXC scale (no mexc-2015 reject)', async () => {
+    const calls = [];
+    const ctx = loadApp({
+      storage: { journal: '[]' },
+      fetch: async (url, init) => {
+        calls.push({ url, init });
+        const u = String(url);
+        if (u.includes('/contract/detail')) {
+          // SILVER_USDT: price tick 0.01 (priceScale 2), vol integer (volScale 0).
+          return {
+            ok: true, status: 200,
+            json: async () => ({ data: { symbol: 'SILVER_USDT', priceScale: 2, volScale: 0, minVol: 1 } }),
+          };
+        }
+        return {
+          ok: true, status: 200,
+          text: async () => JSON.stringify({ success: true, code: 0, data: { orderId: 'ok' } }),
+        };
+      },
+    });
+    ctx.app.saveMexcKeys('k', 's');
+    ctx.app.setMexcWorkerUrl('https://my.workers.dev');
+    ctx.app.setLiveTradingEnabled(true);
+    ctx.app.setLiveTradingDryRun(false);
+    // Caller passes 3-decimal price and fractional vol — used to be sent verbatim
+    // and rejected with mexc-2015. Now scaled down to contract precision.
+    const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.655, 75.503, 75.901, 0.46, 200);
+    assert.equal(r.sent, true);
+    const orderCall = calls.find(c => String(c.url).includes('/order/submit'));
+    const body = JSON.parse(orderCall.init.body);
+    assert.equal(body.price, 75.66, 'price rounded to 2 decimals');
+    assert.equal(body.stopLossPrice, 75.50, 'sl rounded to 2 decimals');
+    assert.equal(body.takeProfitPrice, 75.90, 'tp rounded to 2 decimals');
+    assert.equal(body.vol, 1, 'vol rounded to integer + bumped to minVol');
   });
 });
 
