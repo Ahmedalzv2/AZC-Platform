@@ -4522,6 +4522,27 @@
   let _openPositionsError = null;  // last fetch error (if any) for the modal
   const POSITIONS_REFRESH_INTERVAL_MS = 5000;
 
+  // Pending-fire lock. _positionsTick polls every 5s; between a successful
+  // submission and the next poll, _openPositions doesn't yet reflect the new
+  // position — and on limit orders that haven't filled, it won't reflect for
+  // longer. The one-at-a-time gate reads _openPositions, so without this lock
+  // every 5s scalp tick fires another duplicate while we wait. The user hit
+  // exactly this — 12 stacked SILVER trades.
+  //
+  // Mark on any sent:true OR dryRun:true. Expires after PENDING_FIRE_LOCK_MS
+  // so a stuck/cancelled limit eventually re-opens the gate.
+  const _pendingFires = {};
+  const PENDING_FIRE_LOCK_MS = 60_000;
+  function _markPendingFire(sym) {
+    if (sym) _pendingFires[sym] = Date.now();
+  }
+  function _isPendingFire(sym) {
+    const t = _pendingFires[sym];
+    if (!t) return false;
+    if (Date.now() - t > PENDING_FIRE_LOCK_MS) { delete _pendingFires[sym]; return false; }
+    return true;
+  }
+
   // One-at-a-time gate. Returns the bare symbol that blocks `targetSym` from
   // firing, or null when nothing's in the way.
   //
@@ -4530,7 +4551,12 @@
   // per fire ($0.20 each), so three trio assets firing in parallel is still
   // <$1 of total exposure. At low-lev the original focus rule still applies:
   // any open position blocks every asset.
+  //
+  // Pending-fire lock applies regardless of leverage tier — a fresh
+  // submission on `targetSym` always blocks `targetSym` until the next poll
+  // observes the position (or the lock expires).
   function _findBlockingPosition(targetSym) {
+    if (targetSym && _isPendingFire(targetSym)) return targetSym;
     if (targetSym && typeof _isHighLeverage === 'function' && _isHighLeverage(targetSym)) {
       const own = _openPositions[targetSym];
       return (own && own.length > 0) ? targetSym : null;
@@ -4859,6 +4885,7 @@
     const qty = computeMexcOrderQty(asset, sug.entry, sug.sl, lev) || 1;
 
     const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
+    if (r && (r.sent || r.dryRun)) _markPendingFire(sym);
     _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
     return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
@@ -4922,6 +4949,7 @@
     } catch (e) {
       return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });
     }
+    if (r && (r.sent || r.dryRun)) _markPendingFire(symbol);
     return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
   }
 
