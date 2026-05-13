@@ -249,6 +249,14 @@ describe('scalpMonitorTick', () => {
       },
       fetch: async (url, init) => {
         calls.push({ url, init });
+        const u = String(url);
+        if (u.includes('/contract/detail')) {
+          return {
+            ok: true, status: 200,
+            json: async () => ({ data: { symbol: 'SILVER_USDT', priceScale: 4, volScale: 2, minVol: 0.01 } }),
+            text: async () => JSON.stringify({ data: { symbol: 'SILVER_USDT', priceScale: 4, volScale: 2, minVol: 0.01 } }),
+          };
+        }
         return {
           ok: true, status: 200,
           text: async () => JSON.stringify({ success: true, code: 0, data: { orderId: 'scalp-1' } }),
@@ -259,9 +267,10 @@ describe('scalpMonitorTick', () => {
     const r = await ctx.app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.fired, true);
     assert.equal(r.result.sent, true);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'https://my.workers.dev/api/v1/private/order/submit');
-    const body = JSON.parse(calls[0].init.body);
+    const orderCalls = calls.filter(c => String(c.url).includes('/order/submit'));
+    assert.equal(orderCalls.length, 1);
+    assert.equal(orderCalls[0].url, 'https://my.workers.dev/api/v1/private/order/submit');
+    const body = JSON.parse(orderCalls[0].init.body);
     assert.equal(body.symbol, 'SILVER_USDT');
     assert.equal(body.side, 3); // 3 = open short
     // SILVER defaults to 200× (trio) → mechanical SL/TP with quick-take TP.
