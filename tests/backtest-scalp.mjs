@@ -172,6 +172,72 @@ function simulateWithFillModel(klines, fireIdx, sug, cancelTtlBars) {
   return { ...simulateForward(klines, fillIdx, sug), filled: true, fillIdx };
 }
 
+// Trailing TP simulation. No fixed TP; once peak NET margin reaches armPct,
+// trail closes when the bar retraces by trailPct margin from peak. Mirrors
+// the live _trailingTakeProfit which polls every 5s and market-closes.
+// Within-bar resolution: SL checked first (conservative), then peak updated
+// from favorable extreme, then trail-trigger checked against unfavorable
+// extreme using the new peak.
+function simulateTrail(klines, fireIdx, sug, lev, armPct, trailPct) {
+  const { dir, entry, sl } = sug;
+  const feeBurden = 0.08 * lev;
+  let peakMarginPct = -Infinity;
+  let armed = false;
+  for (let i = fireIdx + 1; i < Math.min(klines.length, fireIdx + 1 + SIM_HORIZON); i++) {
+    const k = klines[i];
+    if (dir === 'bull' && k.l <= sl) return { result: 'loss', exitIdx: i, exit: sl, filled: true, fillIdx: fireIdx };
+    if (dir === 'bear' && k.h >= sl) return { result: 'loss', exitIdx: i, exit: sl, filled: true, fillIdx: fireIdx };
+    const favorablePrice = dir === 'bull' ? k.h : k.l;
+    const pricePct = dir === 'bull'
+      ? (favorablePrice - entry) / entry * 100
+      : (entry - favorablePrice) / entry * 100;
+    const netMarginPct = pricePct * lev - feeBurden;
+    if (netMarginPct > peakMarginPct) peakMarginPct = netMarginPct;
+    if (peakMarginPct >= armPct) armed = true;
+    if (armed) {
+      const exitNetMarginPct = peakMarginPct - trailPct;
+      const exitGrossPriceMovePct = (exitNetMarginPct + feeBurden) / lev;
+      const exitPrice = dir === 'bull'
+        ? entry * (1 + exitGrossPriceMovePct / 100)
+        : entry * (1 - exitGrossPriceMovePct / 100);
+      const unfavorable = dir === 'bull' ? k.l : k.h;
+      const triggered = dir === 'bull' ? unfavorable <= exitPrice : unfavorable >= exitPrice;
+      if (triggered) return { result: 'win', exitIdx: i, exit: exitPrice, filled: true, fillIdx: fireIdx };
+    }
+  }
+  return { result: 'expired', exitIdx: fireIdx + SIM_HORIZON, exit: entry, filled: true, fillIdx: fireIdx };
+}
+
+// Signal-aware cancel. Wait the full horizon for a fill, BUT cancel the
+// limit the moment the bias-direction move plays out without us filling
+// (price reaches TP without first retracing to FVG mid). Captures "trade
+// thesis already happened, we missed it" — subsequent retracement to
+// FVG mid would be a stale entry. No fixed-time cancel; only signal-state
+// triggers it.
+function simulateSignalCancel(klines, fireIdx, sug) {
+  const { dir, entry, sl, tp } = sug;
+  let fillIdx = -1;
+  const limit = Math.min(klines.length - 1, fireIdx + SIM_HORIZON);
+  for (let j = fireIdx + 1; j <= limit; j++) {
+    const k = klines[j];
+    if (dir === 'bull') {
+      // Long limit below current. Fill when low touches entry. Missed-winner
+      // when high reaches TP without the low ever touching entry first.
+      if (k.l <= entry) { fillIdx = j; break; }
+      if (k.h >= tp) return { result: 'missed-winner', exitIdx: j, exit: tp, filled: false, fillIdx: -1 };
+    } else {
+      // Short limit above current. Fill when high touches entry. Missed-winner
+      // when low reaches TP without the high ever touching entry first.
+      if (k.h >= entry) { fillIdx = j; break; }
+      if (k.l <= tp) return { result: 'missed-winner', exitIdx: j, exit: tp, filled: false, fillIdx: -1 };
+    }
+  }
+  if (fillIdx < 0) {
+    return { result: 'expired-unfilled', exitIdx: limit, exit: entry, filled: false, fillIdx: -1 };
+  }
+  return { ...simulateForward(klines, fillIdx, sug), filled: true, fillIdx };
+}
+
 // Market-entry model. Live observation: the limit-at-FVG-mid approach
 // systematically misses winners (price runs with the bias, never retraces).
 // Market order fills at the open of bar i+1 (closest proxy for "live price
@@ -221,9 +287,40 @@ function runConfig(klines, app, cfg) {
     const distPct = Math.abs((livePrice - sug.entry) / sug.entry) * 100;
     if (distPct > proximityPct) continue;
 
-    const out = cfg.marketEntry
-      ? simulateMarketEntry(klines, i, sug, lev, tpNetPct)
-      : simulateWithFillModel(klines, i, sug, cancelTtlBars);
+    // Pick exit model. Trail + market = ship-likely combo (100% fill via
+    // market entry, trail handles exit). Trail + 90s = current live shape
+    // (limit fills if price retraces, trail handles exit). Etc.
+    let out;
+    if (cfg.trail && cfg.marketEntry) {
+      const next = klines[i + 1];
+      if (!next) {
+        out = { result: 'expired', exitIdx: i + 1, exit: sug.entry, filled: false, fillIdx: -1 };
+      } else {
+        const actualEntry = next.o;
+        // Re-anchor SL to actual fill price (mirrors live force-fire math).
+        const slPct = (100 / lev) * 0.7 / 100;
+        const newSl = sug.dir === 'bull' ? actualEntry * (1 - slPct) : actualEntry * (1 + slPct);
+        out = { ...simulateTrail(klines, i + 1, { ...sug, entry: actualEntry, sl: newSl }, lev, cfg.trail.armPct, cfg.trail.trailPct), actualEntry };
+      }
+    } else if (cfg.trail && cancelTtlBars > 0) {
+      let fillIdx = -1;
+      for (let j = i + 1; j <= Math.min(klines.length - 1, i + cancelTtlBars); j++) {
+        const k = klines[j];
+        const filled = sug.dir === 'bull' ? k.l <= sug.entry : k.h >= sug.entry;
+        if (filled) { fillIdx = j; break; }
+      }
+      out = fillIdx < 0
+        ? { result: 'cancelled', exitIdx: i + cancelTtlBars, exit: sug.entry, filled: false, fillIdx: -1 }
+        : { ...simulateTrail(klines, fillIdx, sug, lev, cfg.trail.armPct, cfg.trail.trailPct), fillIdx };
+    } else if (cfg.trail) {
+      out = simulateTrail(klines, i, sug, lev, cfg.trail.armPct, cfg.trail.trailPct);
+    } else if (cfg.marketEntry) {
+      out = simulateMarketEntry(klines, i, sug, lev, tpNetPct);
+    } else if (cfg.signalCancel) {
+      out = simulateSignalCancel(klines, i, sug);
+    } else {
+      out = simulateWithFillModel(klines, i, sug, cancelTtlBars);
+    }
     if (!out.filled) {
       trades.push({
         i, t: klines[i].t, dir: sug.dir, source: sug.source,
@@ -306,19 +403,19 @@ function fmt(s) {
   const { app } = loadApp();
 
   const configs = {
-    // Limit-at-FVG-mid (current live behavior). Realistic — most signals
-    // don't retrace within 90s and produce no trade.
-    'A · LIMIT, cancel @ 90s (current)':   { leverage: 200, tpNetPct: 50, cancelTtlBars: 2 },
-    // Limit-at-FVG-mid with overly-optimistic fill assumption (legacy).
-    // Over-counts winners — would-have-filled fantasy.
-    'B · LIMIT, instant fill (legacy)':    { leverage: 200, tpNetPct: 50 },
-    // MARKET at next-bar open. Captures the signal-direction move, slippage
-    // from FVG mid → bar-open price priced in. This is the proposed fix.
-    'C · MARKET @ next-bar open':          { leverage: 200, tpNetPct: 50, marketEntry: true },
-    // MARKET with tighter TP (NET 10% — quicker scalp turnover).
-    'D · MARKET, tighter NET 10% TP':      { leverage: 200, tpNetPct: 10, marketEntry: true },
-    // MARKET with mid-width TP for the in-between data point.
-    'E · MARKET, NET 25% TP':              { leverage: 200, tpNetPct: 25, marketEntry: true },
+    // Current live shape: LIMIT entry @ FVG mid, trail exit. Realistic
+    // fill window (90s ≈ 2 bars). Most signals miss; trail captures
+    // runners on the ones that do fill.
+    'A · LIMIT + TRAIL 20/5 (current ship)':  { leverage: 200, trail: { armPct: 20, trailPct: 5 }, cancelTtlBars: 2 },
+    // The competitor: MARKET entry @ next bar (100% fill, no missed
+    // signals) + same trail. SL re-anchored to fill price.
+    'B · MARKET + TRAIL 20/5':                { leverage: 200, trail: { armPct: 20, trailPct: 5 }, marketEntry: true },
+    // Market + tighter trail variants.
+    'C · MARKET + TRAIL 15/5':                { leverage: 200, trail: { armPct: 15, trailPct: 5 }, marketEntry: true },
+    'D · MARKET + TRAIL 10/5':                { leverage: 200, trail: { armPct: 10, trailPct: 5 }, marketEntry: true },
+    'E · MARKET + TRAIL 30/10':               { leverage: 200, trail: { armPct: 30, trailPct: 10 }, marketEntry: true },
+    // For reference — fixed TP, market entry.
+    'F · MARKET + Fixed +20 TP':              { leverage: 200, tpNetPct: 20, marketEntry: true },
   };
 
   console.log('─'.repeat(96));

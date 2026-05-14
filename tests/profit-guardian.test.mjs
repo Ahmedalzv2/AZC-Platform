@@ -10,6 +10,11 @@ function liveSetup(app, sandbox) {
   // Default to LIVE mode so closeMexcPosition actually attempts the
   // signed call — but we stub fetch so nothing hits the network.
   app.setLiveTradingDryRun(false);
+  // _profitGuardian skips high-lev positions (those are managed by
+  // _trailingTakeProfit). Drop SOL leverage to 50× so these tests cover
+  // the legacy break-even-protection path. Trail-specific tests live in
+  // a separate describe block below at default 200×.
+  app.setAssetLeverage('SOL', 50);
 }
 
 function openLong(app, sym, entry, mark) {
@@ -160,5 +165,123 @@ describe('_profitGuardian — break-even protection for winning positions', () =
     app._positionPeakProfit = {};
     await app._profitGuardian();
     assert.equal(fetchCalls, 0, 'no calls when master off');
+  });
+});
+
+describe('_trailingTakeProfit — high-lev runners (arm at +20% margin, exit on 5% pullback)', () => {
+  function liveSetupHighLev(app, sandbox) {
+    app.loadTradeModes();
+    app.saveMexcKeys('k', 's');
+    sandbox.localStorage.setItem('ict_mexc_worker_url', 'https://w.workers.dev');
+    app.setLiveTradingEnabled(true);
+    app.setLiveTradingDryRun(false);
+    // SOL defaults to 200× (trio); explicit for clarity.
+    app.setAssetLeverage('SOL', 200);
+  }
+
+  test('thresholds: arm at 20% NET margin, trail by 5%', () => {
+    const { app } = loadApp();
+    assert.equal(app.TRAIL_ARM_NET_MARGIN_PCT, 20);
+    assert.equal(app.TRAIL_FROM_PEAK_MARGIN_PCT, 5);
+  });
+
+  test('does not arm when peak margin is below 20% NET', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetupHighLev(app, sandbox);
+    // Long entry 100, mark 100.05 → +0.05% price × 200× = +10% gross → -6% net
+    // (after 16% fee burden). Below the +20% arm threshold.
+    openLong(app, 'SOL', 100, 100.05);
+    const closeBodies = [];
+    sandbox.fetch = async (url, init) => {
+      if (init && init.body) {
+        try {
+          const b = JSON.parse(init.body);
+          if (b.side === 2 && b.type === 5) closeBodies.push(b);
+        } catch (e) {}
+      }
+      return { ok: true, status: 200, text: async () => '{"success":true,"code":0}' };
+    };
+    Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
+    await app._trailingTakeProfit();
+    assert.equal(app._trailState.SOL?.armed, false, 'must not arm below +20% NET margin');
+    assert.equal(closeBodies.length, 0, 'no close call');
+  });
+
+  test('arms when long position touches +20% NET margin (= +0.18% price at 200×)', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetupHighLev(app, sandbox);
+    // Long entry 100, mark 100.20 → +0.20% price × 200× = +40% gross → +24% net.
+    openLong(app, 'SOL', 100, 100.20);
+    Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
+    sandbox.fetch = async () => ({ ok: true, status: 200, text: async () => '{"success":true,"code":0}' });
+    await app._trailingTakeProfit();
+    assert.equal(app._trailState.SOL.armed, true, 'should arm — peak NET margin clears +20%');
+    assert.ok(app._trailState.SOL.peakNetMarginPct >= 20, `peak ≥ 20%, got ${app._trailState.SOL.peakNetMarginPct}`);
+  });
+
+  test('armed long retraces 5% from peak → market close (side=2 type=5)', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetupHighLev(app, sandbox);
+    openLong(app, 'SOL', 100, 100.30);  // +60% gross → +44% net peak
+    const calls = [];
+    sandbox.fetch = async (url, init) => {
+      calls.push({ body: init && init.body ? JSON.parse(init.body) : null });
+      return { ok: true, status: 200, text: async () => '{"success":true,"code":0}' };
+    };
+    Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
+    await app._trailingTakeProfit();          // tick 1 — arms at +44% net
+    assert.equal(app._trailState.SOL.armed, true);
+    const peak = app._trailState.SOL.peakNetMarginPct;
+    // Retrace to a NET margin that's > 5% below peak.
+    // Want: gross margin ≈ peak - 5 + ~3 (so net = peak - 5 fee-adjusted).
+    // Easier: just price back close to entry, well past 5% retrace.
+    app.ASSETS.find(x => x.symbol === 'SOL').price = 100.04; // +8% gross → -8% net
+    await app._trailingTakeProfit();          // tick 2 — should fire close
+    const closeCalls = calls.filter(c => c.body && c.body.side === 2 && c.body.type === 5);
+    assert.equal(closeCalls.length, 1, `one market-close (got ${calls.length} total, ${closeCalls.length} matching close)`);
+    assert.equal(closeCalls[0].body.symbol, 'SOL_USDT');
+  });
+
+  test('low-lev positions skipped (handled by profit guardian instead)', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetupHighLev(app, sandbox);
+    app.setAssetLeverage('SOL', 50);  // drop below LEVERAGE_HIGH_THRESHOLD
+    openLong(app, 'SOL', 100, 100.20);  // peaks high but low-lev
+    sandbox.fetch = async () => ({ ok: true, status: 200, text: async () => '{"success":true,"code":0}' });
+    Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
+    await app._trailingTakeProfit();
+    assert.equal(app._trailState.SOL, undefined, 'low-lev must not be tracked by trail');
+  });
+
+  test('clears tracker when position closes externally', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetupHighLev(app, sandbox);
+    openLong(app, 'SOL', 100, 100.20);
+    Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
+    sandbox.fetch = async () => ({ ok: true, status: 200, text: async () => '{"success":true,"code":0}' });
+    await app._trailingTakeProfit();
+    assert.ok(app._trailState.SOL, 'tracker exists');
+    app._openPositions = {};
+    await app._trailingTakeProfit();
+    assert.equal(app._trailState.SOL, undefined, 'tracker cleared');
+  });
+
+  test('skipped entirely when master switch is OFF', async () => {
+    const { app, sandbox } = loadApp();
+    app.loadTradeModes();
+    openLong(app, 'SOL', 100, 100.30);
+    const closeBodies = [];
+    sandbox.fetch = async (url, init) => {
+      if (init && init.body) {
+        try {
+          const b = JSON.parse(init.body);
+          if (b.side === 2 && b.type === 5) closeBodies.push(b);
+        } catch (e) {}
+      }
+      return { ok: true, status: 200, text: async () => '' };
+    };
+    Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
+    await app._trailingTakeProfit();
+    assert.equal(closeBodies.length, 0, 'no close call when master off');
   });
 });

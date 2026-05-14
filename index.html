@@ -4221,6 +4221,10 @@
     const lev = getAssetLeverage(asset.symbol);
     if (lev < LEVERAGE_HIGH_THRESHOLD) return sug;
     const slPct = (100 / lev) * 0.7;
+    // Fixed gross TP retained for diagnostics/legacy paths only — high-lev
+    // orders are now trail-managed (no takeProfitPrice on the MEXC body).
+    // _trailingTakeProfit arms at TRAIL_ARM_NET_MARGIN_PCT and exits on
+    // pullback from peak. See its docs for the why.
     const grossTpMarginPct = QUICK_TAKE_NET_MARGIN_PCT + _roundTripFeePctMargin(lev);
     const tpPct = grossTpMarginPct / lev;
     const slDist = sug.entry * (slPct / 100);
@@ -4228,7 +4232,9 @@
     const sl = sug.dir === 'bull' ? sug.entry - slDist : sug.entry + slDist;
     const tp = sug.dir === 'bull' ? sug.entry + tpDist : sug.entry - tpDist;
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
-    return { ...sug, sl: round(sl), tp: round(tp), rr: +(tpPct / slPct).toFixed(3), source: (sug.source || '') + '+highlev' };
+    // tp is set to null so placeMexcFuturesOrder omits takeProfitPrice
+    // from the body. The trailing-TP poll exits the position.
+    return { ...sug, sl: round(sl), tp: null, rr: null, source: (sug.source || '') + '+highlev', _diagTp: round(tp), _diagTpPct: tpPct };
   }
 
   // HMAC-SHA256(secret, message) → lowercase hex via SubtleCrypto.
@@ -4396,8 +4402,14 @@
       type: 1,         // 1 = limit
       openType: 1,     // 1 = isolated margin
       stopLossPrice: roundTo(sl, pScale),
-      takeProfitPrice: roundTo(tp, pScale),
     };
+    // tp may be null/undefined for high-lev trail-managed orders. MEXC
+    // accepts orders without takeProfitPrice — exit is handled by the
+    // trailing-TP poll instead. Sending tp:0 (legacy default) would also
+    // be rejected by MEXC as an invalid price, so explicit null check.
+    if (tp != null && isFinite(Number(tp)) && Number(tp) > 0) {
+      body.takeProfitPrice = roundTo(tp, pScale);
+    }
 
     // ── DRY-RUN PATH ─────────────────────────────────────────────
     if (_liveTradingDryRun) {
@@ -4670,9 +4682,11 @@
       next[bare].push(p);
     }
     _openPositions = next;
-    // Profit guardian — runs on the same 5s cycle. Pure protection-only:
-    // can never open positions, only close winners that have retraced.
+    // Profit guardian — low-lev positions only (high-lev skip inside).
     try { await _profitGuardian(); } catch (e) {}
+    // Trailing TP — high-lev positions only. Arms at +20% NET margin,
+    // exits on 5% pullback from peak. Lets runners run.
+    try { await _trailingTakeProfit(); } catch (e) {}
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -4708,6 +4722,9 @@
       }
     }
     for (const sym in _openPositions) {
+      // High-lev positions are managed by _trailingTakeProfit (tighter +
+      // moon-aware). Skip them here to avoid duplicate-close races.
+      if (typeof _isHighLeverage === 'function' && _isHighLeverage(sym)) continue;
       const pos = _openPositions[sym][0];
       if (!pos) continue;
       const entry = Number(pos.holdAvgPrice);
@@ -4732,6 +4749,80 @@
           try { showToast(`🛡 ${sym} break-even guard closed (peak +${trail.peakPct.toFixed(3)}% → exit ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(3)}%)`, 'ok'); } catch (e) {}
         } catch (e) {}
         delete _positionPeakProfit[sym];
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Trailing take-profit — high-lev positions only.
+  //
+  // User intent: "TP 20% and keep going with a new trade unless u sure
+  // its going to moon." Fixed +20% TP closes every winner at the same
+  // point; runners that would have made +200% get capped. Trail solves
+  // that by exiting on pullback from peak rather than at a fixed target.
+  //
+  // Rules:
+  //   1. Position opens with NO takeProfitPrice on MEXC (mechanical SL
+  //      still ships normally). Exit is poll-driven from here.
+  //   2. On each 5s position-tick: compute current NET margin %
+  //      (gross price-move × lev − round-trip-fee × lev).
+  //   3. If NET margin ≥ TRAIL_ARM_NET_MARGIN_PCT, mark armed and track
+  //      the peak NET margin seen so far.
+  //   4. Once armed, if NET margin drops by TRAIL_FROM_PEAK_MARGIN_PCT
+  //      from the peak, submit a market close. Position locks in
+  //      (peak − trail) margin, minus a taker fee on exit.
+  //
+  // Tradeoffs vs the legacy fixed +20% TP:
+  //   ✓ Captures runners — no cap on the upside
+  //   ✓ Locks in ~(arm − trail) ≈ +15% on the typical hit-and-reverse
+  //   ✗ Poll-dependent — if the 5s tick misses a fast reversal the
+  //     position retraces unprotected (only SL catches it)
+  //   ✗ Cheap winners now exit ~5% lower in margin terms (1× round
+  //     trip fee worse on noise-driven hits)
+  //
+  // Backtest evidence in tests/backtest-scalp.mjs (config "TRAIL").
+  // ─────────────────────────────────────────────────────────────────────
+  const TRAIL_ARM_NET_MARGIN_PCT  = 20;  // peak NET margin % required to arm
+  const TRAIL_FROM_PEAK_MARGIN_PCT = 5;  // pull-back from peak that triggers close
+  const _trailState = {};                // { [sym]: { peakNetMarginPct, armed } }
+  const _trailClosed = {};               // { [sym]: { ts, peakPct, exitPct, sent } }
+
+  async function _trailingTakeProfit() {
+    if (!_liveTradingEnabled) return;
+    // Drop trackers for symbols no longer holding a position.
+    for (const sym of Object.keys(_trailState)) {
+      if (!_openPositions[sym] || !_openPositions[sym].length) {
+        delete _trailState[sym];
+      }
+    }
+    for (const sym in _openPositions) {
+      if (typeof _isHighLeverage !== 'function' || !_isHighLeverage(sym)) continue;
+      const pos = _openPositions[sym][0];
+      if (!pos) continue;
+      const entry  = Number(pos.holdAvgPrice);
+      const vol    = Number(pos.holdVol);
+      const isLong = Number(pos.positionType) === 1;
+      const lev    = (typeof getAssetLeverage === 'function') ? getAssetLeverage(sym) : 200;
+      const asset  = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === sym) : null;
+      const mark   = asset ? Number(asset.price) : NaN;
+      if (!entry || !vol || !isFinite(mark) || mark <= 0 || !isFinite(lev) || lev <= 0) continue;
+      const pricePct = isLong ? (mark - entry) / entry * 100 : (entry - mark) / entry * 100;
+      const grossMarginPct = pricePct * lev;
+      const feeBurden = (MEXC_MAKER_FEE_PCT + MEXC_TAKER_FEE_PCT) * lev;
+      const netMarginPct = grossMarginPct - feeBurden;
+
+      const state = _trailState[sym] || { peakNetMarginPct: netMarginPct, armed: false };
+      if (netMarginPct > state.peakNetMarginPct) state.peakNetMarginPct = netMarginPct;
+      if (state.peakNetMarginPct >= TRAIL_ARM_NET_MARGIN_PCT) state.armed = true;
+      _trailState[sym] = state;
+
+      if (state.armed && (state.peakNetMarginPct - netMarginPct) >= TRAIL_FROM_PEAK_MARGIN_PCT) {
+        try {
+          const r = await closeMexcPosition(sym, vol, isLong ? 1 : 3);
+          _trailClosed[sym] = { ts: Date.now(), peakPct: state.peakNetMarginPct, exitPct: netMarginPct, sent: !!r.sent };
+          try { showToast(`🚀 ${sym} trail-TP: peak +${state.peakNetMarginPct.toFixed(0)}% → exit +${netMarginPct.toFixed(0)}% (margin)`, 'ok'); } catch (e) {}
+        } catch (e) {}
+        delete _trailState[sym];
       }
     }
   }
@@ -4993,22 +5084,27 @@
     const slPct = _isHighLeverage(symbol) ? (100 / lev) * 0.7 / 100 : 0.004;
     const slDist = price * slPct;
     // Quick-take target: NET +QUICK_TAKE_NET_MARGIN_PCT% of margin after
-    // round-trip fees (matches _highLevLevels). Add fees back to get the
-    // gross TP price the order needs to fill at.
+    // round-trip fees. For low-lev fires we still send a fixed TP (no
+    // trail polling on those). For high-lev (trio at 200×) we ship the
+    // order with NO TP — _trailingTakeProfit handles exit on the 5s
+    // position-tick cycle, arming at +20% margin, exiting on 5% pullback.
     const grossTpMarginPct = QUICK_TAKE_NET_MARGIN_PCT + _roundTripFeePctMargin(lev);
     const tpPct = _isHighLeverage(symbol) ? (grossTpMarginPct / lev) / 100 : 0.004;
     const tpDist = price * tpPct;
     const entry = price;
     const sl = dir === 'LONG' ? price - slDist : price + slDist;
-    const tp = dir === 'LONG' ? price + tpDist : price - tpDist;
+    const tp = _isHighLeverage(symbol)
+      ? null
+      : (dir === 'LONG' ? price + tpDist : price - tpDist);
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+    const roundOrNull = v => (v == null ? null : round(v));
     const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
-    const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev };
+    const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: roundOrNull(tp), qty, leverage: lev };
     // Claim the pending-fire slot BEFORE the await (race-safety, see scalp).
     _markPendingFire(symbol);
     let r;
     try {
-      r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), round(tp), qty, lev, { force: true });
+      r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), roundOrNull(tp), qty, lev, { force: true });
     } catch (e) {
       _clearPendingFire(symbol);
       return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });

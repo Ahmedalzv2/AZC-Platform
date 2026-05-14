@@ -80,6 +80,8 @@ const EXPORTS = [
   'getFireStatus',
   'fetchMexcOpenPositions', '_positionsTick', 'closeMexcPosition', 'POSITIONS_REFRESH_INTERVAL_MS',
   '_profitGuardian', 'BREAK_EVEN_TRIGGER_PCT', 'BREAK_EVEN_CLOSE_PCT',
+  '_trailingTakeProfit', '_trailState', '_trailClosed',
+  'TRAIL_ARM_NET_MARGIN_PCT', 'TRAIL_FROM_PEAK_MARGIN_PCT',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode
   'getScalpTf', 'setScalpTf',

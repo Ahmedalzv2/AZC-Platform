@@ -52,10 +52,9 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.equal(r.entry, 80, 'fires at LIVE price, not stale FVG mid');
     const slPct = ((80 - r.sl) / 80) * 100;
     assert.ok(Math.abs(slPct - 0.35) < 0.01, `expected SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
-    const tpPct = ((r.tp - 80) / 80) * 100;
-    // Fee-aware: NET 20% margin + 16% round-trip fee at 200× = 36% gross
-    // margin → 0.18% price.
-    assert.ok(Math.abs(tpPct - 0.18) < 0.005, `Fee-aware TP ≈ 0.18% (20% net + 16% fees at 200×), got ${tpPct.toFixed(4)}%`);
+    // High-lev force-fires now ship without a fixed TP — the trailing
+    // TP poll handles exit on the 5s position-tick cycle. r.tp must be null.
+    assert.equal(r.tp, null, 'high-lev force-fire must omit fixed TP (trail-managed)');
   });
 
   test('low-lev asset: SL/TP use the flat 0.4% mechanical default', async () => {
@@ -71,7 +70,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.ok(Math.abs(slPct - 0.40) < 0.01, `expected SL ≈ 0.40% for low-lev, got ${slPct.toFixed(3)}%`);
   });
 
-  test('bullish bias → LONG; bearish bias → SHORT', async () => {
+  test('bullish bias → LONG; bearish bias → SHORT (high-lev: tp null, trail-managed)', async () => {
     const { app, sandbox } = loadApp();
     const s = bootSilverLive(app);
     s.price = 80;
@@ -82,7 +81,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     const r1 = await app.forceFireAsset('SILVER');
     assert.equal(r1.side, 'LONG');
     assert.ok(r1.sl < r1.entry, 'long SL below entry');
-    assert.ok(r1.tp > r1.entry, 'long TP above entry');
+    assert.equal(r1.tp, null, 'high-lev force-fire ships no fixed TP (trail-managed)');
 
     // Clear the post-fire lock so the second leg of this property test fires.
     // In production a duplicate within 60s is blocked on purpose; here we're
@@ -93,7 +92,27 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     const r2 = await app.forceFireAsset('SILVER');
     assert.equal(r2.side, 'SHORT');
     assert.ok(r2.sl > r2.entry, 'short SL above entry');
-    assert.ok(r2.tp < r2.entry, 'short TP below entry');
+    assert.equal(r2.tp, null, 'high-lev force-fire ships no fixed TP (trail-managed)');
+  });
+
+  test('low-lev still ships fixed TP (bullish → tp above entry; bearish → tp below)', async () => {
+    const { app, sandbox } = loadApp();
+    const s = bootSilverLive(app);
+    app.setAssetLeverage('SILVER', 10);  // low-lev path keeps the legacy TP
+    s.price = 80;
+    sandbox.localStorage.setItem('ict_calc_account', '10');
+    sandbox.localStorage.setItem('ict_calc_risk', '100');
+
+    s.bias = 'BULLISH';
+    const r1 = await app.forceFireAsset('SILVER');
+    assert.equal(r1.side, 'LONG');
+    assert.ok(r1.tp > r1.entry, 'low-lev long TP above entry');
+
+    delete app._pendingFires.SILVER;
+    s.bias = 'BEARISH';
+    const r2 = await app.forceFireAsset('SILVER');
+    assert.equal(r2.side, 'SHORT');
+    assert.ok(r2.tp < r2.entry, 'low-lev short TP below entry');
   });
 
   test('dry-run mode logs the order to the journal without touching network', async () => {

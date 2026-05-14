@@ -63,44 +63,25 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     assert.ok(Math.abs(actualSlPct - expectedSlPct) < 0.01, `SL should be ~${expectedSlPct}% from entry, got ${actualSlPct.toFixed(3)}%`);
   });
 
-  test('Quick-take TP — NET +20% margin after fees → 36% gross at 200× (≈0.18% price)', () => {
-    // QUICK_TAKE_NET_MARGIN_PCT = 20 (net of fees).
-    // Round-trip fee = (0.02 + 0.06) × 200 = 16% margin.
-    // Gross TP = 20 + 16 = 36% margin = 0.18% price at 200×.
+  test('high-lev tp is null (trail-managed, no fixed TP on the order)', () => {
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bull', 0.8);
     const out = app._highLevLevels(sol, raw);
-    const slPct = (Math.abs(out.entry - out.sl) / out.entry) * 100;
-    const tpPct = (Math.abs(out.tp - out.entry) / out.entry) * 100;
-    assert.ok(Math.abs(slPct - 0.35) < 0.01, `SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
-    assert.ok(Math.abs(tpPct - 0.18) < 0.005, `gross TP ≈ 0.18% at 200×, got ${tpPct.toFixed(4)}%`);
-    // R:R now 0.18 / 0.35 ≈ 0.514
-    assert.ok(Math.abs(out.rr - 0.514) < 0.01, `rr ≈ 0.514 (gross), got ${out.rr}`);
+    assert.equal(out.tp, null, 'high-lev tp must be null so MEXC body omits takeProfitPrice');
+    assert.equal(out.rr, null, 'rr is N/A without a fixed TP');
+    // Diagnostic fields still expose the legacy +20% target for the UI.
+    assert.ok(typeof out._diagTp === 'number', '_diagTp present for diagnostics');
+    assert.ok(typeof out._diagTpPct === 'number', '_diagTpPct present for diagnostics');
   });
 
-  test('Quick-take TP — NET still 20% margin AFTER round-trip fees deducted', () => {
-    // Sanity check: paying fees out of the gross gain leaves the configured
-    // net target. At 200×, gross 36% margin − 16% fees = 20% net.
-    const { app, sandbox } = loadApp();
-    const sol = setupSol(app, 200);
-    const lev = 200;
-    const raw = rawSug('bull', 0.8);
-    const out = app._highLevLevels(sol, raw);
-    const tpPriceMovePct = (Math.abs(out.tp - out.entry) / out.entry) * 100;
-    const grossMarginGain = tpPriceMovePct * lev;
-    const feeBurden = (app.MEXC_MAKER_FEE_PCT + app.MEXC_TAKER_FEE_PCT) * lev;
-    const netMargin = grossMarginGain - feeBurden;
-    assert.ok(Math.abs(netMargin - 20) < 0.5, `net margin gain at TP ≈ 20%, got ${netMargin.toFixed(2)}%`);
-  });
-
-  test('bear setup: SL above entry, TP below', () => {
+  test('bear setup: SL above entry, tp null', () => {
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bear', 0.8);
     const out = app._highLevLevels(sol, raw);
     assert.ok(out.sl > out.entry, 'bear SL must be above entry');
-    assert.ok(out.tp < out.entry, 'bear TP must be below entry');
+    assert.equal(out.tp, null, 'high-lev tp must be null');
   });
 
   test('100× (right at threshold): override fires; tighter than 200× since lev is lower', () => {

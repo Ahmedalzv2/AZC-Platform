@@ -273,13 +273,12 @@ describe('scalpMonitorTick', () => {
     const body = JSON.parse(orderCalls[0].init.body);
     assert.equal(body.symbol, 'SILVER_USDT');
     assert.equal(body.side, 3); // 3 = open short
-    // SILVER defaults to 200× (trio) → mechanical SL/TP with fee-aware TP.
-    // entry 75.65 SHORT, SL = entry × 1.0035 ≈ 75.92,
-    // TP: NET 20% margin after fees → gross 36% margin → 0.18% price →
-    // 75.65 × (1 - 0.0018) ≈ 75.51.
+    // SILVER defaults to 200× (trio) → mechanical SL only on the body.
+    // No takeProfitPrice — trail-managed exit. Entry 75.65 SHORT,
+    // SL = entry × 1.0035 ≈ 75.92.
     assert.equal(body.price, 75.65);
     assert.ok(Math.abs(body.stopLossPrice - 75.92) < 0.02, `sl ${body.stopLossPrice}`);
-    assert.ok(Math.abs(body.takeProfitPrice - 75.51) < 0.02, `tp ${body.takeProfitPrice}`);
+    assert.equal(body.takeProfitPrice, undefined, 'high-lev order body must omit takeProfitPrice (trail-managed)');
   });
 
   test('SECOND fire within pending-fire lock is BLOCKED (closes the duplicate-fire race)', async () => {
