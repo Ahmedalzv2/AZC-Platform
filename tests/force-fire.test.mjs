@@ -53,9 +53,9 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     const slPct = ((80 - r.sl) / 80) * 100;
     assert.ok(Math.abs(slPct - 0.35) < 0.01, `expected SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
     const tpPct = ((r.tp - 80) / 80) * 100;
-    // Fee-aware: NET 50% margin + 16% round-trip fee at 200× = 66% gross
-    // margin → 0.33% price.
-    assert.ok(Math.abs(tpPct - 0.33) < 0.005, `Fee-aware TP ≈ 0.33% (50% net + 16% fees at 200×), got ${tpPct.toFixed(4)}%`);
+    // Fee-aware: NET 20% margin + 16% round-trip fee at 200× = 36% gross
+    // margin → 0.18% price.
+    assert.ok(Math.abs(tpPct - 0.18) < 0.005, `Fee-aware TP ≈ 0.18% (20% net + 16% fees at 200×), got ${tpPct.toFixed(4)}%`);
   });
 
   test('low-lev asset: SL/TP use the flat 0.4% mechanical default', async () => {
