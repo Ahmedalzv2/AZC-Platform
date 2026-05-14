@@ -151,12 +151,34 @@ function simulateForward(klines, fireIdx, sug) {
   return { result: 'expired', exitIdx: fireIdx + SIM_HORIZON, exit: entry };
 }
 
+// Model the unfilled-limit cancel behavior. cancelTtlBars=0 → legacy assumption
+// "limit fills at signal-bar close". cancelTtlBars>0 → watch bars i+1..i+N for
+// price to actually trade through sug.entry; if it doesn't, the order is
+// cancelled (no fill, no PnL). 90s ≈ 1.5 bars at 1m → use 2 for "90s cancel ON",
+// 1 for stricter "60s cancel". Cancellations count separately from win/loss.
+function simulateWithFillModel(klines, fireIdx, sug, cancelTtlBars) {
+  if (!cancelTtlBars || cancelTtlBars <= 0) {
+    return { ...simulateForward(klines, fireIdx, sug), filled: true, fillIdx: fireIdx };
+  }
+  let fillIdx = -1;
+  for (let j = fireIdx + 1; j <= Math.min(klines.length - 1, fireIdx + cancelTtlBars); j++) {
+    const k = klines[j];
+    const filled = sug.dir === 'bull' ? k.l <= sug.entry : k.h >= sug.entry;
+    if (filled) { fillIdx = j; break; }
+  }
+  if (fillIdx < 0) {
+    return { result: 'cancelled', exitIdx: fireIdx + cancelTtlBars, exit: sug.entry, filled: false, fillIdx: -1 };
+  }
+  return { ...simulateForward(klines, fillIdx, sug), filled: true, fillIdx };
+}
+
 function runConfig(klines, app, cfg) {
   const trades = [];
   let cursorTs = 0;
   const lev = cfg.leverage ?? LEVERAGE;
   const tpNetPct = cfg.tpNetPct ?? 10;
   const proximityPct = cfg.proximityPct ?? HIGH_LEV_PROXIMITY_PCT;
+  const cancelTtlBars = cfg.cancelTtlBars ?? 0;
 
   for (let i = WINDOW; i < klines.length - 1; i++) {
     if (klines[i].t < cursorTs) continue;
@@ -178,7 +200,17 @@ function runConfig(klines, app, cfg) {
     const distPct = Math.abs((livePrice - sug.entry) / sug.entry) * 100;
     if (distPct > proximityPct) continue;
 
-    const out = simulateForward(klines, i, sug);
+    const out = simulateWithFillModel(klines, i, sug, cancelTtlBars);
+    if (!out.filled) {
+      trades.push({
+        i, t: klines[i].t, dir: sug.dir, source: sug.source,
+        entry: sug.entry, sl: sug.sl, tp: sug.tp, exit: sug.entry,
+        result: 'cancelled', holdBars: out.exitIdx - i, netMarginPct: 0,
+      });
+      cursorTs = klines[Math.min(out.exitIdx, klines.length - 1)].t + 1;
+      continue;
+    }
+
     const priceMovePct = ((out.exit - sug.entry) / sug.entry) * 100 * (sug.dir === 'bull' ? 1 : -1);
     const grossMarginPct = priceMovePct * lev;
     const feeMarginPct = 0.08 * lev;
@@ -200,8 +232,12 @@ function summarize(trades) {
   const wins = trades.filter((t) => t.result === 'win').length;
   const losses = trades.filter((t) => t.result === 'loss').length;
   const expired = trades.filter((t) => t.result === 'expired').length;
+  const cancelled = trades.filter((t) => t.result === 'cancelled').length;
+  const filled = trades.length - cancelled;
   const totalNetMarginPct = trades.reduce((a, t) => a + t.netMarginPct, 0);
-  const expectancyPct = trades.length ? totalNetMarginPct / trades.length : 0;
+  // Expectancy is per FIRED trade (signals that produced an outcome). Cancelled
+  // limits never opened a position, so they don't dilute the per-trade number.
+  const expectancyPct = filled ? totalNetMarginPct / filled : 0;
   // Equity curve in margin units (each trade adds netMarginPct% of $0.20 margin).
   let peak = 0, trough = 0, equity = 0, maxDD = 0;
   for (const t of trades) {
@@ -213,15 +249,17 @@ function summarize(trades) {
   }
   const netUsd = (totalNetMarginPct / 100) * MARGIN_USD;
   return {
-    trades: trades.length, wins, losses, expired,
-    winRate: trades.length ? wins / (wins + losses || 1) : 0,
+    trades: trades.length, filled, wins, losses, expired, cancelled,
+    winRate: filled ? wins / (wins + losses || 1) : 0,
+    cancelRate: trades.length ? cancelled / trades.length : 0,
     expectancyPct, totalNetMarginPct, maxDdPct: maxDD,
     netUsd, _trades: trades,
   };
 }
 
 function fmt(s) {
-  return `${String(s.trades).padStart(4)} trades · win ${String((s.winRate*100).toFixed(0)).padStart(2)}% · exp ${(s.expectancyPct >= 0 ? '+' : '') + s.expectancyPct.toFixed(2)}% margin/trade · MDD -${s.maxDdPct.toFixed(0)}% · net ${(s.netUsd >= 0 ? '+$' : '-$') + Math.abs(s.netUsd).toFixed(2)}`;
+  const cancelStr = s.cancelled > 0 ? ` · cncl ${(s.cancelRate*100).toFixed(0)}%` : '';
+  return `${String(s.filled).padStart(4)} fills (${String(s.trades).padStart(4)} sigs${cancelStr}) · win ${String((s.winRate*100).toFixed(0)).padStart(2)}% · exp ${(s.expectancyPct >= 0 ? '+' : '') + s.expectancyPct.toFixed(2)}%/trade · MDD -${s.maxDdPct.toFixed(0)}% · net ${(s.netUsd >= 0 ? '+$' : '-$') + Math.abs(s.netUsd).toFixed(2)}`;
 }
 
 (async function main() {
@@ -242,14 +280,17 @@ function fmt(s) {
   const { app } = loadApp();
 
   const configs = {
-    'A · current 200× / TP NET 10%':       { leverage: 200, tpNetPct: 10 },
-    'B · 200× + phase gate':               { leverage: 200, tpNetPct: 10, phaseGate: true },
-    'C · 200× + confluence-only':          { leverage: 200, tpNetPct: 10, confluenceOnly: true },
-    'D · 200× + phase + confluence':       { leverage: 200, tpNetPct: 10, phaseGate: true, confluenceOnly: true },
-    'E · 200× + wider TP (NET 50%)':       { leverage: 200, tpNetPct: 50 },
-    'F · 200× + wider TP + phase + conf':  { leverage: 200, tpNetPct: 50, phaseGate: true, confluenceOnly: true },
-    'G · 50× / natural SL+TP (RR 1.5)':    { leverage: 50,  tpNetPct: 10, proximityPct: 0.15 },
-    'H · 50× + phase + confluence':        { leverage: 50,  tpNetPct: 10, proximityPct: 0.15, phaseGate: true, confluenceOnly: true },
+    // Shipped state — TP NET 50%, no cancel modelling (every signal "fills").
+    // This is the pre-PR baseline expectation. Over-counts trades vs reality.
+    'A · NET 50, no cancel (baseline)':    { leverage: 200, tpNetPct: 50 },
+    // The PR being tested: cancel unfilled limits after ~90s (≈ 2 bars at 1m).
+    // Realistic — drops signals whose price never retraced to FVG mid in time.
+    'B · NET 50, cancel @ 90s (THIS PR)':  { leverage: 200, tpNetPct: 50, cancelTtlBars: 2 },
+    // Stricter cancel (≈ 60s = 1 bar). Captures only fills happening in the
+    // very next bar after the signal.
+    'C · NET 50, cancel @ 60s':            { leverage: 200, tpNetPct: 50, cancelTtlBars: 1 },
+    // More generous cancel (≈ 180s = 3 bars). Upper bound on patience.
+    'D · NET 50, cancel @ 180s':           { leverage: 200, tpNetPct: 50, cancelTtlBars: 3 },
   };
 
   console.log('─'.repeat(96));
