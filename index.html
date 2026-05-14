@@ -4232,9 +4232,13 @@
     const sl = sug.dir === 'bull' ? sug.entry - slDist : sug.entry + slDist;
     const tp = sug.dir === 'bull' ? sug.entry + tpDist : sug.entry - tpDist;
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
-    // tp is set to null so placeMexcFuturesOrder omits takeProfitPrice
-    // from the body. The trailing-TP poll exits the position.
-    return { ...sug, sl: round(sl), tp: null, rr: null, source: (sug.source || '') + '+highlev', _diagTp: round(tp), _diagTpPct: tpPct };
+    // Visible ceiling TP — far out, so the trail almost always exits the
+    // position before this fires. See TRAIL_CEILING_NET_MARGIN_PCT docs.
+    const ceilingGrossMarginPct = TRAIL_CEILING_NET_MARGIN_PCT + _roundTripFeePctMargin(lev);
+    const ceilingPricePct = ceilingGrossMarginPct / lev;
+    const ceilingDist = sug.entry * (ceilingPricePct / 100);
+    const ceiling = sug.dir === 'bull' ? sug.entry + ceilingDist : sug.entry - ceilingDist;
+    return { ...sug, sl: round(sl), tp: round(ceiling), rr: +(ceilingPricePct / slPct).toFixed(3), source: (sug.source || '') + '+highlev', _diagTp: round(tp), _diagTpPct: tpPct };
   }
 
   // HMAC-SHA256(secret, message) → lowercase hex via SubtleCrypto.
@@ -4782,8 +4786,16 @@
   //
   // Backtest evidence in tests/backtest-scalp.mjs (config "TRAIL").
   // ─────────────────────────────────────────────────────────────────────
-  const TRAIL_ARM_NET_MARGIN_PCT  = 20;  // peak NET margin % required to arm
-  const TRAIL_FROM_PEAK_MARGIN_PCT = 5;  // pull-back from peak that triggers close
+  const TRAIL_ARM_NET_MARGIN_PCT      = 20;   // peak NET margin % required to arm
+  const TRAIL_FROM_PEAK_MARGIN_PCT    = 5;    // pull-back from peak that triggers close
+  // Visible-ceiling TP on the MEXC order body. Almost never reached in
+  // realistic 1m scalp ranges (≈1.08% price at 200×) — the trail closes
+  // the position well before this for typical winners. Its job is purely
+  // (a) make the order surface a visible TP value in MEXC's UI so the
+  // position doesn't look broken, and (b) act as a hard ceiling on truly
+  // extreme runners (genuinely "moon" trades). Backtest impact vs the
+  // trail-only model: zero on SILVER, ≤1% NET margin/trade on SOL.
+  const TRAIL_CEILING_NET_MARGIN_PCT  = 200;
   const _trailState = {};                // { [sym]: { peakNetMarginPct, armed } }
   const _trailClosed = {};               // { [sym]: { ts, peakPct, exitPct, sent } }
 
@@ -5084,27 +5096,27 @@
     const slPct = _isHighLeverage(symbol) ? (100 / lev) * 0.7 / 100 : 0.004;
     const slDist = price * slPct;
     // Quick-take target: NET +QUICK_TAKE_NET_MARGIN_PCT% of margin after
-    // round-trip fees. For low-lev fires we still send a fixed TP (no
-    // trail polling on those). For high-lev (trio at 200×) we ship the
-    // order with NO TP — _trailingTakeProfit handles exit on the 5s
-    // position-tick cycle, arming at +20% margin, exiting on 5% pullback.
+    // round-trip fees. For low-lev fires we use this directly as the fixed
+    // TP. For high-lev (trio at 200×) we ship the order with a far-out
+    // CEILING tp (NET TRAIL_CEILING_NET_MARGIN_PCT%) so MEXC's UI surfaces
+    // a visible TP value — the trail poll handles all typical exits well
+    // before that ceiling fires.
     const grossTpMarginPct = QUICK_TAKE_NET_MARGIN_PCT + _roundTripFeePctMargin(lev);
-    const tpPct = _isHighLeverage(symbol) ? (grossTpMarginPct / lev) / 100 : 0.004;
+    const tpPct = _isHighLeverage(symbol)
+      ? ((TRAIL_CEILING_NET_MARGIN_PCT + _roundTripFeePctMargin(lev)) / lev) / 100
+      : 0.004;
     const tpDist = price * tpPct;
     const entry = price;
     const sl = dir === 'LONG' ? price - slDist : price + slDist;
-    const tp = _isHighLeverage(symbol)
-      ? null
-      : (dir === 'LONG' ? price + tpDist : price - tpDist);
+    const tp = dir === 'LONG' ? price + tpDist : price - tpDist;
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
-    const roundOrNull = v => (v == null ? null : round(v));
     const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
-    const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: roundOrNull(tp), qty, leverage: lev };
+    const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev };
     // Claim the pending-fire slot BEFORE the await (race-safety, see scalp).
     _markPendingFire(symbol);
     let r;
     try {
-      r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), roundOrNull(tp), qty, lev, { force: true });
+      r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), round(tp), qty, lev, { force: true });
     } catch (e) {
       _clearPendingFire(symbol);
       return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });

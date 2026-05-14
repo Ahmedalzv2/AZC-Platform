@@ -52,9 +52,11 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.equal(r.entry, 80, 'fires at LIVE price, not stale FVG mid');
     const slPct = ((80 - r.sl) / 80) * 100;
     assert.ok(Math.abs(slPct - 0.35) < 0.01, `expected SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
-    // High-lev force-fires now ship without a fixed TP — the trailing
-    // TP poll handles exit on the 5s position-tick cycle. r.tp must be null.
-    assert.equal(r.tp, null, 'high-lev force-fire must omit fixed TP (trail-managed)');
+    // High-lev force-fires ship with a far-out ceiling TP (NET 200%
+    // margin ≈ 1.08% price at 200×). Visible in MEXC UI; trail handles
+    // typical exits well before this fires.
+    const tpPct = ((r.tp - 80) / 80) * 100;
+    assert.ok(Math.abs(tpPct - 1.08) < 0.01, `ceiling TP ≈ 1.08% price at 200×, got ${tpPct.toFixed(3)}%`);
   });
 
   test('low-lev asset: SL/TP use the flat 0.4% mechanical default', async () => {
@@ -70,7 +72,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.ok(Math.abs(slPct - 0.40) < 0.01, `expected SL ≈ 0.40% for low-lev, got ${slPct.toFixed(3)}%`);
   });
 
-  test('bullish bias → LONG; bearish bias → SHORT (high-lev: tp null, trail-managed)', async () => {
+  test('bullish bias → LONG; bearish bias → SHORT (high-lev: ceiling TP, trail-managed)', async () => {
     const { app, sandbox } = loadApp();
     const s = bootSilverLive(app);
     s.price = 80;
@@ -81,18 +83,15 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     const r1 = await app.forceFireAsset('SILVER');
     assert.equal(r1.side, 'LONG');
     assert.ok(r1.sl < r1.entry, 'long SL below entry');
-    assert.equal(r1.tp, null, 'high-lev force-fire ships no fixed TP (trail-managed)');
+    assert.ok(r1.tp > r1.entry, 'long ceiling TP above entry (visible in MEXC UI)');
 
-    // Clear the post-fire lock so the second leg of this property test fires.
-    // In production a duplicate within 60s is blocked on purpose; here we're
-    // verifying bias→side mapping, not the gate.
     delete app._pendingFires.SILVER;
 
     s.bias = 'BEARISH';
     const r2 = await app.forceFireAsset('SILVER');
     assert.equal(r2.side, 'SHORT');
     assert.ok(r2.sl > r2.entry, 'short SL above entry');
-    assert.equal(r2.tp, null, 'high-lev force-fire ships no fixed TP (trail-managed)');
+    assert.ok(r2.tp < r2.entry, 'short ceiling TP below entry');
   });
 
   test('low-lev still ships fixed TP (bullish → tp above entry; bearish → tp below)', async () => {

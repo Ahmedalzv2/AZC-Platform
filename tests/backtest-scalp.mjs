@@ -178,11 +178,20 @@ function simulateWithFillModel(klines, fireIdx, sug, cancelTtlBars) {
 // Within-bar resolution: SL checked first (conservative), then peak updated
 // from favorable extreme, then trail-trigger checked against unfavorable
 // extreme using the new peak.
-function simulateTrail(klines, fireIdx, sug, lev, armPct, trailPct) {
+function simulateTrail(klines, fireIdx, sug, lev, armPct, trailPct, ceilingNetPct) {
   const { dir, entry, sl } = sug;
   const feeBurden = 0.08 * lev;
   let peakMarginPct = -Infinity;
   let armed = false;
+  // Optional ceiling: a fixed TP on the order body that fires if price
+  // reaches it before the trail does. Visible to the user in MEXC UI.
+  let ceilingPrice = null;
+  if (ceilingNetPct != null) {
+    const ceilingGrossPriceMovePct = (ceilingNetPct + feeBurden) / lev;
+    ceilingPrice = dir === 'bull'
+      ? entry * (1 + ceilingGrossPriceMovePct / 100)
+      : entry * (1 - ceilingGrossPriceMovePct / 100);
+  }
   for (let i = fireIdx + 1; i < Math.min(klines.length, fireIdx + 1 + SIM_HORIZON); i++) {
     const k = klines[i];
     if (dir === 'bull' && k.l <= sl) return { result: 'loss', exitIdx: i, exit: sl, filled: true, fillIdx: fireIdx };
@@ -194,6 +203,12 @@ function simulateTrail(klines, fireIdx, sug, lev, armPct, trailPct) {
     const netMarginPct = pricePct * lev - feeBurden;
     if (netMarginPct > peakMarginPct) peakMarginPct = netMarginPct;
     if (peakMarginPct >= armPct) armed = true;
+    // Ceiling check: fixed TP order fires immediately when price touches it.
+    // Conservative: ceiling fires BEFORE trail check (worst case for trail).
+    if (ceilingPrice != null) {
+      const ceilHit = dir === 'bull' ? k.h >= ceilingPrice : k.l <= ceilingPrice;
+      if (ceilHit) return { result: 'win', exitIdx: i, exit: ceilingPrice, filled: true, fillIdx: fireIdx };
+    }
     if (armed) {
       const exitNetMarginPct = peakMarginPct - trailPct;
       const exitGrossPriceMovePct = (exitNetMarginPct + feeBurden) / lev;
@@ -300,7 +315,7 @@ function runConfig(klines, app, cfg) {
         // Re-anchor SL to actual fill price (mirrors live force-fire math).
         const slPct = (100 / lev) * 0.7 / 100;
         const newSl = sug.dir === 'bull' ? actualEntry * (1 - slPct) : actualEntry * (1 + slPct);
-        out = { ...simulateTrail(klines, i + 1, { ...sug, entry: actualEntry, sl: newSl }, lev, cfg.trail.armPct, cfg.trail.trailPct), actualEntry };
+        out = { ...simulateTrail(klines, i + 1, { ...sug, entry: actualEntry, sl: newSl }, lev, cfg.trail.armPct, cfg.trail.trailPct, cfg.trail.ceilingPct), actualEntry };
       }
     } else if (cfg.trail && cancelTtlBars > 0) {
       let fillIdx = -1;
@@ -311,9 +326,9 @@ function runConfig(klines, app, cfg) {
       }
       out = fillIdx < 0
         ? { result: 'cancelled', exitIdx: i + cancelTtlBars, exit: sug.entry, filled: false, fillIdx: -1 }
-        : { ...simulateTrail(klines, fillIdx, sug, lev, cfg.trail.armPct, cfg.trail.trailPct), fillIdx };
+        : { ...simulateTrail(klines, fillIdx, sug, lev, cfg.trail.armPct, cfg.trail.trailPct, cfg.trail.ceilingPct), fillIdx };
     } else if (cfg.trail) {
-      out = simulateTrail(klines, i, sug, lev, cfg.trail.armPct, cfg.trail.trailPct);
+      out = simulateTrail(klines, i, sug, lev, cfg.trail.armPct, cfg.trail.trailPct, cfg.trail.ceilingPct);
     } else if (cfg.marketEntry) {
       out = simulateMarketEntry(klines, i, sug, lev, tpNetPct);
     } else if (cfg.signalCancel) {
@@ -403,19 +418,19 @@ function fmt(s) {
   const { app } = loadApp();
 
   const configs = {
-    // Current live shape: LIMIT entry @ FVG mid, trail exit. Realistic
-    // fill window (90s ≈ 2 bars). Most signals miss; trail captures
-    // runners on the ones that do fill.
-    'A · LIMIT + TRAIL 20/5 (current ship)':  { leverage: 200, trail: { armPct: 20, trailPct: 5 }, cancelTtlBars: 2 },
-    // The competitor: MARKET entry @ next bar (100% fill, no missed
-    // signals) + same trail. SL re-anchored to fill price.
-    'B · MARKET + TRAIL 20/5':                { leverage: 200, trail: { armPct: 20, trailPct: 5 }, marketEntry: true },
-    // Market + tighter trail variants.
-    'C · MARKET + TRAIL 15/5':                { leverage: 200, trail: { armPct: 15, trailPct: 5 }, marketEntry: true },
-    'D · MARKET + TRAIL 10/5':                { leverage: 200, trail: { armPct: 10, trailPct: 5 }, marketEntry: true },
-    'E · MARKET + TRAIL 30/10':               { leverage: 200, trail: { armPct: 30, trailPct: 10 }, marketEntry: true },
-    // For reference — fixed TP, market entry.
-    'F · MARKET + Fixed +20 TP':              { leverage: 200, tpNetPct: 20, marketEntry: true },
+    // Baseline: trail-only, no visible ceiling (current ship — what user
+    // sees as "no TP" on the MEXC order surface).
+    'A · TRAIL 20/5, no ceiling (current)':   { leverage: 200, trail: { armPct: 20, trailPct: 5 }, cancelTtlBars: 2 },
+    // Proposed fix: same trail, but with a visible ceiling TP on the order.
+    // Ceiling fires if price runs straight through it without retracing
+    // 5% from peak first. Capped upside vs no ceiling.
+    'B · TRAIL 20/5 + ceiling 100':           { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 100 }, cancelTtlBars: 2 },
+    'C · TRAIL 20/5 + ceiling 200':           { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'D · TRAIL 20/5 + ceiling 500':           { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 500 }, cancelTtlBars: 2 },
+    // Sanity check: very tight ceiling = same as fixed TP, no trail benefit.
+    'E · TRAIL 20/5 + ceiling 30 (tight)':    { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 30 }, cancelTtlBars: 2 },
+    // For comparison — old fixed +20 TP.
+    'F · Fixed +20 TP, 90s fill':             { leverage: 200, tpNetPct: 20, cancelTtlBars: 2 },
   };
 
   console.log('─'.repeat(96));
