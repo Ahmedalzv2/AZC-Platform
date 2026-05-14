@@ -4475,7 +4475,13 @@
       const error  = msg || (json && json.raw ? String(json.raw).slice(0, 200) : `HTTP ${resp.status}`);
       return { sent: false, status: resp.status, response: json, reason, error };
     }
-    return { sent: ok, status: resp.status, response: json };
+    // Surface orderId so callers can register the limit for invalidation
+    // tracking. MEXC contract v1 returns it under data.orderId (or just data
+    // when the response is the id itself); both shapes are normalized here.
+    const orderId = (json && json.data && typeof json.data === 'object')
+      ? (json.data.orderId != null ? String(json.data.orderId) : null)
+      : (json && (json.data != null) ? String(json.data) : null);
+    return { sent: ok, status: resp.status, response: json, orderId };
   }
 
   // Read-only sanity check. Hits the signed account-assets endpoint
@@ -4585,6 +4591,21 @@
     return true;
   }
 
+  // Pending limit-order book. A limit fires at FVG mid; if price never trades
+  // back into the gap the order sits forever and risks filling minutes later
+  // at a price where the setup no longer applies. Cancel anything unfilled
+  // past PENDING_LIMIT_TTL_MS so stale signals self-clean.
+  //
+  // Each entry: { orderId, contractSymbol, side, entry, sl, tp, placedAt }.
+  // Cleared on (a) timeout-cancel, (b) the same symbol showing up in
+  // _openPositions (the limit filled), (c) master-off.
+  const _pendingLimits = {};
+  const PENDING_LIMIT_TTL_MS = 90_000;
+  function _markPendingLimit(sym, info) {
+    if (!sym || !info || !info.orderId) return;
+    _pendingLimits[sym] = { ...info, placedAt: Date.now() };
+  }
+
   // One-at-a-time gate. Returns the bare symbol that blocks `targetSym` from
   // firing, or null when nothing's in the way.
   //
@@ -4658,9 +4679,19 @@
       next[bare].push(p);
     }
     _openPositions = next;
+    // Filled-clears-pending: if a symbol now shows an open position, its
+    // limit must have filled (or was manually replaced). Drop the local
+    // pending entry so the timeout sweeper doesn't try to cancel an order
+    // that's already a live position.
+    for (const sym of Object.keys(_pendingLimits)) {
+      if (next[sym] && next[sym].length > 0) delete _pendingLimits[sym];
+    }
     // Profit guardian — runs on the same 5s cycle. Pure protection-only:
     // can never open positions, only close winners that have retraced.
     try { await _profitGuardian(); } catch (e) {}
+    // Stale-limit sweeper — also runs on the 5s cycle, after filled-clear so
+    // we don't cancel orders the position-list already proved filled.
+    try { await _pendingLimitsTick(); } catch (e) {}
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -4805,6 +4836,79 @@
     return { sent: ok, status: resp.status, response: json };
   }
 
+  // Cancel a single pending limit order by MEXC orderId. Used by the stale-
+  // limit sweeper below; mirrors closeMexcPosition's signing + worker hop.
+  //   master OFF | no keys | no worker → { sent:false, reason:... }
+  //   live OK                          → { sent:true,  response }
+  //   MEXC rejects                     → { sent:false, reason:'mexc-<code>' }
+  async function cancelMexcOrder(contractSymbol, orderId) {
+    if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
+    if (!contractSymbol || !orderId) return { sent: false, reason: 'bad-args' };
+    const apiKey = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
+    if (!workerUrl) return { sent: false, reason: 'no-worker' };
+    // MEXC v1 contract cancel-order accepts an array of orderId strings.
+    const body = [ String(orderId) ];
+    const paramJson = JSON.stringify(body);
+    const reqTime = String(Date.now());
+    let signature;
+    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson); }
+    catch (e) { return { sent: false, reason: 'sign-failed', error: String((e && e.message) || e) }; }
+    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/cancel';
+    let resp, json;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ApiKey': apiKey,
+          'Request-Time': reqTime,
+          'Signature': signature,
+        },
+        body: paramJson,
+      });
+      const txt = await resp.text();
+      try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
+    } catch (e) {
+      return { sent: false, reason: 'network', error: String((e && e.message) || e) };
+    }
+    const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
+    if (!ok) {
+      const code = (json && (json.code != null ? json.code : (json.errorCode != null ? json.errorCode : null)));
+      const msg  = (json && (json.message || json.msg || json.errorMsg || ''));
+      return { sent: false, status: resp.status, response: json, reason: code != null ? `mexc-${code}` : 'mexc-rejected', error: msg };
+    }
+    return { sent: true, status: resp.status, response: json };
+  }
+
+  // Sweep _pendingLimits and cancel anything unfilled past TTL. Runs on the
+  // 5s _positionsTick cycle. Drops the local entry regardless of cancel
+  // success — if MEXC says "already filled / not found", the position-tick
+  // will pick it up anyway; if MEXC errors, retrying every 5s gains nothing.
+  async function _pendingLimitsTick() {
+    if (!_liveTradingEnabled) return;
+    const now = Date.now();
+    const expired = [];
+    for (const sym of Object.keys(_pendingLimits)) {
+      const p = _pendingLimits[sym];
+      if (!p || !p.orderId) { delete _pendingLimits[sym]; continue; }
+      if (now - p.placedAt < PENDING_LIMIT_TTL_MS) continue;
+      expired.push({ sym, p });
+    }
+    for (const { sym, p } of expired) {
+      let r;
+      try { r = await cancelMexcOrder(p.contractSymbol, p.orderId); }
+      catch (e) { r = { sent: false, reason: 'threw', error: String((e && e.message) || e) }; }
+      delete _pendingLimits[sym];
+      try {
+        if (r && r.sent) showToast(`⏱ ${sym} stale limit cancelled (${(PENDING_LIMIT_TTL_MS/1000)|0}s)`, 'info');
+        else             showToast(`⚠ ${sym} cancel failed: ${(r && (r.reason || r.error)) || 'unknown'}`, 'err');
+      } catch (e) {}
+    }
+  }
+
   async function _onClickClosePosition(symbol, vol, side) {
     const live = !_liveTradingDryRun;
     if (live) {
@@ -4928,7 +5032,10 @@
 
     const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
     if (r && (r.sent || r.dryRun)) _markPendingFire(sym);
-    _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
+    if (r && r.sent && r.orderId) {
+      _markPendingLimit(sym, { orderId: r.orderId, contractSymbol: _mexcContractSymbol(asset), side, entry: sug.entry, sl: sug.sl, tp: sug.tp });
+    }
+    _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status, orderId: r.orderId });
     return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
 
@@ -4994,7 +5101,10 @@
       return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });
     }
     if (r && (r.sent || r.dryRun)) _markPendingFire(symbol);
-    return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
+    if (r && r.sent && r.orderId) {
+      _markPendingLimit(symbol, { orderId: r.orderId, contractSymbol: _mexcContractSymbol(asset), side: dir, entry: round(entry), sl: round(sl), tp: round(tp) });
+    }
+    return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status, orderId: r.orderId });
   }
 
   // Click handler for the Force Fire button. Confirms only when live (i.e.

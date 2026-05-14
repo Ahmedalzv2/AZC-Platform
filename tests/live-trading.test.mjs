@@ -429,3 +429,131 @@ describe('testFireSilver', () => {
     assert.equal(j[0].mexcBody.symbol, 'SILVER_USDT');
   });
 });
+
+describe('cancel-on-invalidation: stale limit sweeper', () => {
+  function withMexcMocks(extraStorage = {}) {
+    const calls = [];
+    const ctx = loadApp({
+      storage: {
+        journal: '[]',
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
+        ict_mexc_worker_url: 'https://my.workers.dev',
+        ...extraStorage,
+      },
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init });
+        const u = String(url);
+        if (u.includes('/contract/detail')) {
+          return { ok: true, status: 200, json: async () => ({ data: { symbol: 'SILVER_USDT', priceScale: 2, volScale: 0, minVol: 1, contractSize: 0.01 } }) };
+        }
+        if (u.includes('/order/submit')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, code: 0, data: { orderId: 'ORD-123' } }) };
+        }
+        if (u.includes('/order/cancel')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, code: 0, data: {} }) };
+        }
+        if (u.includes('/position/open_positions')) {
+          return { ok: true, status: 200, json: async () => ({ success: true, code: 0, data: [] }) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, code: 0, data: {} }) };
+      },
+    });
+    ctx.app.loadLiveTradingState();
+    return { ctx, calls };
+  }
+
+  test('placeMexcFuturesOrder surfaces orderId from MEXC response', async () => {
+    const { ctx } = withMexcMocks();
+    const r = await ctx.app.placeMexcFuturesOrder(
+      { symbol: 'SILVER', bias: 'BEARISH', price: 87.0 },
+      'SHORT', 87.0, 87.3, 86.7, 0.46, 200,
+    );
+    assert.equal(r.sent, true);
+    assert.equal(r.orderId, 'ORD-123', 'orderId must be lifted out of data.orderId');
+  });
+
+  test('cancelMexcOrder POSTs [orderId] to /order/cancel', async () => {
+    const { ctx, calls } = withMexcMocks();
+    const r = await ctx.app.cancelMexcOrder('SILVER_USDT', 'ORD-123');
+    assert.equal(r.sent, true);
+    const cancelCall = calls.find(c => c.url.includes('/order/cancel'));
+    assert.ok(cancelCall, 'cancel endpoint should be hit');
+    const body = JSON.parse(cancelCall.init.body);
+    assert.deepEqual(body, ['ORD-123'], 'body must be an array of orderId strings');
+  });
+
+  test('cancelMexcOrder short-circuits on missing keys/worker/args', async () => {
+    const { app } = loadApp();
+    app.saveMexcKeys('k', 's');
+    app.setLiveTradingEnabled(true);
+    // bad args
+    let r = await app.cancelMexcOrder('', 'ORD-1');
+    assert.equal(r.reason, 'bad-args');
+    r = await app.cancelMexcOrder('SILVER_USDT', '');
+    assert.equal(r.reason, 'bad-args');
+    // no worker
+    r = await app.cancelMexcOrder('SILVER_USDT', 'ORD-1');
+    assert.equal(r.reason, 'no-worker');
+  });
+
+  test('_pendingLimitsTick cancels entries past PENDING_LIMIT_TTL_MS', async () => {
+    const { ctx, calls } = withMexcMocks();
+    const ttl = ctx.app.PENDING_LIMIT_TTL_MS;
+    // Inject a pending limit that's already expired (placedAt in the past).
+    ctx.app._markPendingLimit('SILVER', {
+      orderId: 'ORD-STALE', contractSymbol: 'SILVER_USDT',
+      side: 'SHORT', entry: 87.0, sl: 87.3, tp: 86.7,
+    });
+    // Backdate it past TTL.
+    ctx.app._pendingLimits.SILVER.placedAt = Date.now() - (ttl + 1000);
+
+    await ctx.app._pendingLimitsTick();
+
+    const cancelCall = calls.find(c => c.url.includes('/order/cancel'));
+    assert.ok(cancelCall, 'expired entry must trigger /order/cancel');
+    assert.equal(ctx.app._pendingLimits.SILVER, undefined, 'entry must be cleared after sweep');
+  });
+
+  test('_pendingLimitsTick leaves fresh entries alone', async () => {
+    const { ctx, calls } = withMexcMocks();
+    ctx.app._markPendingLimit('SOL', {
+      orderId: 'ORD-FRESH', contractSymbol: 'SOL_USDT',
+      side: 'LONG', entry: 200, sl: 199.3, tp: 200.7,
+    });
+    // Don't backdate — placedAt is now.
+    await ctx.app._pendingLimitsTick();
+    const cancelCall = calls.find(c => c.url.includes('/order/cancel'));
+    assert.equal(cancelCall, undefined, 'fresh entry must NOT be cancelled');
+    assert.equal(ctx.app._pendingLimits.SOL.orderId, 'ORD-FRESH', 'fresh entry must stay');
+  });
+
+  test('_positionsTick clears pending entries when same-symbol position appears (filled)', async () => {
+    const calls = [];
+    const ctx = loadApp({
+      storage: {
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
+        ict_mexc_worker_url: 'https://my.workers.dev',
+      },
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init });
+        const u = String(url);
+        if (u.includes('/position/open_positions')) {
+          return {
+            ok: true, status: 200,
+            text: async () => JSON.stringify({ success: true, code: 0, data: [{ symbol: 'SILVER_USDT', positionType: 1, holdVol: 46, holdAvgPrice: 87.0 }] }),
+          };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, code: 0, data: {} }) };
+      },
+    });
+    ctx.app.loadLiveTradingState();
+    ctx.app._markPendingLimit('SILVER', {
+      orderId: 'ORD-FILLED', contractSymbol: 'SILVER_USDT',
+      side: 'LONG', entry: 87.0, sl: 86.7, tp: 87.3,
+    });
+    await ctx.app._positionsTick();
+    assert.equal(ctx.app._pendingLimits.SILVER, undefined, 'limit must drop from pending when its position appears');
+  });
+});

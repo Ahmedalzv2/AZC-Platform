@@ -79,6 +79,7 @@ const EXPORTS = [
   '_markPendingFire', '_isPendingFire', 'PENDING_FIRE_LOCK_MS',
   'getFireStatus',
   'fetchMexcOpenPositions', '_positionsTick', 'closeMexcPosition', 'POSITIONS_REFRESH_INTERVAL_MS',
+  'cancelMexcOrder', '_pendingLimitsTick', '_pendingLimits', '_markPendingLimit', 'PENDING_LIMIT_TTL_MS',
   '_profitGuardian', 'BREAK_EVEN_TRIGGER_PCT', 'BREAK_EVEN_CLOSE_PCT',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode
