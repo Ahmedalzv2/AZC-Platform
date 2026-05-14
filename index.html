@@ -4818,13 +4818,32 @@
       const asset  = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === sym) : null;
       const mark   = asset ? Number(asset.price) : NaN;
       if (!entry || !vol || !isFinite(mark) || mark <= 0 || !isFinite(lev) || lev <= 0) continue;
+      // Peak detection must NOT rely on `mark` alone. SILVER/GOLD use MEXC
+      // HTTP polling at 5s; if price wicks favorably between two polls and
+      // bounces back before the next, the live mark never reflected the
+      // wick and the peak silently misses a runner. The latest 1m bar
+      // stores h/l for the period, so we combine: peak uses the most
+      // favorable of (current mark, last bar's favorable extreme).
+      const cache     = asset && asset._tfCache && asset._tfCache['1m'];
+      const lastBar   = (cache && Array.isArray(cache.kl) && cache.kl.length) ? cache.kl[cache.kl.length - 1] : null;
+      const barExtremeFavorable = lastBar
+        ? (isLong ? Number(lastBar.h) : Number(lastBar.l))
+        : NaN;
+      const favorablePrice = isFinite(barExtremeFavorable)
+        ? (isLong ? Math.max(mark, barExtremeFavorable) : Math.min(mark, barExtremeFavorable))
+        : mark;
+      const feeBurden = (MEXC_MAKER_FEE_PCT + MEXC_TAKER_FEE_PCT) * lev;
+      const favorablePricePct = isLong ? (favorablePrice - entry) / entry * 100 : (entry - favorablePrice) / entry * 100;
+      const favorableNetMarginPct = favorablePricePct * lev - feeBurden;
       const pricePct = isLong ? (mark - entry) / entry * 100 : (entry - mark) / entry * 100;
       const grossMarginPct = pricePct * lev;
-      const feeBurden = (MEXC_MAKER_FEE_PCT + MEXC_TAKER_FEE_PCT) * lev;
       const netMarginPct = grossMarginPct - feeBurden;
 
-      const state = _trailState[sym] || { peakNetMarginPct: netMarginPct, armed: false };
-      if (netMarginPct > state.peakNetMarginPct) state.peakNetMarginPct = netMarginPct;
+      // Peak tracks the WICK-AWARE favorable margin (see comment above).
+      // Trail-exit check uses CURRENT margin from the live mark — we want
+      // to know where we are NOW, not at the historical extreme.
+      const state = _trailState[sym] || { peakNetMarginPct: favorableNetMarginPct, armed: false };
+      if (favorableNetMarginPct > state.peakNetMarginPct) state.peakNetMarginPct = favorableNetMarginPct;
       if (state.peakNetMarginPct >= TRAIL_ARM_NET_MARGIN_PCT) state.armed = true;
       _trailState[sym] = state;
 
