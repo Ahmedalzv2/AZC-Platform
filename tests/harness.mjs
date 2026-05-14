@@ -76,7 +76,7 @@ const EXPORTS = [
   '_scalpProximityPct', 'SCALP_PROXIMITY_PCT', 'SCALP_PROXIMITY_PCT_HIGH_LEV',
   '_classifyConnTest', '_MEXC_FIX_HINTS',
   'forceFireAsset', '_recordFireResult', '_refreshLiveTradingModalIfOpen',
-  '_markPendingFire', '_isPendingFire', 'PENDING_FIRE_LOCK_MS',
+  '_markPendingFire', '_clearPendingFire', '_isPendingFire', 'PENDING_FIRE_LOCK_MS',
   'getFireStatus',
   'fetchMexcOpenPositions', '_positionsTick', 'closeMexcPosition', 'POSITIONS_REFRESH_INTERVAL_MS',
   '_profitGuardian', 'BREAK_EVEN_TRIGGER_PCT', 'BREAK_EVEN_CLOSE_PCT',

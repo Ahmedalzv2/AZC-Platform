@@ -4577,12 +4577,19 @@
   // every 5s scalp tick fires another duplicate while we wait. The user hit
   // exactly this — 12 stacked SILVER trades.
   //
-  // Mark on any sent:true OR dryRun:true. Expires after PENDING_FIRE_LOCK_MS
-  // so a stuck/cancelled limit eventually re-opens the gate.
+  // Claim BEFORE the network hop (await placeMexcFuturesOrder) so two
+  // concurrent scalp ticks can't both pass the gate before either marks
+  // pending. _clearPendingFire rolls back the claim when the submit didn't
+  // actually reach MEXC (sign-failed / no-keys / no-worker / bad-side),
+  // keeping it would block the symbol for a full PENDING_FIRE_LOCK_MS for
+  // no real reason.
   const _pendingFires = {};
   const PENDING_FIRE_LOCK_MS = 60_000;
   function _markPendingFire(sym) {
     if (sym) _pendingFires[sym] = Date.now();
+  }
+  function _clearPendingFire(sym) {
+    if (sym) delete _pendingFires[sym];
   }
   function _isPendingFire(sym) {
     const t = _pendingFires[sym];
@@ -4932,8 +4939,13 @@
     const lev = getAssetLeverage(sym);
     const qty = computeMexcOrderQty(asset, sug.entry, sug.sl, lev) || 1;
 
+    // Claim the pending-fire slot BEFORE the await. Concurrent scalp ticks
+    // racing past the _findBlockingPosition check produced duplicate fires
+    // (real-world hit: 2 SILVER limits at the same timestamp). Rollback if
+    // the order didn't reach MEXC.
+    _markPendingFire(sym);
     const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
-    if (r && (r.sent || r.dryRun)) _markPendingFire(sym);
+    if (!r || (!r.sent && !r.dryRun)) _clearPendingFire(sym);
     _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
     return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
@@ -4993,13 +5005,16 @@
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
     const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
     const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev };
+    // Claim the pending-fire slot BEFORE the await (race-safety, see scalp).
+    _markPendingFire(symbol);
     let r;
     try {
       r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), round(tp), qty, lev, { force: true });
     } catch (e) {
+      _clearPendingFire(symbol);
       return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });
     }
-    if (r && (r.sent || r.dryRun)) _markPendingFire(symbol);
+    if (!r || (!r.sent && !r.dryRun)) _clearPendingFire(symbol);
     return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
   }
 

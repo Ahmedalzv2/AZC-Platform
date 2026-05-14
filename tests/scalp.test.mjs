@@ -307,6 +307,51 @@ describe('scalpMonitorTick', () => {
     assert.equal(second.blockingSym, 'SILVER');
   });
 
+  test('concurrent ticks: TOCTOU race closed by sync pending-fire claim', async () => {
+    // Real-world bug, live screenshot: two SILVER limit orders at the same
+    // 16:00:42 timestamp. The old code marked pending AFTER the await, so
+    // two scalp ticks racing inside the same microtask window both passed
+    // _findBlockingPosition before either set the lock. The fix claims the
+    // lock SYNCHRONOUSLY before yielding, so the second tick sees it.
+    const ctx = loadApp({
+      storage: {
+        journal: '[]',
+        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+    });
+    ctx.app.loadLiveTradingState();
+    const a = silverWithBear1m();
+    const [r1, r2] = await Promise.all([
+      ctx.app.scalpMonitorTick(a),
+      ctx.app.scalpMonitorTick(a),
+    ]);
+    const fired   = [r1, r2].filter(r => r.fired).length;
+    const blocked = [r1, r2].filter(r => r.reason === 'in-position').length;
+    assert.equal(fired,   1, `exactly one fire expected, got ${fired}`);
+    assert.equal(blocked, 1, `exactly one block expected, got ${blocked}`);
+  });
+
+  test('rollback: failed submit (sign-failed / no-keys) clears the pending lock', async () => {
+    // If the order never reached MEXC, blocking the symbol for 60s is a
+    // false-positive. _clearPendingFire rolls back the claim.
+    const ctx = loadApp({
+      storage: {
+        journal: '[]',
+        // no keys → reason 'no-keys' from placeMexcFuturesOrder
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
+        ict_scalp_tf_SILVER: '1m',
+      },
+    });
+    ctx.app.loadLiveTradingState();
+    const a = silverWithBear1m();
+    const r = await ctx.app.scalpMonitorTick(a);
+    assert.equal(r.fired, true, 'tick attempted a fire');
+    assert.equal(r.result.reason, 'no-keys', 'placeMexc returns no-keys');
+    assert.equal(ctx.app._isPendingFire('SILVER'), false, 'failed submit must NOT leave the lock set');
+  });
+
   test('pending-fire lock expires after PENDING_FIRE_LOCK_MS', async () => {
     const ctx = loadApp({
       storage: {
