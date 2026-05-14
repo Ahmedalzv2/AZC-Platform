@@ -4375,11 +4375,17 @@
     const pScale = detail && Number.isFinite(detail.priceScale) ? detail.priceScale : 4;
     const vScale = detail && Number.isFinite(detail.volScale)   ? detail.volScale   : 2;
     const minVol = detail && Number.isFinite(detail.minVol) && detail.minVol > 0 ? detail.minVol : null;
+    // MEXC's `vol` is contract count, not underlying units. SILVER_USDT for
+    // example is 0.01 oz / contract — submitting qty=0.46 (oz, from sizing)
+    // rounded to volScale=0 became 1 contract = $0.87 notional ≈ $0.0044
+    // margin at 200×, not the intended $0.20. Divide by contractSize first
+    // so the order represents the underlying qty the caller asked for.
+    const cSize = detail && Number.isFinite(detail.contractSize) && detail.contractSize > 0 ? detail.contractSize : 1;
     const roundTo = (v, scale) => {
       const f = Math.pow(10, scale);
       return Math.round(Number(v) * f) / f;
     };
-    let volRounded = roundTo(qty, vScale);
+    let volRounded = roundTo(Number(qty) / cSize, vScale);
     if (minVol != null && volRounded < minVol) volRounded = minVol;
 
     const body = {

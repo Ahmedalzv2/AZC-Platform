@@ -344,10 +344,11 @@ describe('placeMexcFuturesOrder', () => {
         calls.push({ url, init });
         const u = String(url);
         if (u.includes('/contract/detail')) {
-          // SILVER_USDT: price tick 0.01 (priceScale 2), vol integer (volScale 0).
+          // SILVER_USDT live: price tick 0.01 (priceScale 2), vol integer
+          // (volScale 0), 1 contract = 0.01 oz of silver (contractSize 0.01).
           return {
             ok: true, status: 200,
-            json: async () => ({ data: { symbol: 'SILVER_USDT', priceScale: 2, volScale: 0, minVol: 1 } }),
+            json: async () => ({ data: { symbol: 'SILVER_USDT', priceScale: 2, volScale: 0, minVol: 1, contractSize: 0.01 } }),
           };
         }
         return {
@@ -360,8 +361,8 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
-    // Caller passes 3-decimal price and fractional vol — used to be sent verbatim
-    // and rejected with mexc-2015. Now scaled down to contract precision.
+    // Caller passes 3-decimal price and qty in underlying units (oz).
+    // 0.46 oz / 0.01 oz-per-contract = 46 contracts.
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.655, 75.503, 75.901, 0.46, 200);
     assert.equal(r.sent, true);
     const orderCall = calls.find(c => String(c.url).includes('/order/submit'));
@@ -369,7 +370,34 @@ describe('placeMexcFuturesOrder', () => {
     assert.equal(body.price, 75.66, 'price rounded to 2 decimals');
     assert.equal(body.stopLossPrice, 75.50, 'sl rounded to 2 decimals');
     assert.equal(body.takeProfitPrice, 75.90, 'tp rounded to 2 decimals');
-    assert.equal(body.vol, 1, 'vol rounded to integer + bumped to minVol');
+    assert.equal(body.vol, 46, 'qty 0.46 oz / 0.01 contractSize = 46 contracts (was 1, the missing-conversion bug)');
+  });
+
+  test('contract precision: contractSize=1 keeps caller qty unchanged', async () => {
+    // Spot-check the no-op path (e.g. assets where 1 contract = 1 unit) so
+    // adding the cSize divisor doesn't regress them.
+    const calls = [];
+    const ctx = loadApp({
+      storage: { journal: '[]' },
+      fetch: async (url, init) => {
+        calls.push({ url, init });
+        if (String(url).includes('/contract/detail')) {
+          return {
+            ok: true, status: 200,
+            json: async () => ({ data: { symbol: 'SILVER_USDT', priceScale: 2, volScale: 2, minVol: 0.01, contractSize: 1 } }),
+          };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, code: 0, data: { orderId: 'ok' } }) };
+      },
+    });
+    ctx.app.saveMexcKeys('k', 's');
+    ctx.app.setMexcWorkerUrl('https://my.workers.dev');
+    ctx.app.setLiveTradingEnabled(true);
+    ctx.app.setLiveTradingDryRun(false);
+    const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.50, 75.90, 0.46, 200);
+    assert.equal(r.sent, true);
+    const body = JSON.parse(calls.find(c => String(c.url).includes('/order/submit')).init.body);
+    assert.equal(body.vol, 0.46, 'contractSize=1 → vol == caller qty (no scaling)');
   });
 });
 
