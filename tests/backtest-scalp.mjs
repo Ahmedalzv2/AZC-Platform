@@ -172,6 +172,27 @@ function simulateWithFillModel(klines, fireIdx, sug, cancelTtlBars) {
   return { ...simulateForward(klines, fillIdx, sug), filled: true, fillIdx };
 }
 
+// Market-entry model. Live observation: the limit-at-FVG-mid approach
+// systematically misses winners (price runs with the bias, never retraces).
+// Market order fills at the open of bar i+1 (closest proxy for "live price
+// when the signal evaluator fires" — the WS kline tick happens ~1s after
+// signal-bar close). SL/TP are RE-ANCHORED to actualEntry to match what
+// the live force-fire path does (sl = price × (1 - slPct), etc.) — without
+// this the SL distance balloons when actualEntry drifts from sug.entry,
+// producing impossible >100% margin losses (more than liquidation).
+function simulateMarketEntry(klines, fireIdx, sug, lev, tpNetPct) {
+  const next = klines[fireIdx + 1];
+  if (!next) return { result: 'expired', exitIdx: fireIdx + 1, exit: sug.entry, filled: false, fillIdx: -1 };
+  const actualEntry = next.o;
+  const slPct = (100 / lev) * 0.7 / 100;             // 0.35% at 200×
+  const tpPct = (tpNetPct + 0.08 * lev) / lev / 100; // includes round-trip fee
+  const dir = sug.dir;
+  const sl = dir === 'bull' ? actualEntry * (1 - slPct) : actualEntry * (1 + slPct);
+  const tp = dir === 'bull' ? actualEntry * (1 + tpPct) : actualEntry * (1 - tpPct);
+  const fwd = simulateForward(klines, fireIdx, { dir, entry: actualEntry, sl, tp });
+  return { ...fwd, filled: true, fillIdx: fireIdx + 1, actualEntry };
+}
+
 function runConfig(klines, app, cfg) {
   const trades = [];
   let cursorTs = 0;
@@ -200,7 +221,9 @@ function runConfig(klines, app, cfg) {
     const distPct = Math.abs((livePrice - sug.entry) / sug.entry) * 100;
     if (distPct > proximityPct) continue;
 
-    const out = simulateWithFillModel(klines, i, sug, cancelTtlBars);
+    const out = cfg.marketEntry
+      ? simulateMarketEntry(klines, i, sug, lev, tpNetPct)
+      : simulateWithFillModel(klines, i, sug, cancelTtlBars);
     if (!out.filled) {
       trades.push({
         i, t: klines[i].t, dir: sug.dir, source: sug.source,
@@ -211,7 +234,10 @@ function runConfig(klines, app, cfg) {
       continue;
     }
 
-    const priceMovePct = ((out.exit - sug.entry) / sug.entry) * 100 * (sug.dir === 'bull' ? 1 : -1);
+    // For market entry, use the actual fill price (next bar's open) so
+    // slippage is captured in PnL. For limit, sug.entry IS the fill.
+    const fillEntry = out.actualEntry ?? sug.entry;
+    const priceMovePct = ((out.exit - fillEntry) / fillEntry) * 100 * (sug.dir === 'bull' ? 1 : -1);
     const grossMarginPct = priceMovePct * lev;
     const feeMarginPct = 0.08 * lev;
     const netMarginPct = grossMarginPct - feeMarginPct;
@@ -280,17 +306,19 @@ function fmt(s) {
   const { app } = loadApp();
 
   const configs = {
-    // Shipped state — TP NET 50%, no cancel modelling (every signal "fills").
-    // This is the pre-PR baseline expectation. Over-counts trades vs reality.
-    'A · NET 50, no cancel (baseline)':    { leverage: 200, tpNetPct: 50 },
-    // The PR being tested: cancel unfilled limits after ~90s (≈ 2 bars at 1m).
-    // Realistic — drops signals whose price never retraced to FVG mid in time.
-    'B · NET 50, cancel @ 90s (THIS PR)':  { leverage: 200, tpNetPct: 50, cancelTtlBars: 2 },
-    // Stricter cancel (≈ 60s = 1 bar). Captures only fills happening in the
-    // very next bar after the signal.
-    'C · NET 50, cancel @ 60s':            { leverage: 200, tpNetPct: 50, cancelTtlBars: 1 },
-    // More generous cancel (≈ 180s = 3 bars). Upper bound on patience.
-    'D · NET 50, cancel @ 180s':           { leverage: 200, tpNetPct: 50, cancelTtlBars: 3 },
+    // Limit-at-FVG-mid (current live behavior). Realistic — most signals
+    // don't retrace within 90s and produce no trade.
+    'A · LIMIT, cancel @ 90s (current)':   { leverage: 200, tpNetPct: 50, cancelTtlBars: 2 },
+    // Limit-at-FVG-mid with overly-optimistic fill assumption (legacy).
+    // Over-counts winners — would-have-filled fantasy.
+    'B · LIMIT, instant fill (legacy)':    { leverage: 200, tpNetPct: 50 },
+    // MARKET at next-bar open. Captures the signal-direction move, slippage
+    // from FVG mid → bar-open price priced in. This is the proposed fix.
+    'C · MARKET @ next-bar open':          { leverage: 200, tpNetPct: 50, marketEntry: true },
+    // MARKET with tighter TP (NET 10% — quicker scalp turnover).
+    'D · MARKET, tighter NET 10% TP':      { leverage: 200, tpNetPct: 10, marketEntry: true },
+    // MARKET with mid-width TP for the in-between data point.
+    'E · MARKET, NET 25% TP':              { leverage: 200, tpNetPct: 25, marketEntry: true },
   };
 
   console.log('─'.repeat(96));
