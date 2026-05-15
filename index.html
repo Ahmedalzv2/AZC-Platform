@@ -2496,6 +2496,23 @@
   // ARMED on invalidated setups even if they momentarily revisit the entry
   // zone, because the structural premise (sweep/CHoCH/OB) that justified
   // the entry is gone. The user must manually re-set levels to clear it.
+  // Cached levels (asset.entry/sl/tp) can fall out of sync with asset.bias —
+  // user applied 1m setup during a BULL phase, bias later flipped to BEAR,
+  // levels never re-wrote. Returns true when SL/TP geometry matches the
+  // current directional bias; false means levels are stale and should be
+  // re-applied. Used to suppress false "SETUP INVALIDATED" warnings and to
+  // mark the cards as stale in the UI.
+  function _levelsAlignWithBias(asset) {
+    if (!asset || !asset.entry || !asset.sl) return true;
+    const biasU = String(asset.bias || '').toUpperCase();
+    const isBull = biasU.includes('BULL');
+    const isBear = biasU.includes('BEAR');
+    if (!isBull && !isBear) return true;
+    const sl = +asset.sl, entry = +asset.entry;
+    if (!isFinite(sl) || !isFinite(entry) || sl === entry) return true;
+    return isBull ? sl < entry : sl > entry;
+  }
+
   function isInvalidated(asset) {
     if (!asset) return false;
     const sl = +asset.sl, entry = +asset.entry, price = +asset.price;
@@ -2503,6 +2520,7 @@
     if (!isFinite(entry) || entry <= 0) return false;
     if (!isFinite(price) || price <= 0) return false;
     if (sl === entry) return false; // malformed, treat as "not invalidated"
+    if (!_levelsAlignWithBias(asset)) return false; // stale levels, don't fire false invalidation
     const isLong = entry > sl; // SL sits below entry for longs
     return isLong ? price <= sl : price >= sl;
   }
@@ -3284,7 +3302,19 @@
         <span>SL distance: <span style="color:var(--text);font-weight:700;">${stopPct.toFixed(2)}%</span></span>
       </div>`;
       })()}
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px;">
+      ${(() => {
+        // Levels card. If asset.entry/sl/tp orientation contradicts the
+        // current bias (e.g. bias flipped BULL→BEAR but stored SL still
+        // sits below entry from the prior LONG setup), surface a stale-
+        // levels banner instead of inverted numbers — user clicks "Apply
+        // 1m levels" to refresh.
+        if (!_levelsAlignWithBias(asset)) {
+          return `<div style="background:rgba(242,179,61,0.08);border:1px solid rgba(242,179,61,0.35);border-radius:8px;padding:14px;margin-bottom:16px;text-align:center;">
+            <div style="font-size:11px;font-weight:700;color:var(--liq);font-family:'JetBrains Mono',monospace;letter-spacing:.05em;">⚠ STALE LEVELS · DIRECTION MISMATCH</div>
+            <div style="font-size:11px;color:var(--text-mute);margin-top:6px;line-height:1.5;">Saved entry/SL/TP were set for the opposite bias and don't match the current <strong style="color:var(--text);">${(asset.bias||'').toUpperCase()}</strong> read. Click <strong style="color:var(--text);">Apply 1m levels</strong> above to refresh.</div>
+          </div>`;
+        }
+        return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px;">
         <div style="background:rgba(92,184,138,0.08);border:1px solid rgba(92,184,138,0.25);border-radius:8px;padding:10px;text-align:center;">
           <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">📍 Entry</div>
           <div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--bull);">$${asset.entry.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
@@ -3297,7 +3327,8 @@
           <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">🎯 TP1</div>
           <div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--gold);">$${(asset.tp||asset.tp1||0).toLocaleString(undefined,{maximumFractionDigits:4})}</div>
         </div>
-      </div>
+      </div>`;
+      })()}
 
       <!-- ICT Analysis paragraph -->
       <div style="margin-bottom:16px;background:var(--bg);border-radius:8px;padding:16px;border:1px solid var(--border);">
