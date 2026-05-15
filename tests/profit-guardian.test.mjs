@@ -253,20 +253,18 @@ describe('_trailingTakeProfit — high-lev runners (arm at +14% margin, exit on 
     assert.equal(app._trailState.SOL, undefined, 'low-lev must not be tracked by trail');
   });
 
-  test('catches favorable WICK that the polled mark missed (last 1m bar low)', async () => {
-    // Real-world bug from a SILVER short: price wicked down to 84.37 (peak
-    // favorable +81% NET margin at 200×) and bounced back to 84.50 within
-    // the 5s polling window. asset.price never showed 84.37, so the trail's
-    // peak silently missed the wick. Fix: peak now also reads the last
-    // 1m bar's low (for shorts) / high (for longs) — bars capture wicks
-    // regardless of how the mark was sampled.
+  test('does NOT use pre-open bar wick as peak (phantom-peak guard)', async () => {
+    // Regression for the wick-aware peak bug: if the last 1m bar's
+    // favorable extreme was way better than the current mark (e.g. price
+    // wicked down BEFORE position open), the trail used to compute a
+    // phantom peak from that pre-open wick and fire a close immediately
+    // on a fresh position. Mark-only peak tracking eliminates this.
     const { app, sandbox } = loadApp();
     liveSetupHighLev(app, sandbox);
-    // Short on SOL. Entry 100, current mark BACK at 100 (no profit visible
-    // in mark), but last 1m bar's low is 99.50 — a wick down (=+0.50% price
-    // × 200× = +100% gross → +84% NET favorable).
-    openShort(app, 'SOL', 100, 100);
+    openShort(app, 'SOL', 100, 100);  // fresh short at entry
     const sol = app.ASSETS.find(x => x.symbol === 'SOL');
+    // Pre-open bar with a deep favorable wick that would have created a
+    // false +84% NET peak under the old code.
     sol._tfCache = { '1m': { kl: [
       { t: Date.now() - 60000, o: 100, h: 100, l: 99.50, c: 100, v: 1 },
     ] } };
@@ -277,13 +275,11 @@ describe('_trailingTakeProfit — high-lev runners (arm at +14% margin, exit on 
     };
     Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
     await app._trailingTakeProfit();
-    // Peak armed AND closed in same tick because the wick→retrace gap is
-    // huge (84% peak, -16% current ≫ 2% trail). Trail closes immediately
-    // and clears the tracker. The key assertion: the close call fired —
-    // proves the wick was caught despite a flat live mark.
+    // Trail must NOT fire — current mark is at entry (≈ -16% NET after fees),
+    // peak should also be at -16% (mark-only), no pullback, no close.
     const closeCalls = calls.filter(c => c.body && c.body.side === 4 && c.body.type === 5);
-    assert.equal(closeCalls.length, 1, `expected 1 close from trail (got ${calls.length} total, ${closeCalls.length} matching) — wick must be caught`);
-    assert.equal(app._trailState.SOL, undefined, 'state cleared after trail close (sanity)');
+    assert.equal(closeCalls.length, 0, 'pre-open wick must NOT trigger immediate close');
+    assert.equal(app._trailState.SOL.armed, false, 'trail must not arm from pre-open phantom peak');
   });
 
   test('clears tracker when position closes externally', async () => {
