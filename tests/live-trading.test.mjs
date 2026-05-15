@@ -361,16 +361,18 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
-    // Caller passes 3-decimal price and qty in underlying units (oz).
-    // 0.46 oz / 0.01 oz-per-contract = 46 contracts.
+    // High-lev (200×) now ships MARKET orders — no `price` field. SL/TP
+    // still ship and must be rounded to MEXC scale. Caller passes qty in
+    // underlying units (0.46 oz / 0.01 contractSize = 46 contracts).
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.655, 75.503, 75.901, 0.46, 200);
     assert.equal(r.sent, true);
     const orderCall = calls.find(c => String(c.url).includes('/order/submit'));
     const body = JSON.parse(orderCall.init.body);
-    assert.equal(body.price, 75.66, 'price rounded to 2 decimals');
+    assert.equal(body.type, 5, 'high-lev = market order (type 5)');
+    assert.equal(body.price, undefined, 'market orders omit the price field');
     assert.equal(body.stopLossPrice, 75.50, 'sl rounded to 2 decimals');
     assert.equal(body.takeProfitPrice, 75.90, 'tp rounded to 2 decimals');
-    assert.equal(body.vol, 46, 'qty 0.46 oz / 0.01 contractSize = 46 contracts (was 1, the missing-conversion bug)');
+    assert.equal(body.vol, 46, 'qty 0.46 oz / 0.01 contractSize = 46 contracts');
   });
 
   test('contract precision: contractSize=1 keeps caller qty unchanged', async () => {

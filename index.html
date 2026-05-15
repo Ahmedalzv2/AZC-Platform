@@ -4397,16 +4397,34 @@
     let volRounded = roundTo(Number(qty) / cSize, vScale);
     if (minVol != null && volRounded < minVol) volRounded = minVol;
 
-    const body = {
-      symbol: mexcSymbol,
-      price: roundTo(entry, pScale),
-      vol: volRounded,
-      leverage: Number(leverage),
-      side: mexcSide,
-      type: 1,         // 1 = limit
-      openType: 1,     // 1 = isolated margin
-      stopLossPrice: roundTo(sl, pScale),
-    };
+    // Entry type. High-lev (≥100×) now ships MARKET orders so every signal
+    // becomes a trade immediately at live price. The legacy LIMIT-at-FVG-mid
+    // had ~70% fill miss-rate AND adverse selection (only filled when price
+    // came back, which biased the filled set toward losers — confirmed by
+    // 14d backtest: MARKET halves the per-trade bleed vs LIMIT). Low-lev
+    // (rare path) keeps the legacy LIMIT behaviour. Market orders omit the
+    // `price` field per MEXC convention.
+    const useMarket = isFinite(Number(leverage)) && Number(leverage) >= LEVERAGE_HIGH_THRESHOLD;
+    const body = useMarket
+      ? {
+          symbol: mexcSymbol,
+          vol: volRounded,
+          leverage: Number(leverage),
+          side: mexcSide,
+          type: 5,         // 5 = market
+          openType: 1,     // 1 = isolated margin
+          stopLossPrice: roundTo(sl, pScale),
+        }
+      : {
+          symbol: mexcSymbol,
+          price: roundTo(entry, pScale),
+          vol: volRounded,
+          leverage: Number(leverage),
+          side: mexcSide,
+          type: 1,         // 1 = limit
+          openType: 1,     // 1 = isolated margin
+          stopLossPrice: roundTo(sl, pScale),
+        };
     // tp may be null/undefined for high-lev trail-managed orders. MEXC
     // accepts orders without takeProfitPrice — exit is handled by the
     // trailing-TP poll instead. Sending tp:0 (legacy default) would also
