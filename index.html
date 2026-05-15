@@ -4438,34 +4438,32 @@
     let volRounded = roundTo(Number(qty) / cSize, vScale);
     if (minVol != null && volRounded < minVol) volRounded = minVol;
 
-    // Entry type. High-lev (≥100×) now ships MARKET orders so every signal
-    // becomes a trade immediately at live price. The legacy LIMIT-at-FVG-mid
-    // had ~70% fill miss-rate AND adverse selection (only filled when price
-    // came back, which biased the filled set toward losers — confirmed by
-    // 14d backtest: MARKET halves the per-trade bleed vs LIMIT). Low-lev
-    // (rare path) keeps the legacy LIMIT behaviour. Market orders omit the
-    // `price` field per MEXC convention.
-    const useMarket = isFinite(Number(leverage)) && Number(leverage) >= LEVERAGE_HIGH_THRESHOLD;
-    const body = useMarket
-      ? {
-          symbol: mexcSymbol,
-          vol: volRounded,
-          leverage: Number(leverage),
-          side: mexcSide,
-          type: 5,         // 5 = market
-          openType: 1,     // 1 = isolated margin
-          stopLossPrice: roundTo(sl, pScale),
-        }
-      : {
-          symbol: mexcSymbol,
-          price: roundTo(entry, pScale),
-          vol: volRounded,
-          leverage: Number(leverage),
-          side: mexcSide,
-          type: 1,         // 1 = limit
-          openType: 1,     // 1 = isolated margin
-          stopLossPrice: roundTo(sl, pScale),
-        };
+    // Entry type. High-lev (≥100×) ships POST-ONLY LIMIT orders (type=2)
+    // so we earn the MEXC maker rebate instead of paying the 0.06% taker
+    // fee per side. At 200× that fee delta = 24% of margin round-trip —
+    // decisive (a 0.04% favorable move now nets after fees instead of
+    // bleeding into them). Live trade history confirmed: maker fills
+    // were profitable, taker fills weren't, on the same signal stream.
+    //
+    // Limit price = sug.entry (the FVG mid). For a SHORT the FVG sits
+    // above current price → sell limit rests as ask (maker). For a LONG
+    // the FVG sits below → buy limit rests as bid (maker). If price runs
+    // through the level, MEXC rejects the post-only (no taker fallback)
+    // and the signal is skipped. If it sits unfilled, the TTL below
+    // cancels it so a stale-signal late-fill can't leak in.
+    //
+    // Low-lev path keeps plain LIMIT (type=1, no post-only enforcement).
+    const useMaker = isFinite(Number(leverage)) && Number(leverage) >= LEVERAGE_HIGH_THRESHOLD;
+    const body = {
+      symbol: mexcSymbol,
+      price: roundTo(entry, pScale),
+      vol: volRounded,
+      leverage: Number(leverage),
+      side: mexcSide,
+      type: useMaker ? 2 : 1,    // 2 = POST_ONLY maker, 1 = plain limit
+      openType: 1,               // 1 = isolated margin
+      stopLossPrice: roundTo(sl, pScale),
+    };
     // tp may be null/undefined for high-lev trail-managed orders. MEXC
     // accepts orders without takeProfitPrice — exit is handled by the
     // trailing-TP poll instead. Sending tp:0 (legacy default) would also
@@ -4555,7 +4553,57 @@
       const error  = msg || (json && json.raw ? String(json.raw).slice(0, 200) : `HTTP ${resp.status}`);
       return { sent: false, status: resp.status, response: json, reason, error };
     }
+    // POST_ONLY maker orders that don't immediately fill should not sit
+    // forever — by the time minutes pass the signal is stale and any fill
+    // is adverse selection. Schedule a best-effort cancel after the TTL.
+    // MEXC silently no-ops the cancel if the order already filled.
+    if (ok && useMaker) {
+      const orderId = json && json.data && (json.data.orderId || json.data.order_id ||
+                                            (typeof json.data === 'string' ? json.data : null));
+      if (orderId) {
+        const t = setTimeout(() => { _cancelMexcOrder(mexcSymbol, orderId).catch(() => {}); }, MAKER_ORDER_TTL_MS);
+        if (t && typeof t.unref === 'function') t.unref();
+      }
+    }
     return { sent: ok, status: resp.status, response: json };
+  }
+
+  // TTL for unfilled POST_ONLY maker entries before we cancel them. Picked
+  // to mirror MAX_POSITION_HOLD_SEC (30s) — same "if it didn't work in 30s
+  // the signal is stale" thesis as the position hold-cap.
+  const MAKER_ORDER_TTL_MS = 30000;
+
+  // Best-effort cancel of an unfilled order. Safe to call against filled
+  // orders — MEXC returns a "not cancellable" code which we swallow.
+  async function _cancelMexcOrder(symbol, orderId) {
+    if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
+    const apiKey = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
+    if (!workerUrl) return { sent: false, reason: 'no-worker' };
+    const reqTime = String(Date.now());
+    // MEXC v1 contract cancel takes a JSON array of orderId strings.
+    const paramJson = JSON.stringify([String(orderId)]);
+    let signature;
+    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson); }
+    catch (e) { return { sent: false, reason: 'sign-failed', error: String((e && e.message) || e) }; }
+    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/cancel';
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ApiKey': apiKey,
+          'Request-Time': reqTime,
+          'Signature': signature,
+        },
+        body: paramJson,
+      });
+      return { sent: resp.ok, status: resp.status };
+    } catch (e) {
+      return { sent: false, reason: 'network', error: String((e && e.message) || e) };
+    }
   }
 
   // Read-only sanity check. Hits the signed account-assets endpoint

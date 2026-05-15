@@ -361,15 +361,15 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
-    // High-lev (200×) now ships MARKET orders — no `price` field. SL/TP
-    // still ship and must be rounded to MEXC scale. Caller passes qty in
-    // underlying units (0.46 oz / 0.01 contractSize = 46 contracts).
+    // High-lev (200×) ships POST_ONLY LIMIT (type=2) so we earn the maker
+    // rebate. Price = entry (FVG mid). SL/TP rounded to MEXC scale. Caller
+    // passes qty in underlying units (0.46 oz / 0.01 contractSize = 46 ct).
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.655, 75.503, 75.901, 0.46, 200);
     assert.equal(r.sent, true);
     const orderCall = calls.find(c => String(c.url).includes('/order/submit'));
     const body = JSON.parse(orderCall.init.body);
-    assert.equal(body.type, 5, 'high-lev = market order (type 5)');
-    assert.equal(body.price, undefined, 'market orders omit the price field');
+    assert.equal(body.type, 2, 'high-lev = POST_ONLY maker limit (type 2)');
+    assert.equal(body.price, 75.66, 'limit price = entry, rounded to 2 decimals');
     assert.equal(body.stopLossPrice, 75.50, 'sl rounded to 2 decimals');
     assert.equal(body.takeProfitPrice, 75.90, 'tp rounded to 2 decimals');
     assert.equal(body.vol, 46, 'qty 0.46 oz / 0.01 contractSize = 46 contracts');
