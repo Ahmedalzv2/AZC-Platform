@@ -318,3 +318,129 @@ describe('_trailingTakeProfit — high-lev runners (arm at +14% margin, exit on 
     assert.equal(closeBodies.length, 0, 'no close call when master off');
   });
 });
+
+describe('_holdTimeKill — force-close positions older than MAX_POSITION_HOLD_SEC', () => {
+  function liveSetup(app, sandbox) {
+    app.loadTradeModes();
+    app.saveMexcKeys('k', 's');
+    sandbox.localStorage.setItem('ict_mexc_worker_url', 'https://w.workers.dev');
+    app.setLiveTradingEnabled(true);
+    app.setLiveTradingDryRun(false);
+    app.setAssetLeverage('SOL', 200);
+  }
+
+  function openLongWithAge(app, sym, ageSec) {
+    app._openPositions = {
+      [sym]: [{ symbol: sym + '_USDT', positionType: 1, holdVol: 5, holdAvgPrice: 100,
+                createTime: Date.now() - ageSec * 1000, leverage: 200 }],
+    };
+  }
+
+  function openShortWithAge(app, sym, ageSec) {
+    app._openPositions = {
+      [sym]: [{ symbol: sym + '_USDT', positionType: 2, holdVol: 5, holdAvgPrice: 100,
+                createTime: Date.now() - ageSec * 1000, leverage: 200 }],
+    };
+  }
+
+  test('threshold: MAX_POSITION_HOLD_SEC = 30', () => {
+    const { app } = loadApp();
+    assert.equal(app.MAX_POSITION_HOLD_SEC, 30);
+  });
+
+  test('young position (10s old) → not closed', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetup(app, sandbox);
+    openLongWithAge(app, 'SOL', 10);
+    const closeBodies = [];
+    sandbox.fetch = async (url, init) => {
+      if (init && init.body) {
+        try {
+          const b = JSON.parse(init.body);
+          if (b.side === 2 && b.type === 5) closeBodies.push(b);
+        } catch (e) {}
+      }
+      return { ok: true, status: 200, text: async () => '{"success":true,"code":0}' };
+    };
+    Object.keys(app._holdKillClosed).forEach(k => delete app._holdKillClosed[k]);
+    await app._holdTimeKill();
+    assert.equal(closeBodies.length, 0, '10s old position must NOT be closed');
+  });
+
+  test('position past 30s → market-closed (long → side=2 type=5)', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetup(app, sandbox);
+    openLongWithAge(app, 'SOL', 45);  // 45 seconds old, past 30s cap
+    const closeBodies = [];
+    sandbox.fetch = async (url, init) => {
+      if (init && init.body) {
+        try {
+          const b = JSON.parse(init.body);
+          if (b.side === 2 && b.type === 5) closeBodies.push(b);
+        } catch (e) {}
+      }
+      return { ok: true, status: 200, text: async () => '{"success":true,"code":0}' };
+    };
+    await app._holdTimeKill();
+    assert.equal(closeBodies.length, 1, 'one close call');
+    assert.equal(closeBodies[0].symbol, 'SOL_USDT');
+    assert.equal(closeBodies[0].side, 2);  // close long
+    assert.equal(closeBodies[0].type, 5);  // market
+  });
+
+  test('short past 30s → side=4 (close short)', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetup(app, sandbox);
+    openShortWithAge(app, 'SOL', 60);
+    const closeBodies = [];
+    sandbox.fetch = async (url, init) => {
+      if (init && init.body) {
+        try {
+          const b = JSON.parse(init.body);
+          if (b.side === 4 && b.type === 5) closeBodies.push(b);
+        } catch (e) {}
+      }
+      return { ok: true, status: 200, text: async () => '{"success":true,"code":0}' };
+    };
+    await app._holdTimeKill();
+    assert.equal(closeBodies.length, 1, 'short close fires');
+    assert.equal(closeBodies[0].side, 4);
+  });
+
+  test('low-lev positions skipped (no time-stop)', async () => {
+    const { app, sandbox } = loadApp();
+    liveSetup(app, sandbox);
+    app.setAssetLeverage('SOL', 50);  // drop below LEVERAGE_HIGH_THRESHOLD
+    openLongWithAge(app, 'SOL', 120);
+    const closeBodies = [];
+    sandbox.fetch = async (url, init) => {
+      if (init && init.body) {
+        try {
+          const b = JSON.parse(init.body);
+          if (b.type === 5) closeBodies.push(b);
+        } catch (e) {}
+      }
+      return { ok: true, status: 200, text: async () => '{"success":true,"code":0}' };
+    };
+    await app._holdTimeKill();
+    assert.equal(closeBodies.length, 0, 'low-lev must NOT be force-closed by time-stop');
+  });
+
+  test('master OFF → skipped', async () => {
+    const { app, sandbox } = loadApp();
+    app.loadTradeModes();
+    openLongWithAge(app, 'SOL', 60);
+    const closeBodies = [];
+    sandbox.fetch = async (url, init) => {
+      if (init && init.body) {
+        try {
+          const b = JSON.parse(init.body);
+          if (b.type === 5) closeBodies.push(b);
+        } catch (e) {}
+      }
+      return { ok: true, status: 200, text: async () => '' };
+    };
+    await app._holdTimeKill();
+    assert.equal(closeBodies.length, 0, 'no close when master off');
+  });
+});
