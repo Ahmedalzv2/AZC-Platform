@@ -247,7 +247,8 @@ describe('getFireStatus — IN POSITION state', () => {
   });
 
   test('High-lev trio: SOL in position does NOT block SILVER badge (READY)', () => {
-    const { app } = loadApp();
+    // Pin wall clock to a Thursday so SILVER's CME weekend gate doesn't fire.
+    const { app } = loadApp({ now: new Date('2026-05-07T15:00:00Z') });
     app.loadTradeModes();
     app.setAssetLeverage('SILVER', 200);  // high-lev → independent fires
     app.setLiveTradingEnabled(true);
@@ -255,7 +256,8 @@ describe('getFireStatus — IN POSITION state', () => {
     silver.price = 32.5;
     silver.bias = 'BULLISH';
     silver.tfEntries = {
-      '1m': {
+      // High-lev default scalp TF is now '5m' (1m was failing).
+      '5m': {
         dir: 'bull', entryReady: true, score: 4,
         fvgZone: { dir: 'bull', lo: 32.48, hi: 32.52, mid: 32.50 },
       },

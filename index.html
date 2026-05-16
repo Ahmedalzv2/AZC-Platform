@@ -4114,21 +4114,23 @@
   // ─────────────────────────────────────────────────────────────────────
   // Scalp mode (per-asset). Picks which timeframe drives auto-execution.
   //   'htf'  → fires on asset.entry (HTF setup, hours-to-days hold)
-  //   '1m'   → fires on the per-TF 1m suggested entry (scalp)
-  // Only SILVER is wired right now per the same per-asset rollout pattern.
-  // Storage key: ict_scalp_tf_<SYMBOL>. Defaults to 'htf'.
+  //   '1m'   → fires on the per-TF 1m suggested entry (fast scalp)
+  //   '5m'   → fires on the per-TF 5m suggested entry (default high-lev)
+  // Storage key: ict_scalp_tf_<SYMBOL>. Defaults to 'htf' for low-lev,
+  // '5m' for high-lev (1m kept failing — user moved focus to 5m).
   // ─────────────────────────────────────────────────────────────────────
-  const SCALP_TF_VALID = new Set(['htf', '1m']);
+  const SCALP_TF_VALID = new Set(['htf', '1m', '5m']);
+  const SCALP_TF_FAST = new Set(['1m', '5m']);
   function getScalpTf(symbol) {
     try {
       const stored = localStorage.getItem('ict_scalp_tf_' + String(symbol || ''));
       // Auto-default for high-lev assets. At ≥ 100× the HTF path can't
-      // survive (its SLs are wider than the liquidation buffer), so the
-      // sensible default is '1m'. User can still override by explicitly
-      // tapping the HTF / Scalp buttons in the modal — the override is
-      // stored verbatim and respected here.
+      // survive (its SLs are wider than the liquidation buffer), so we
+      // default to a fast scalp TF. 5m beat 1m in live testing — the
+      // tighter 1m setups kept failing on noise. User can override by
+      // tapping the Scalp buttons in the modal.
       if (stored == null || stored === '') {
-        return _isHighLeverage(symbol) ? '1m' : 'htf';
+        return _isHighLeverage(symbol) ? '5m' : 'htf';
       }
       return SCALP_TF_VALID.has(stored) ? stored : 'htf';
     } catch (e) { return 'htf'; }
@@ -4568,10 +4570,10 @@
     return { sent: ok, status: resp.status, response: json };
   }
 
-  // TTL for unfilled POST_ONLY maker entries before we cancel them. Picked
-  // to mirror MAX_POSITION_HOLD_SEC (30s) — same "if it didn't work in 30s
-  // the signal is stale" thesis as the position hold-cap.
-  const MAKER_ORDER_TTL_MS = 30000;
+  // TTL for unfilled POST_ONLY maker entries before we cancel them. Mirrors
+  // MAX_POSITION_HOLD_SEC (180s for the 5m scalp era) — same "if it didn't
+  // work in N seconds the signal is stale" thesis as the position hold-cap.
+  const MAKER_ORDER_TTL_MS = 180000;
 
   // Best-effort cancel of an unfilled order. Safe to call against filled
   // orders — MEXC returns a "not cancellable" code which we swallow.
@@ -5175,7 +5177,10 @@
   // Trail still runs first; this is a backstop for trades that trail
   // doesn't catch (drift sideways without retracing from peak).
   // ─────────────────────────────────────────────────────────────────────
-  const MAX_POSITION_HOLD_SEC = 30;
+  // Bumped 30s → 180s with the move from 1m to 5m scalping. A 5m candle is
+  // 5 min, so killing at 30s cuts the setup off before it can resolve. Keeps
+  // a hard ceiling so a forgotten signal doesn't run to liquidation.
+  const MAX_POSITION_HOLD_SEC = 180;
   const _holdKillClosed = {};  // diagnostic: { [sym]: { ts, ageSec, sent } }
 
   async function _holdTimeKill() {
@@ -5366,28 +5371,28 @@
     if (!_liveTradingEnabled)        return _recordScalpDiag(sym, { fired: false, reason: 'master-off' });
     if (!_mexcContractSymbol(asset)) return _recordScalpDiag(sym, { fired: false, reason: 'unsupported-symbol' });
     const tf = getScalpTf(sym);
-    if (tf !== '1m')                 return _recordScalpDiag(sym, { fired: false, reason: 'scalp-off' });
+    if (!SCALP_TF_FAST.has(tf))      return _recordScalpDiag(sym, { fired: false, reason: 'scalp-off' });
 
-    const tfData = asset.tfEntries && asset.tfEntries['1m'];
-    if (!tfData || tfData.error)     return _recordScalpDiag(sym, { fired: false, reason: 'no-1m-data' });
-    const rawSug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, '1m') : null;
-    if (!rawSug)                     return _recordScalpDiag(sym, { fired: false, reason: 'no-1m-setup' });
+    const tfData = asset.tfEntries && asset.tfEntries[tf];
+    if (!tfData || tfData.error)     return _recordScalpDiag(sym, { fired: false, reason: 'no-tf-data', tf });
+    const rawSug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, tf) : null;
+    if (!rawSug)                     return _recordScalpDiag(sym, { fired: false, reason: 'no-tf-setup', tf });
     // High-leverage survival mode: rewrite SL/TP to mechanical levels that
     // fit inside the liquidation buffer. Pass-through when leverage < threshold.
     const sug = _highLevLevels(asset, rawSug);
 
     // HTF agreement is enforced only for non-high-lev futures lanes.
-    // Trio (200×) is the ultra-trade scalp loop — the 1m FVG signal alone
-    // fires, accepting counter-bias scalps for more total trades. The
-    // mechanical SL/TP at 0.35%/0.70% absorbs the per-trade asymmetry.
+    // Trio (200×) is the ultra-trade scalp loop — the per-TF FVG signal
+    // alone fires, accepting counter-bias scalps for more total trades.
+    // The mechanical SL/TP at 0.35%/0.70% absorbs the per-trade asymmetry.
     if (!_isHighLeverage(sym)) {
       const htfDir = _normalizeBiasDir(asset.bias);
       if (!htfDir)                   return _recordScalpDiag(sym, { fired: false, reason: 'no-htf-bias', sugDir: sug.dir });
       if (sug.dir !== htfDir)        return _recordScalpDiag(sym, { fired: false, reason: 'htf-disagrees', sugDir: sug.dir, htfDir });
     }
 
-    // Proximity check — only fire when live price is at the 1m entry. Wider
-    // tolerance for high-lev mode because the mechanical SL absorbs the slip.
+    // Proximity check — only fire when live price is at the per-TF entry.
+    // Wider tolerance for high-lev mode because the mechanical SL absorbs slip.
     if (!asset.price || !sug.entry)  return _recordScalpDiag(sym, { fired: false, reason: 'no-price' });
     const distPct = Math.abs((asset.price - sug.entry) / sug.entry) * 100;
     const proximityPct = _scalpProximityPct(sym);
@@ -5408,10 +5413,10 @@
     // (real-world hit: 2 SILVER limits at the same timestamp). Rollback if
     // the order didn't reach MEXC.
     _markPendingFire(sym);
-    const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
+    const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf });
     if (!r || (!r.sent && !r.dryRun)) _clearPendingFire(sym);
-    _recordFireResult(sym, { source: 'scalp', side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
-    return _recordScalpDiag(sym, { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
+    _recordFireResult(sym, { source: 'scalp', tf, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
+    return _recordScalpDiag(sym, { fired: true, tf, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
 
   // Per-asset last-fire result for the modal panel + Live Chart report.
@@ -5563,13 +5568,14 @@
       return { state: 'blocked', color: 'var(--liq)',      label: '🔒 CLOSED',   detail: 'Market closed for this asset.' };
     }
     if (!asset.price) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO PRICE',  detail: 'Awaiting first price tick.' };
-    // Pick the entry the auto-exec path would actually use. Scalp 1m uses
-    // _suggestedEntryForTf on the 1m tfEntries; HTF uses asset.entry.
+    // Pick the entry the auto-exec path would actually use. Fast-scalp TFs
+    // (1m / 5m) use _suggestedEntryForTf on the matching tfEntries bucket;
+    // HTF uses asset.entry.
     const scalp = getScalpTf(asset.symbol);
     let entry = null;
-    if (scalp === '1m') {
-      const tf1m = asset.tfEntries && asset.tfEntries['1m'];
-      const rawSug = (tf1m && typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tf1m, '1m') : null;
+    if (SCALP_TF_FAST.has(scalp)) {
+      const tfData = asset.tfEntries && asset.tfEntries[scalp];
+      const rawSug = (tfData && typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, scalp) : null;
       const sug = rawSug ? _highLevLevels(asset, rawSug) : null;
       if (sug && sug.entry) entry = sug.entry;
     } else {
@@ -5577,11 +5583,11 @@
       // so reflect that here.
       if (_isHighLeverage(asset.symbol)) {
         return { state: 'blocked', color: 'var(--bear)', label: '⚠ HTF + HIGH-LEV',
-                 detail: `At ${getAssetLeverage(asset.symbol)}×, HTF SLs are too wide. Switch to Scalp 1m in the modal.` };
+                 detail: `At ${getAssetLeverage(asset.symbol)}×, HTF SLs are too wide. Switch to a Scalp TF in the modal.` };
       }
       entry = asset.entry;
     }
-    if (!entry) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO SETUP', detail: 'Waiting for a 1m FVG to form.' };
+    if (!entry) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO SETUP', detail: `Waiting for a ${scalp} FVG to form.` };
     const distPct = Math.abs((asset.price - entry) / entry) * 100;
     const gate = _scalpProximityPct ? _scalpProximityPct(asset.symbol) : 0.15;
     if (distPct <= gate) {
@@ -5857,11 +5863,11 @@
     const REASON_LABEL = {
       'master-off':         '⏸ master OFF',
       'unsupported-symbol': '— no contract',
-      'scalp-off':          'scalp tf ≠ 1m',
-      'no-1m-data':         '⟳ awaiting 1m data',
-      'no-1m-setup':        '⟳ no 1m FVG setup',
+      'scalp-off':          'scalp tf = htf',
+      'no-tf-data':         '⟳ awaiting tf data',
+      'no-tf-setup':        '⟳ no FVG setup on tf',
       'no-htf-bias':        '? bias unset',
-      'htf-disagrees':      '⚠ 1m vs HTF disagrees',
+      'htf-disagrees':      '⚠ scalp vs HTF disagrees',
       'no-price':           '⟳ awaiting price',
       'too-far':            '· out of proximity',
     };

@@ -59,18 +59,20 @@ describe('scalpMonitorTick records to _scalpDiag on every return path', () => {
     assert.equal(app._scalpDiag.SOL.reason, 'scalp-off');
   });
 
-  test('no-1m-data path writes diag entry', async () => {
+  test('no-tf-data path writes diag entry', async () => {
     const { app } = loadApp();
     const sol = bootSolHigh(app);
     sol.tfEntries = null;
     const r = await app.scalpMonitorTick(sol);
-    assert.equal(r.reason, 'no-1m-data');
-    assert.equal(app._scalpDiag.SOL.reason, 'no-1m-data');
+    assert.equal(r.reason, 'no-tf-data');
+    assert.equal(app._scalpDiag.SOL.reason, 'no-tf-data');
   });
 
   test('too-far path captures distPct + threshold for the modal', async () => {
     const { app } = loadApp();
     const sol = bootSolHigh(app);
+    // High-lev now defaults to '5m'; pin to '1m' so the fixture below applies.
+    app.setScalpTf('SOL', '1m');
     // Entry 1% above current price — outside SOL@200x's widened 0.50% gate.
     sol.price = 86;
     sol.bias  = 'BULLISH';
@@ -115,6 +117,7 @@ describe('scalpMonitorTick records to _scalpDiag on every return path', () => {
   test('high-lev trio skips HTF gate — fires even on counter-bias 1m setup', async () => {
     const { app } = loadApp();
     const sol = bootSolHigh(app); // 200× → high-lev → skips HTF
+    app.setScalpTf('SOL', '1m');  // override the new 5m default for this fixture
     sol.bias  = 'BEARISH';        // HTF says bear, but 1m says bull
     sol.price = 85.95;            // at the FVG mid
     sol.tfEntries = {

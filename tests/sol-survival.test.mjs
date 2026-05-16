@@ -113,13 +113,13 @@ describe('_highLevLevels mechanical SL/TP override', () => {
   });
 });
 
-describe('getScalpTf auto-defaults to 1m for high-lev assets', () => {
-  test('SOL@200x (no explicit setting) → 1m default', () => {
+describe('getScalpTf auto-defaults to 5m for high-lev assets', () => {
+  test('SOL@200x (no explicit setting) → 5m default', () => {
     const { app, sandbox } = loadApp();
     setupSol(app, 200);
     // Wipe any prior scalp setting
     try { sandbox.localStorage.removeItem('ict_scalp_tf_SOL'); } catch (e) {}
-    assert.equal(app.getScalpTf('SOL'), '1m');
+    assert.equal(app.getScalpTf('SOL'), '5m');
   });
 
   test('SOL@200x with explicit htf override is respected (user wins)', () => {

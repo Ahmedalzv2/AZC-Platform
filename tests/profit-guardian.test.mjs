@@ -339,9 +339,9 @@ describe('_holdTimeKill — force-close positions older than MAX_POSITION_HOLD_S
     };
   }
 
-  test('threshold: MAX_POSITION_HOLD_SEC = 30', () => {
+  test('threshold: MAX_POSITION_HOLD_SEC = 180 (5m scalp era)', () => {
     const { app } = loadApp();
-    assert.equal(app.MAX_POSITION_HOLD_SEC, 30);
+    assert.equal(app.MAX_POSITION_HOLD_SEC, 180);
   });
 
   test('young position (10s old) → not closed', async () => {
@@ -363,10 +363,10 @@ describe('_holdTimeKill — force-close positions older than MAX_POSITION_HOLD_S
     assert.equal(closeBodies.length, 0, '10s old position must NOT be closed');
   });
 
-  test('position past 30s → market-closed (long → side=2 type=5)', async () => {
+  test('position past 180s → market-closed (long → side=2 type=5)', async () => {
     const { app, sandbox } = loadApp();
     liveSetup(app, sandbox);
-    openLongWithAge(app, 'SOL', 45);  // 45 seconds old, past 30s cap
+    openLongWithAge(app, 'SOL', 200);  // 200 seconds old, past 180s cap
     const closeBodies = [];
     sandbox.fetch = async (url, init) => {
       if (init && init.body) {
@@ -384,10 +384,10 @@ describe('_holdTimeKill — force-close positions older than MAX_POSITION_HOLD_S
     assert.equal(closeBodies[0].type, 5);  // market
   });
 
-  test('short past 30s → side=4 (close short)', async () => {
+  test('short past 180s → side=4 (close short)', async () => {
     const { app, sandbox } = loadApp();
     liveSetup(app, sandbox);
-    openShortWithAge(app, 'SOL', 60);
+    openShortWithAge(app, 'SOL', 220);
     const closeBodies = [];
     sandbox.fetch = async (url, init) => {
       if (init && init.body) {
@@ -407,7 +407,7 @@ describe('_holdTimeKill — force-close positions older than MAX_POSITION_HOLD_S
     const { app, sandbox } = loadApp();
     liveSetup(app, sandbox);
     app.setAssetLeverage('SOL', 50);  // drop below LEVERAGE_HIGH_THRESHOLD
-    openLongWithAge(app, 'SOL', 120);
+    openLongWithAge(app, 'SOL', 200); // past 180s cap — but low-lev should still skip
     const closeBodies = [];
     sandbox.fetch = async (url, init) => {
       if (init && init.body) {
@@ -425,7 +425,7 @@ describe('_holdTimeKill — force-close positions older than MAX_POSITION_HOLD_S
   test('master OFF → skipped', async () => {
     const { app, sandbox } = loadApp();
     app.loadTradeModes();
-    openLongWithAge(app, 'SOL', 60);
+    openLongWithAge(app, 'SOL', 200);
     const closeBodies = [];
     sandbox.fetch = async (url, init) => {
       if (init && init.body) {

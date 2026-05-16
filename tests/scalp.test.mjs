@@ -11,11 +11,11 @@ describe('scalp mode storage', () => {
     assert.equal(app.getScalpTf('ETH'), 'htf');
   });
 
-  test('trio assets auto-default to "1m" because they sit at 200×', () => {
+  test('trio assets auto-default to "5m" because they sit at 200×', () => {
     const { app } = loadApp();
-    assert.equal(app.getScalpTf('SILVER'), '1m');
-    assert.equal(app.getScalpTf('GOLD'), '1m');
-    assert.equal(app.getScalpTf('SOL'), '1m');
+    assert.equal(app.getScalpTf('SILVER'), '5m');
+    assert.equal(app.getScalpTf('GOLD'), '5m');
+    assert.equal(app.getScalpTf('SOL'), '5m');
   });
 
   test('valid values persist; invalid values are coerced to "htf"', () => {
@@ -106,25 +106,25 @@ describe('scalpMonitorTick', () => {
     assert.equal(r.reason, 'scalp-off');
   });
 
-  test('no tfEntries → no-1m-data', async () => {
+  test('no tfEntries → no-tf-data', async () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
     app.setScalpTf('SILVER', '1m');
     const r = await app.scalpMonitorTick({ symbol: 'SILVER', bias: 'BEARISH', price: 75.65, tfEntries: null });
-    assert.equal(r.reason, 'no-1m-data');
+    assert.equal(r.reason, 'no-tf-data');
   });
 
-  test('tfEntries[1m] has error → no-1m-data', async () => {
+  test('tfEntries[tf] has error → no-tf-data', async () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
     app.setScalpTf('SILVER', '1m');
     const r = await app.scalpMonitorTick({ symbol: 'SILVER', bias: 'BEARISH', price: 75.65, tfEntries: { '1m': { error: true } } });
-    assert.equal(r.reason, 'no-1m-data');
+    assert.equal(r.reason, 'no-tf-data');
   });
 
-  test('1m has no FVG matching dir → no-1m-setup', async () => {
+  test('tf has no FVG matching dir → no-tf-setup', async () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
@@ -134,7 +134,7 @@ describe('scalpMonitorTick', () => {
       symbol: 'SILVER', bias: 'BEARISH', price: 75.65,
       tfEntries: { '1m': { dir: 'bear', score: 1 } },
     });
-    assert.equal(r.reason, 'no-1m-setup');
+    assert.equal(r.reason, 'no-tf-setup');
   });
 
   test('HTF disagrees (1m bull, HTF BEARISH) → htf-disagrees (low-lev only)', async () => {

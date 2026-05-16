@@ -98,7 +98,10 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
   }
 
   test('futures asset at entry → checkArmedAlerts logs an alert', () => {
-    const { app } = loadApp();
+    // Pin wall clock to Thursday 08:00 UTC so isMarketClosed (now anchored
+    // to America/Chicago) sees an open market regardless of when the test runs.
+    const gst = new Date('2026-05-07T08:00:00Z');
+    const { app } = loadApp({ now: gst });
     // The harness doesn't run window.onload, so loadTradeModes never seeds
     // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
     app.loadTradeModes();
@@ -106,9 +109,6 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     // Reset prevSignalMap so the escalation check fires
     app.prevSignalMap = {};
     app.alertLog = [];
-    // Thursday 12:00 GST = London Killzone (active session, not Dead Zone,
-    // not weekend, no macro print).
-    const gst = new Date('2026-05-07T08:00:00Z');
     app.checkArmedAlerts(gst);
     const fired = app.alertLog.filter(x => x.symbol === 'SILVER');
     assert.ok(fired.length >= 1, 'SILVER should have fired an alert');
@@ -130,7 +130,9 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
   });
 
   test('mixed: futures fires, spot stays silent in the same tick', () => {
-    const { app } = loadApp();
+    // Pin to Thursday 08:00 UTC (market open in Chicago time).
+    const gst = new Date('2026-05-07T08:00:00Z');
+    const { app } = loadApp({ now: gst });
     // The harness doesn't run window.onload, so loadTradeModes never seeds
     // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
     app.loadTradeModes();
@@ -139,7 +141,6 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     setupAtEntry(app, 'ETH',    'spot');
     app.prevSignalMap = {};
     app.alertLog = [];
-    const gst = new Date('2026-05-07T08:00:00Z');
     app.checkArmedAlerts(gst);
     const symbols = app.alertLog.map(x => x.symbol);
     assert.ok(symbols.includes('SILVER'),  'SILVER (futures) should fire');

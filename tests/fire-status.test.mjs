@@ -82,12 +82,12 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /LIVE OFF/);
   });
 
-  test('SOL @ 200× scalp 1m within proximity → READY', () => {
+  test('SOL @ 200× scalp 5m within proximity → READY', () => {
     const { app } = loadApp();
     const sol = bootLive(app, 200);
     sol.bias = 'BULLISH';
     sol.tfEntries = {
-      '1m': {
+      '5m': {
         dir: 'bull', entryReady: true, score: 4,
         fvgZone: { dir: 'bull', lo: 99.95, hi: 100.05, mid: 100.00 },
       },
@@ -97,12 +97,12 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /READY/);
   });
 
-  test('SOL @ 200× scalp 1m 0.4% away → READY (now inside the widened 0.50% gate)', () => {
+  test('SOL @ 200× scalp 5m 0.4% away → READY (inside widened 0.50% gate)', () => {
     const { app } = loadApp();
     const sol = bootLive(app, 200);
     sol.bias = 'BULLISH';
     sol.tfEntries = {
-      '1m': {
+      '5m': {
         dir: 'bull', entryReady: true, score: 4,
         // FVG mid at ~100.4 → 0.4% above current price 100; inside the new 0.50% gate
         fvgZone: { dir: 'bull', lo: 100.35, hi: 100.45, mid: 100.40 },
@@ -113,12 +113,12 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /READY/);
   });
 
-  test('SOL @ 200× scalp 1m far → WAITING', () => {
+  test('SOL @ 200× scalp 5m far → WAITING', () => {
     const { app } = loadApp();
     const sol = bootLive(app, 200);
     sol.bias = 'BULLISH';
     sol.tfEntries = {
-      '1m': {
+      '5m': {
         dir: 'bull', entryReady: true, score: 4,
         fvgZone: { dir: 'bull', lo: 110, hi: 110.1, mid: 110.05 },
       },
@@ -137,11 +137,11 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /HTF/);
   });
 
-  test('no 1m setup yet → blocked NO SETUP', () => {
+  test('no 5m setup yet → blocked NO SETUP', () => {
     const { app } = loadApp();
     const sol = bootLive(app, 200);
     sol.bias = 'BULLISH';
-    sol.tfEntries = { '1m': { dir: null, entryReady: false, score: 0 } };
+    sol.tfEntries = { '5m': { dir: null, entryReady: false, score: 0 } };
     const s = app.getFireStatus(sol);
     assert.equal(s.state, 'blocked');
     assert.match(s.label, /SETUP/);
