@@ -330,6 +330,13 @@ function runConfig(klines, app, cfg, tf = '1m') {
   for (let i = WINDOW; i < klines.length - 1; i++) {
     if (klines[i].t < cursorTs) continue;
 
+    if (cfg.killZone) {
+      const h = new Date(klines[i].t).getUTCHours();
+      const london = h >= 7 && h < 10;
+      const nyAm = h >= 12 && h < 15;
+      if (!london && !nyAm) continue;
+    }
+
     const window = klines.slice(Math.max(0, i - WINDOW + 1), i + 1);
     const analysis = app._analyzeKlines(window);
     if (!analysis) continue;
@@ -503,6 +510,24 @@ function fmt(s) {
     'S · K + phaseGate':                      {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, phaseGate: true },
     'T · K + both filters':                   {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true, phaseGate: true },
     'U · A + both filters':                   {trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true, phaseGate: true },
+    // Iteration 2: prior round's tight-SL and filter wins, STACKED. The
+    // previous data showed SL 0.20% (slCoef 0.4) helped on TRAIL 14/2 and
+    // filters helped on TRAIL 20/5, but nobody combined them. R:R math says
+    // pushing SL to 0.10% (slCoef 0.2) + TP +50 gives margin R:R ~1.4:1, so
+    // break-even win rate ~42%. Observed win rates land 50-70% — should flip
+    // OOS positive IF the tight stop doesn't get noise-killed too often.
+    'V · TRAIL 14/2 SL 0.20% +filters':       {trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.4, confluenceOnly: true, phaseGate: true },
+    'W · TRAIL 14/2 SL 0.10% +filters':       {trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true },
+    'X · Fixed TP 50 SL 0.10% +filters':      {tpNetPct: 50, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true },
+    'Y · TRAIL 50/10 SL 0.10% +filters':      {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true },
+    // Kill-zone restriction: only fire during London open (07-10 UTC) +
+    // NY AM (12-15 UTC). Cuts ~60% of bars but ICT theory says edges live
+    // only in these windows — should lift win rate via fewer dead-hour fires.
+    'Z · W + killZone':                       {trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true, killZone: true },
+    'AA · Y + killZone':                      {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true, killZone: true },
+    // Leverage diagnostic — does dropping fee drag from 16% to 4% matter
+    // once SL/TP geometry is already R:R-positive? Run on Y at 50× to check.
+    'BB · Y @ 50× leverage':                  {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true, leverage: 50 },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
