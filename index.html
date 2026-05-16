@@ -5824,89 +5824,72 @@
   }
 
   // ═══════════════════════════════════════════════════════
-  // 🏛 ForexFactory weekly econ calendar via ScrapeBadger
+  // 🏛 ForexFactory weekly econ calendar — free FairEconomy JSON feed
+  // (no API key, no HTML scraping). Same data ForexFactory publishes; ICT
+  // macro-blackout pipeline + Calendar tab both consume this.
   // ═══════════════════════════════════════════════════════
   let _forexFactoryCache = null;
   let _forexFactoryTs = 0;
   const FF_TTL = 30 * 60 * 1000;
+  const FF_JSON_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 
   async function fetchForexFactoryCalendar(force) {
     if (!force && _forexFactoryCache && Date.now() - _forexFactoryTs < FF_TTL) return _forexFactoryCache;
-    if (!SCRAPEBADGER_API_KEY) return [];
-    const html = await _scrapeBadgerFetch('https://www.forexfactory.com/calendar', { timeout: 20000 });
-    if (!html) { _forexFactoryCache = []; _forexFactoryTs = Date.now(); return []; }
-    try {
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      const rows = doc.querySelectorAll('tr.calendar__row');
-      const out = [];
-      let currentDate = null;
-      rows.forEach(row => {
-        const dateCell = row.querySelector('.calendar__cell--date, .calendar__date');
-        if (dateCell?.textContent.trim()) {
-          const dateText = dateCell.textContent.trim();
-          // ForexFactory shows "Mon May 4" — assume current year (or next year if month already passed)
-          const yr = new Date().getFullYear();
-          const parsed = new Date(`${dateText} ${yr} 00:00:00 GMT`);
-          if (!isNaN(parsed)) {
-            // If the parsed date is more than 60 days in the past, shift to next year
-            const now = Date.now();
-            if (parsed.getTime() < now - 60*86400000) parsed.setFullYear(yr + 1);
-            currentDate = parsed.toISOString().slice(0,10);
-          }
-        }
-        const time = (row.querySelector('.calendar__time')?.textContent || '').trim();
-        const currency = (row.querySelector('.calendar__currency')?.textContent || '').trim();
-        const event = (row.querySelector('.calendar__event')?.textContent || '').trim();
-        const impactSpan = row.querySelector('.calendar__impact span, .calendar__impact-icon');
-        const impactTitle = impactSpan?.title || impactSpan?.getAttribute('data-tooltip') || '';
-        const actual = (row.querySelector('.calendar__actual')?.textContent || '').trim();
-        const forecast = (row.querySelector('.calendar__forecast')?.textContent || '').trim();
-        const previous = (row.querySelector('.calendar__previous')?.textContent || '').trim();
-        if (!event || !currentDate) return;
-        // Only USD (drives BTC/US100/Gold) and EUR (US100 sometimes reacts)
-        if (currency !== 'USD' && currency !== 'EUR') return;
-        // Skip "All Day" / no-time entries
-        if (!time || /day/i.test(time)) return;
-        // Convert FF time (typically 12h with am/pm in EST) to UTC. Best effort.
-        // FF page time defaults to local of the user's IP; via ScrapeBadger
-        // it's usually US Eastern (EST/EDT). For simplicity, store time as UTC
-        // approximation — user's countdown still works since dates dominate.
-        let timeUtc = time;
-        const m12 = time.match(/^(\d{1,2}):(\d{2})\s?(am|pm)$/i);
-        if (m12) {
-          let h = parseInt(m12[1],10);
-          const min = m12[2];
-          const ap = m12[3].toLowerCase();
-          if (ap === 'pm' && h < 12) h += 12;
-          if (ap === 'am' && h === 12) h = 0;
-          // Add 5h to convert EST→UTC (good enough; ignores DST 1h drift)
-          h = (h + 5) % 24;
-          timeUtc = String(h).padStart(2,'0') + ':' + min;
-        }
-        let impact = 'medium';
-        if (/high/i.test(impactTitle)) impact = 'high';
-        else if (/low/i.test(impactTitle)) impact = 'low';
-        else if (/non-economic|holiday/i.test(impactTitle)) impact = 'low';
-        const note = [
-          actual ? `Actual: ${actual}` : '',
-          forecast ? `Fcst: ${forecast}` : '',
-          previous ? `Prev: ${previous}` : ''
-        ].filter(Boolean).join(' · ') || 'Live ForexFactory data';
-        out.push({
-          date: currentDate, time: timeUtc,
-          event: `[${currency}] ${event}`,
-          impact, category: 'econ', source: 'forexfactory', note
-        });
-      });
-      _forexFactoryCache = out;
-      _forexFactoryTs = Date.now();
-      return out;
-    } catch(e) {
-      console.warn('[ForexFactory] parse failed:', e.message);
+    // Direct first, then a public CORS proxy in case the feed's CORS headers
+    // aren't open (some hosting providers strip them on regional edges).
+    const urls = [
+      FF_JSON_URL,
+      'https://corsproxy.io/?' + encodeURIComponent(FF_JSON_URL),
+    ];
+    let events = null;
+    for (const u of urls) {
+      try {
+        const r = await fetch(u, { cache: 'no-store' });
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (Array.isArray(j) && j.length) { events = j; break; }
+      } catch (e) { /* try next */ }
+    }
+    if (!Array.isArray(events)) {
       _forexFactoryCache = [];
       _forexFactoryTs = Date.now();
       return [];
     }
+    const out = [];
+    for (const e of events) {
+      if (!e || !e.title || !e.date) continue;
+      // US100 / GOLD / SILVER are USD-driven. EUR kept because US100 reacts
+      // to ECB and the eurozone leg of the dollar index moves.
+      if (e.country !== 'USD' && e.country !== 'EUR') continue;
+      // Bank holidays / non-economic markers aren't tradeable events — skip
+      // them entirely so the macro-blackout window doesn't fire on a holiday
+      // notice and the calendar widget stays focused on actual data prints.
+      const rawImpact = String(e.impact || '').toLowerCase();
+      if (rawImpact === 'holiday' || rawImpact === 'non-economic') continue;
+      const ts = Date.parse(e.date);
+      if (!isFinite(ts)) continue;
+      const d = new Date(ts);
+      const hhmm = String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
+      let impact = rawImpact;
+      if (!['low', 'medium', 'high'].includes(impact)) impact = 'medium';
+      const note = [
+        e.forecast ? `Fcst: ${e.forecast}` : '',
+        e.previous ? `Prev: ${e.previous}` : '',
+      ].filter(Boolean).join(' · ') || 'Live ForexFactory data';
+      out.push({
+        date: d.toISOString().slice(0, 10),
+        time: hhmm,
+        event: `[${e.country}] ${e.title}`,
+        impact,
+        category: 'econ',
+        source: 'forexfactory',
+        currency: e.country,
+        note,
+      });
+    }
+    _forexFactoryCache = out;
+    _forexFactoryTs = Date.now();
+    return out;
   }
 
   async function _fetchCryptoCompareGlobal() {
@@ -6455,13 +6438,30 @@
     if (!el) return;
     const now = new Date();
     const gst = getGST();
-    const upcoming = ECON_EVENTS.filter(e => new Date(e.date + 'T' + e.time) > now).slice(0, 8);
+    // Merge the hardcoded fallback list with the live ForexFactory cache,
+    // de-dupe on date+time+event, sort ascending, keep the next 8.
+    const merged = [
+      ...ECON_EVENTS,
+      ...(typeof _forexFactoryCache !== 'undefined' && Array.isArray(_forexFactoryCache) ? _forexFactoryCache : []),
+    ];
+    const seen = new Set();
+    const upcoming = merged
+      .filter(e => {
+        if (!e || !e.date || !e.time) return false;
+        if (new Date(e.date + 'T' + e.time + 'Z') <= now) return false;
+        const k = `${e.date}|${e.time}|${(e.event || '').replace(/^\[[A-Z]+\]\s*/, '').toLowerCase()}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .sort((a, b) => new Date(a.date + 'T' + a.time + 'Z') - new Date(b.date + 'T' + b.time + 'Z'))
+      .slice(0, 8);
 
     if (!upcoming.length) { el.innerHTML = '<div style="color:var(--text-mute);font-size:12px;">No upcoming events in calendar.</div>'; return; }
 
     el.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;margin-top:8px;">` +
       upcoming.map(e => {
-        const evtDate = new Date(e.date + 'T' + e.time);
+        const evtDate = new Date(e.date + 'T' + e.time + 'Z');
         const diffMs = evtDate - now;
         const diffH = Math.floor(diffMs / 3600000);
         const diffD = Math.floor(diffH / 24);

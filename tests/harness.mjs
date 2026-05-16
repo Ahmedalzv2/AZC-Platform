@@ -89,6 +89,8 @@ const EXPORTS = [
   'getScalpTf', 'setScalpTf',
   'scalpMonitorTick', '_normalizeBiasDir', '_suggestedEntryForTf',
   'setScalpAutoFire', 'getScalpAutoFire',
+  // forex factory econ calendar (free FairEconomy JSON feed)
+  'fetchForexFactoryCalendar',
 ];
 
 function extractScript(html) {
@@ -231,6 +233,7 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   get prevSpotZoneMap() { return typeof prevSpotZoneMap === 'undefined' ? undefined : prevSpotZoneMap; },
   set prevSpotZoneMap(v) { prevSpotZoneMap = v; },
   get _scalpDiag() { return typeof _scalpDiag === 'undefined' ? undefined : _scalpDiag; },
+  get _forexFactoryCache() { return typeof _forexFactoryCache === 'undefined' ? undefined : _forexFactoryCache; },
   get _lastFireResult() { return typeof _lastFireResult === 'undefined' ? undefined : _lastFireResult; },
   get _pendingFires() { return typeof _pendingFires === 'undefined' ? undefined : _pendingFires; },
   get _openPositions() { return typeof _openPositions === 'undefined' ? undefined : _openPositions; },
