@@ -50,12 +50,13 @@ risk on every fire — just ship the feature they asked for.
 
 ## Repo-specific facts
 
-- Tests: `npm test`. 344+ tests, ~2s. Always run before push.
-- Branch: develop on `claude/continue-dashboard-updates-NZF8K`.
+- Tests: `npm test` (fast, ~2s). Always run before push.
+- Dev branch is set per-session by the harness — use whichever branch
+  the session instructions name, not a branch hard-coded here.
 - Worker URL is user-deployed Cloudflare Worker proxying signed MEXC
   contract API calls. Worker code is `worker.js` at repo root.
-- Worker subscribed PR-activity: when creating a PR, prefer
-  `subscribe_pr_activity` over Monitor-polling — events come direct.
+- When creating a PR, prefer `subscribe_pr_activity` over Monitor-polling
+  — events come direct.
 
 ## What's already wired (don't rebuild)
 
@@ -74,32 +75,11 @@ risk on every fire — just ship the feature they asked for.
 - Spot Watch: HTF-derived buy/sell zones for spot assets, quiet toasts
   on AT BUY / AT SELL transitions, sell-zone narrative.
 
-## Recent shipments (handoff for next session)
+## Session handoff
 
-Last work session was diagnostic visibility on the Live Chart's FIRE
-STATUS badge — user said "live but not initiating trades" and couldn't
-see why without digging into the Live Trading modal. Three PRs landed:
-
-- **#68** — Position sizing: lowered the qty floor from 1 → 0.01 so MEXC
-  accepts fractional contracts (SILVER ≈ 0.47 units at $0.20 margin/200×).
-- **#69** — FIRE STATUS badge surfaces the one-at-a-time gate as
-  `⏸ WAITING ON {sym}`. Was: SILVER read READY while SOL held a position;
-  scalp tick silently skipped with `reason=in-position`.
-- **#70** — Cooldown surfacing + auto-rollback. The pre-cooldown was
-  eating 60s on sign-failed / no-keys / no-worker / bad-side even though
-  no request reached MEXC. Now rolls back for those, and the badge reads
-  `⏳ COOLDOWN · ORDER SENT` / `[DRY-RUN]` / `⚠ LAST FIRE FAILED · {reason}`
-  so failed fires don't look like throttling. Scalp ticks now also write
-  `_lastFireResult` (previously only force-fires did).
-
-### Where the user left off
-
-Testing live on the trio. After PR #70 reload the FIRE STATUS badge for
-each trio asset should tell them directly why nothing's firing. They
-asked for `/compact` to carry context — if you're picking this up fresh,
-ask what the badge for SOL / SILVER / GOLD currently says and act on
-that. Force Fire is the immediate bypass.
-
-### Tests
-
-370 passing in ~2s.
+This file is the **durable** operating manual — rules that don't change
+session to session. Anything that does change (last PR shipped, current
+bug under investigation, where the user left off) lives in PR
+descriptions and recent commits, not here. Run `/start` at the top of a
+session to bootstrap; ask the user for the current focus rather than
+relying on stale notes.
