@@ -45,12 +45,12 @@ const LEVERAGE = Number(args.lev) || 200;  // override via --lev=100 (etc.)
 const MARGIN_USD = 0.20;     // per fire
 const HIGH_LEV_PROXIMITY_PCT = 0.50;
 
-const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5 };
+const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5, '15m': 15 };
 const TF_REQUESTED = (() => {
   const raw = args.tf ? String(args.tf).toLowerCase() : 'all';
-  if (raw === 'all') return ['1m', '3m', '5m'];
+  if (raw === 'all') return ['1m', '3m', '5m', '15m'];
   if (!TF_MINUTES[raw]) {
-    console.error(`Unknown --tf "${raw}". Use 1m, 3m, 5m, or all.`);
+    console.error(`Unknown --tf "${raw}". Use 1m, 3m, 5m, 15m, or all.`);
     process.exit(1);
   }
   return [raw];
@@ -67,6 +67,23 @@ const CONTRACT_SYM = {
 }[ASSET];
 if (!CONTRACT_SYM) {
   console.error(`Unknown asset "${ASSET}". Use SOL, SILVER, GOLD, BTC, ETH, BNB, or XRP.`);
+  process.exit(1);
+}
+
+// MEXC retains only ~31d of 1m history. Binance USDT-M futures keeps it much
+// further back — use --source=binance for 90d+ windows. SILVER/GOLD are MEXC
+// synthetic perps, no Binance equivalent.
+const BINANCE_SYM = {
+  SOL: 'SOLUSDT', BTC: 'BTCUSDT', ETH: 'ETHUSDT',
+  BNB: 'BNBUSDT', XRP: 'XRPUSDT',
+}[ASSET];
+const SOURCE = String(args.source || 'mexc').toLowerCase();
+if (SOURCE !== 'mexc' && SOURCE !== 'binance') {
+  console.error(`Unknown --source "${SOURCE}". Use mexc or binance.`);
+  process.exit(1);
+}
+if (SOURCE === 'binance' && !BINANCE_SYM) {
+  console.error(`--source=binance not available for ${ASSET}.`);
   process.exit(1);
 }
 
@@ -104,8 +121,23 @@ async function fetchKlineChunk(symbol, startSec, endSec) {
   return [];
 }
 
+// Binance USDT-M futures: array-of-arrays response [openTimeMs, o, h, l, c, v, ...].
+async function fetchKlineChunkBinance(symbol, startSec, endSec) {
+  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${startSec*1000}&endTime=${endSec*1000}&limit=1500`;
+  try {
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) return [];
+    const j = await r.json();
+    if (!Array.isArray(j)) return [];
+    return j.map((k) => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
+  } catch (e) { return []; }
+}
+
 async function loadKlines(symbol, days) {
-  const cacheFile = path.join(CACHE_DIR, `${symbol}-${days}d.json`);
+  const tag = SOURCE === 'binance' ? '-binance' : '';
+  const fetchSym = SOURCE === 'binance' ? BINANCE_SYM : symbol;
+  const fetcher = SOURCE === 'binance' ? fetchKlineChunkBinance : fetchKlineChunk;
+  const cacheFile = path.join(CACHE_DIR, `${symbol}-${days}d${tag}.json`);
   if (existsSync(cacheFile)) {
     const c = JSON.parse(readFileSync(cacheFile, 'utf8'));
     if (Date.now() - c.fetchedAt < 6 * 3600 * 1000) {
@@ -113,14 +145,14 @@ async function loadKlines(symbol, days) {
       return c.klines;
     }
   }
-  console.log(`Fetching ${days} days of 1m ${symbol} from MEXC public API...`);
+  console.log(`Fetching ${days} days of 1m ${fetchSym} from ${SOURCE.toUpperCase()} public API...`);
   const endSec = Math.floor(Date.now() / 1000);
   const startSec = endSec - days * 86400;
   // Walk forward in 1-day chunks (~1440 candles each).
   const chunks = [];
   for (let s = startSec; s < endSec; s += 86400) {
     const e = Math.min(s + 86400, endSec);
-    const c = await fetchKlineChunk(symbol, s, e);
+    const c = await fetcher(fetchSym, s, e);
     chunks.push(c);
     process.stdout.write(`  ${new Date(s*1000).toISOString().slice(0,10)} → ${c.length} candles\n`);
   }
@@ -325,7 +357,12 @@ function runConfig(klines, app, cfg, tf = '1m') {
   const tpNetPct = cfg.tpNetPct ?? 10;
   const proximityPct = cfg.proximityPct ?? HIGH_LEV_PROXIMITY_PCT;
   const cancelTtlBars = cfg.cancelTtlBars ?? 0;
-  const slCoef = cfg.slCoef ?? 0.7;
+  // slPricePct: SL in PRICE % (decimal-percent, 0.10 = 0.10%). Lets configs
+  // keep the same price-distance SL across leverage levels — the legacy
+  // slCoef formula widens price-SL as leverage drops, which breaks <100×.
+  const slCoef = cfg.slPricePct != null
+    ? (cfg.slPricePct / 100) * lev
+    : (cfg.slCoef ?? 0.7);
 
   for (let i = WINDOW; i < klines.length - 1; i++) {
     if (klines[i].t < cursorTs) continue;
@@ -542,6 +579,21 @@ function fmt(s) {
     // Direction-of-cancel test: drop confluenceOnly (let fvg-edge fire) — does
     // filter set lose too many real trades?
     'II · AA - confluenceOnly':               {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, phaseGate: true, killZone: true },
+    // === Iteration 4: price-mode SL configs for low-leverage runs ===
+    // Run these with --lev=100 or --lev=50 on the CLI. slPricePct keeps the
+    // SL distance in PRICE constant across leverages — the legacy slCoef
+    // formula widened price-SL at low lev (BB hit 1% win because SOL never
+    // moved the 1.4% needed for SL). Hypothesis: at 100× with SL=0.10% price
+    // and TP NET 20-50, R:R margin flips positive AND price moves are
+    // achievable in normal SOL volatility.
+    'JJ · SL 0.10% price + TP 20 + AA':       {trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.10, confluenceOnly: true, phaseGate: true, killZone: true },
+    'KK · SL 0.10% price + TP 50/10 + AA':    {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.10, confluenceOnly: true, phaseGate: true, killZone: true },
+    'LL · SL 0.10% price + TP 100/20 + AA':   {trail: { armPct: 100, trailPct: 20, ceilingPct: 400 }, cancelTtlBars: 2, slPricePct: 0.10, confluenceOnly: true, phaseGate: true, killZone: true },
+    'MM · SL 0.15% price + TP 50/10 + AA':    {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.15, confluenceOnly: true, phaseGate: true, killZone: true },
+    'NN · SL 0.20% price + TP 50/10 + AA':    {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.20, confluenceOnly: true, phaseGate: true, killZone: true },
+    'OO · SL 0.05% price + TP 30 + AA':       {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.05, confluenceOnly: true, phaseGate: true, killZone: true },
+    'PP · SL 0.10% no filters no killZone':   {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.10 },
+    'QQ · SL 0.15% phaseGate only':           {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.15, phaseGate: true },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
