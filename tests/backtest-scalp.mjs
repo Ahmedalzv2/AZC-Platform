@@ -41,7 +41,7 @@ const ASSET = String(args.asset || 'SILVER').toUpperCase();
 const VERBOSE = Boolean(args.verbose);
 const WINDOW = 200;          // candles fed to _analyzeKlines per tick
 let   SIM_HORIZON = 60;      // candles to walk forward looking for TP/SL (mutated per-TF below to keep ~1h wall-clock)
-const LEVERAGE = 200;        // trio default
+const LEVERAGE = Number(args.lev) || 200;  // override via --lev=100 (etc.)
 const MARGIN_USD = 0.20;     // per fire
 const HIGH_LEV_PROXIMITY_PCT = 0.50;
 
@@ -456,38 +456,38 @@ function fmt(s) {
 
   const configs = {
     // Current shipped: arm trail at +20% NET margin, trail by 5%.
-    'A · TRAIL 20/5 (current ship)':          { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'A · TRAIL 20/5 (current ship)':          {trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
     // User request: "TP 14% so we can have many trade". Arm at +14%, trail
     // 5% → typical exit ~+9% margin. Faster cycle, more trades.
-    'B · TRAIL 14/5 (user request)':          { leverage: 200, trail: { armPct: 14, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'B · TRAIL 14/5 (user request)':          {trail: { armPct: 14, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
     // Tighter trail — closer to "fixed 14% with tiny wiggle".
-    'C · TRAIL 14/2 (tighter trail)':         { leverage: 200, trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'C · TRAIL 14/2 (tighter trail)':         {trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2 },
     // Effectively fixed +14% TP (trail=0 → exit at arm level).
-    'D · Fixed +14% TP (no trail)':           { leverage: 200, tpNetPct: 14, cancelTtlBars: 2 },
+    'D · Fixed +14% TP (no trail)':           {tpNetPct: 14, cancelTtlBars: 2 },
     // For comparison — the old "as designed" with a +9% target.
-    'E · TRAIL 9/5 (even faster)':            { leverage: 200, trail: { armPct: 9, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'E · TRAIL 9/5 (even faster)':            {trail: { armPct: 9, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
     // What we used to ship before today.
-    'F · Fixed +20% TP':                      { leverage: 200, tpNetPct: 20, cancelTtlBars: 2 },
+    'F · Fixed +20% TP':                      {tpNetPct: 20, cancelTtlBars: 2 },
     // Higher TP targets — needed because SL at 200× = -86% margin, so
     // a +14-20% TP requires ~85% win rate to break even. These configs
     // give the upside enough room to compensate for the asymmetric loss.
-    'G · TRAIL 50/10 (higher target)':        { leverage: 200, trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2 },
-    'H · TRAIL 100/20 (big runner)':          { leverage: 200, trail: { armPct: 100, trailPct: 20, ceilingPct: 200 }, cancelTtlBars: 2 },
-    'I · Fixed +50% TP':                      { leverage: 200, tpNetPct: 50, cancelTtlBars: 2 },
-    'J · Fixed +100% TP':                     { leverage: 200, tpNetPct: 100, cancelTtlBars: 2 },
-    'K · TRAIL 30/5':                         { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'G · TRAIL 50/10 (higher target)':        {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'H · TRAIL 100/20 (big runner)':          {trail: { armPct: 100, trailPct: 20, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'I · Fixed +50% TP':                      {tpNetPct: 50, cancelTtlBars: 2 },
+    'J · Fixed +100% TP':                     {tpNetPct: 100, cancelTtlBars: 2 },
+    'K · TRAIL 30/5':                         {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
     // SL-tightening sweep on the OOS leader (K). slCoef × (100/lev)% =
     // price SL. 0.7 = 0.35% (default), 0.4 = 0.20%, 0.3 = 0.15%, 0.2 = 0.10%.
     // Each step cuts loss-per-stop-out roughly in half. Hypothesis: at 0.10%
     // the break-even win rate (~64%) crosses our observed 60-70% band, so
     // EV flips positive — IF win rate doesn't collapse from noise stops.
-    'L · TRAIL 30/5  SL 0.20%':               { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.4 },
-    'M · TRAIL 30/5  SL 0.15%':               { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.3 },
-    'N · TRAIL 30/5  SL 0.10%':               { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2 },
+    'L · TRAIL 30/5  SL 0.20%':               {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.4 },
+    'M · TRAIL 30/5  SL 0.15%':               {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.3 },
+    'N · TRAIL 30/5  SL 0.10%':               {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2 },
     // Same sweep on TRAIL 14/2 (3m winner before adding higher TPs).
-    'O · TRAIL 14/2  SL 0.20%':               { leverage: 200, trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.4 },
-    'P · TRAIL 14/2  SL 0.15%':               { leverage: 200, trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.3 },
-    'Q · TRAIL 14/2  SL 0.10%':               { leverage: 200, trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2 },
+    'O · TRAIL 14/2  SL 0.20%':               {trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.4 },
+    'P · TRAIL 14/2  SL 0.15%':               {trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.3 },
+    'Q · TRAIL 14/2  SL 0.10%':               {trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2 },
     // Signal selectivity on the OOS leader (K). The pre-existing backtester
     // flags drop noisy signals before fire: confluenceOnly cuts plain fvg-edge
     // entries (keeps BPR/iFVG/OB+FVG/FVG+sweep); phaseGate skips consolidation
@@ -495,10 +495,10 @@ function fmt(s) {
     // fvg-edge — filtering them lifts win rate enough to flip EV positive,
     // assuming the remaining high-conviction setups actually behave as ICT
     // theory claims.
-    'R · K + confluenceOnly':                 { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true },
-    'S · K + phaseGate':                      { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, phaseGate: true },
-    'T · K + both filters':                   { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true, phaseGate: true },
-    'U · A + both filters':                   { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true, phaseGate: true },
+    'R · K + confluenceOnly':                 {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true },
+    'S · K + phaseGate':                      {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, phaseGate: true },
+    'T · K + both filters':                   {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true, phaseGate: true },
+    'U · A + both filters':                   {trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true, phaseGate: true },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
