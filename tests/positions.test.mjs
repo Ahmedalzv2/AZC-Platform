@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
 function withConnected(app, sandbox) {
   app.saveMexcKeys('k', 's');
@@ -205,7 +205,7 @@ describe('getFireStatus — IN POSITION state', () => {
   test('IN POSITION takes priority over READY (do not advertise re-fire on top of an open trade)', () => {
     const { app } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SOL', 200);
+    forceLeverage(app, 'SOL', 200);
     app.setLiveTradingEnabled(true);
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
     sol.price = 100;
@@ -250,7 +250,7 @@ describe('getFireStatus — IN POSITION state', () => {
     // Pin wall clock to a Thursday so SILVER's CME weekend gate doesn't fire.
     const { app } = loadApp({ now: new Date('2026-05-07T15:00:00Z') });
     app.loadTradeModes();
-    app.setAssetLeverage('SILVER', 200);  // high-lev → independent fires
+    forceLeverage(app, 'SILVER', 200);  // high-lev → independent fires
     app.setLiveTradingEnabled(true);
     const silver = app.ASSETS.find(a => a.symbol === 'SILVER');
     silver.price = 32.5;

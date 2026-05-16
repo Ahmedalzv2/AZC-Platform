@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
 describe('Policy v4 — GOLD joins SOL + SILVER as default auto-exec futures', () => {
   test('DEFAULT_TRADE_MODES has GOLD = futures', () => {
@@ -41,7 +41,7 @@ describe('getFireStatus — at-a-glance trigger state', () => {
   function bootLive(app, leverage) {
     app.loadTradeModes();
     app.setLiveTradingEnabled(true);
-    if (leverage) app.setAssetLeverage('SOL', leverage);
+    if (leverage) forceLeverage(app, 'SOL', leverage);
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
     sol.price = 100;
     return sol;

@@ -2731,24 +2731,17 @@
     _updateLiveTradingBadge();
   }
 
-  // Default leverage for SILVER auto-execution. Dashboard suggests 3–5×
-  // for futures lanes; we pick the safer end per asset.
-  //
-  // Per-asset leverage spec (default + cap). Each asset gets its own ceiling
-  // so the SILVER conservative (≤20×) doesn't silently clamp a user setting
-  // 200× on SOL — that's the explicit YOLO test the user signed up for.
+  // Per-asset leverage spec (default + cap). 90d-OOS research closed the
+  // 200× scalp loop — every cell tested negative on >100 fills across all
+  // assets/timeframes/leverages. New cap is 25× universally; default 10×.
   // Storage key: ict_mexc_<symbol>_leverage.
   const ASSET_LEVERAGE_SPEC = {
-    SILVER: { def: 200, max: 200 },  // trio scalp loop — full YOLO test
-    SOL:    { def: 200, max: 200 },  // trio scalp loop
-    GOLD:   { def: 200, max: 200 },  // trio scalp loop
-    US100:  { def: 5,   max: 30  },  // CFD-style — leveraged but bounded
+    SILVER: { def: 10, max: 25 },
+    SOL:    { def: 10, max: 25 },
+    GOLD:   { def: 10, max: 25 },
+    US100:  { def: 5,  max: 30 },  // CFD-style — broker-side leverage, not auto-fired
   };
-  // Default for any asset not explicitly listed above. The user wanted to be
-  // able to flip ANY asset (BTC, ETH, BNB, XRP, SUI, ASTR, GOLD, …) to
-  // futures + pick a leverage 1–200× without me having to whitelist it
-  // case-by-case. Default 10× stays safe; user can crank to 200× per asset.
-  const ASSET_LEVERAGE_DEFAULT = { def: 10, max: 200 };
+  const ASSET_LEVERAGE_DEFAULT = { def: 10, max: 25 };
   function _leverageSpec(symbol) {
     return ASSET_LEVERAGE_SPEC[symbol] || ASSET_LEVERAGE_DEFAULT;
   }
@@ -2903,6 +2896,14 @@
   function _isHighLeverage(symbol) {
     return getAssetLeverage(symbol) >= LEVERAGE_HIGH_THRESHOLD;
   }
+
+  // 90d-OOS research closed every ICT auto-scalp config on >100 fills across
+  // SOL/BTC/ETH/SILVER at lev 10–200×. Gate stays OFF in production — signal
+  // generation, FIRE STATUS badges, force-fire and the kill-switch UI remain
+  // live. Tests opt in via setScalpAutoFire(true).
+  let _scalpAutoFireEnabled = false;
+  function setScalpAutoFire(on) { _scalpAutoFireEnabled = !!on; return _scalpAutoFireEnabled; }
+  function getScalpAutoFire() { return _scalpAutoFireEnabled; }
 
   // Override SL/TP to mechanical leverage-fit levels. Returns a new sug
   // object (does not mutate input). When leverage < threshold, returns the
@@ -4070,6 +4071,11 @@
     const lev = getAssetLeverage(sym);
     const qty = computeMexcOrderQty(asset, sug.entry, sug.sl, lev) || 1;
 
+    // Strategic auto-fire gate — see _scalpAutoFireEnabled docstring.
+    if (!_scalpAutoFireEnabled) {
+      return _recordScalpDiag(sym, { fired: false, reason: 'auto-fire-disabled', tf, side, sugEntry: sug.entry, sl: sug.sl, tp: sug.tp });
+    }
+
     // Claim the pending-fire slot BEFORE the await. Concurrent scalp ticks
     // racing past the _findBlockingPosition check produced duplicate fires
     // (real-world hit: 2 SILVER limits at the same timestamp). Rollback if
@@ -4318,7 +4324,7 @@
     const hiLev = lev >= LEVERAGE_HIGH_THRESHOLD;
     // Dropdown options — full leverage ladder when the asset's cap allows
     // it, trimmed to the cap when it doesn't.
-    const opts = [1,2,3,4,5,7,10,25,50,75,100,150,200].filter(n => n <= spec.max);
+    const opts = [1,2,3,5,7,10,15,20,25].filter(n => n <= spec.max);
     const headerColor = hiLev ? 'var(--bear)' : 'var(--gold)';
     const headerPrefix = hiLev ? '⚠ ' : '';
     const headerSuffix = hiLev ? ' (YOLO TEST)' : '';
@@ -4371,7 +4377,7 @@
           </select>
           <button onclick="(function(){const sel=document.getElementById('ltAddAssetPicker');if(!sel)return;setTradeMode(sel.value,'futures');openLiveTradingModal();})()" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">+ Add</button>
         </div>
-        <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-top:6px;">Promotes the picked asset to futures mode and into the auto-exec list. Default leverage is 10× (changeable per asset). Pick 200× if you want it in the YOLO pipeline.</div>
+        <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-top:6px;">Promotes the picked asset to futures mode. Default leverage is 10× (changeable per asset, capped at 25×). Auto-fire is disabled — use the Force Fire button for manual entries.</div>
       </div>`;
   }
 

@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
 describe('forceFireAsset — manual fire bypasses proximity', () => {
   function bootSilverLive(app) {
@@ -42,7 +42,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
   test('high-lev asset: SL/TP use mechanical buffer (≈0.35% at 200×)', async () => {
     const { app, sandbox } = loadApp();
     const s = bootSilverLive(app);
-    app.setAssetLeverage('SILVER', 200);   // becomes high-lev
+    forceLeverage(app, 'SILVER', 200);   // becomes high-lev
     s.price = 80; s.bias = 'BULLISH';
     sandbox.localStorage.setItem('ict_calc_account', '10');
     sandbox.localStorage.setItem('ict_calc_risk', '100');

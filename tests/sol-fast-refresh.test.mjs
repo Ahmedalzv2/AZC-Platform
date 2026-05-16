@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
 // _fastRefreshAssetEntry hits real fetch endpoints. We replace `fetch` on
 // the sandbox before exercising it so the test stays hermetic.
@@ -9,7 +9,7 @@ describe('_fastRefreshAssetEntry', () => {
   function bootWithSolFutures() {
     const { app, sandbox } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SOL', 200);
+    forceLeverage(app, 'SOL', 200);
     return { app, sandbox };
   }
 
@@ -64,7 +64,7 @@ describe('_fastRefreshTick gating', () => {
   test('skips entirely when master switch is OFF', async () => {
     const { app, sandbox } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SOL', 200);
+    forceLeverage(app, 'SOL', 200);
     let fetchCalls = 0;
     sandbox.fetch = async () => {
       fetchCalls++;
@@ -78,7 +78,7 @@ describe('_fastRefreshTick gating', () => {
   test('iterates only high-lev futures assets when master ON', async () => {
     const { app, sandbox } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SOL', 200);    // high-lev → eligible
+    forceLeverage(app, 'SOL', 200);      // high-lev → eligible
     app.setAssetLeverage('SILVER', 3);   // low-lev  → skipped
     app.setLiveTradingEnabled(true);
     const fetchedSymbols = new Set();
@@ -102,9 +102,9 @@ describe('_fastRefreshTick parallel execution', () => {
   test('trio refresh runs in parallel — total time ≈ slowest single fetch, not sum', async () => {
     const { app, sandbox } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SOL', 200);
-    app.setAssetLeverage('GOLD', 200);
-    app.setAssetLeverage('SILVER', 200);
+    forceLeverage(app, 'SOL', 200);
+    forceLeverage(app, 'GOLD', 200);
+    forceLeverage(app, 'SILVER', 200);
     app.setLiveTradingEnabled(true);
     const DELAY_MS = 80;
     // Return a usable 50-bar kline so the first fallback succeeds for every

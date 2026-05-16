@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
 function liveSetup(app, sandbox) {
   app.loadTradeModes();
@@ -14,7 +14,7 @@ function liveSetup(app, sandbox) {
   // _trailingTakeProfit). Drop SOL leverage to 50× so these tests cover
   // the legacy break-even-protection path. Trail-specific tests live in
   // a separate describe block below at default 200×.
-  app.setAssetLeverage('SOL', 50);
+  forceLeverage(app, 'SOL', 50);
 }
 
 function openLong(app, sym, entry, mark) {
@@ -176,7 +176,7 @@ describe('_trailingTakeProfit — high-lev runners (arm at +14% margin, exit on 
     app.setLiveTradingEnabled(true);
     app.setLiveTradingDryRun(false);
     // SOL defaults to 200× (trio); explicit for clarity.
-    app.setAssetLeverage('SOL', 200);
+    forceLeverage(app, 'SOL', 200);
   }
 
   test('thresholds: arm at 11% NET margin, trail by 2%', () => {
@@ -245,7 +245,7 @@ describe('_trailingTakeProfit — high-lev runners (arm at +14% margin, exit on 
   test('low-lev positions skipped (handled by profit guardian instead)', async () => {
     const { app, sandbox } = loadApp();
     liveSetupHighLev(app, sandbox);
-    app.setAssetLeverage('SOL', 50);  // drop below LEVERAGE_HIGH_THRESHOLD
+    forceLeverage(app, 'SOL', 50);  // drop below LEVERAGE_HIGH_THRESHOLD
     openLong(app, 'SOL', 100, 100.20);  // peaks high but low-lev
     sandbox.fetch = async () => ({ ok: true, status: 200, text: async () => '{"success":true,"code":0}' });
     Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
@@ -322,7 +322,7 @@ describe('_holdTimeKill — force-close positions older than MAX_POSITION_HOLD_S
     sandbox.localStorage.setItem('ict_mexc_worker_url', 'https://w.workers.dev');
     app.setLiveTradingEnabled(true);
     app.setLiveTradingDryRun(false);
-    app.setAssetLeverage('SOL', 200);
+    forceLeverage(app, 'SOL', 200);
   }
 
   function openLongWithAge(app, sym, ageSec) {
@@ -406,7 +406,7 @@ describe('_holdTimeKill — force-close positions older than MAX_POSITION_HOLD_S
   test('low-lev positions skipped (no time-stop)', async () => {
     const { app, sandbox } = loadApp();
     liveSetup(app, sandbox);
-    app.setAssetLeverage('SOL', 50);  // drop below LEVERAGE_HIGH_THRESHOLD
+    forceLeverage(app, 'SOL', 50);  // drop below LEVERAGE_HIGH_THRESHOLD
     openLongWithAge(app, 'SOL', 200); // past 180s cap — but low-lev should still skip
     const closeBodies = [];
     sandbox.fetch = async (url, init) => {

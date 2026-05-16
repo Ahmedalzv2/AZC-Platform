@@ -1,15 +1,14 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
-describe('SOL trade-mode policy (v3 added SOL; v4 added GOLD)', () => {
-  test('DEFAULT_TRADE_MODES.SOL = futures', () => {
+describe('Trade-mode policy (v6 — post-90d-OOS research)', () => {
+  test('DEFAULT_TRADE_MODES still flags SOL/SILVER/US100/GOLD as futures', () => {
     const { app } = loadApp();
     assert.equal(app.DEFAULT_TRADE_MODES.SOL, 'futures');
-    // SILVER + US100 + GOLD also futures (v4). BTC and other crypto stay spot.
     assert.equal(app.DEFAULT_TRADE_MODES.SILVER, 'futures');
     assert.equal(app.DEFAULT_TRADE_MODES.US100,  'futures');
-    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'futures', 'v4: GOLD joins the trio');
+    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'futures');
     assert.equal(app.DEFAULT_TRADE_MODES.BTC,    'spot');
   });
 
@@ -25,60 +24,48 @@ describe('SOL trade-mode policy (v3 added SOL; v4 added GOLD)', () => {
 describe('_mexcContractSymbol generalised', () => {
   test('returns SOL_USDT for SOL', () => {
     const { app } = loadApp();
-    const sol = { symbol: 'SOL' };
-    assert.equal(app._mexcContractSymbol(sol), 'SOL_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'SOL' }), 'SOL_USDT');
   });
 
   test('still returns SILVER_USDT for SILVER (backwards-compat)', () => {
     const { app } = loadApp();
     assert.equal(app._mexcContractSymbol({ symbol: 'SILVER' }), 'SILVER_USDT');
   });
-
-  // Note: the broader "any asset derives a contract" coverage now lives in
-  // the dedicated _mexcContractSymbol suite further down — see those tests
-  // for the full BTC/ETH/SUI/GOLD/US100 matrix.
 });
 
-describe('getAssetLeverage / setAssetLeverage per-asset cap', () => {
-  test('SILVER default and cap are both 200x (trio scalp loop)', () => {
+describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-research)', () => {
+  test('Trio (SILVER/SOL/GOLD) default 10×, cap 25×', () => {
     const { app } = loadApp();
-    assert.equal(app.ASSET_LEVERAGE_SPEC.SILVER.max, 200);
-    assert.equal(app.ASSET_LEVERAGE_SPEC.SILVER.def, 200, 'default is now 200x — trio policy');
-    assert.equal(app.setAssetLeverage('SILVER', 200), 200);
-    assert.equal(app.setAssetLeverage('SILVER', 500), 200, 'clamped to SILVER cap');
-    assert.equal(app.setAssetLeverage('SILVER', 5),   5);
+    for (const sym of ['SILVER', 'SOL', 'GOLD']) {
+      assert.equal(app.ASSET_LEVERAGE_SPEC[sym].def, 10, `${sym} default`);
+      assert.equal(app.ASSET_LEVERAGE_SPEC[sym].max, 25, `${sym} cap`);
+      assert.equal(app.setAssetLeverage(sym, 200), 25, `${sym} clamps to new cap`);
+      assert.equal(app.setAssetLeverage(sym, 10), 10);
+      assert.equal(app.setAssetLeverage(sym, 0), 1, `${sym} clamps low`);
+    }
   });
 
-  test('SILVER at 200x is treated as high-lev (Survival Mode kicks in)', () => {
+  test('No asset reaches LEVERAGE_HIGH_THRESHOLD via normal API (survival mode unreachable)', () => {
     const { app } = loadApp();
-    app.setAssetLeverage('SILVER', 200);
-    assert.equal(app._isHighLeverage('SILVER'), true,
-      'SILVER@200x now inherits the same survival-mode pipeline as SOL@200x');
+    for (const sym of ['SILVER', 'SOL', 'GOLD', 'BTC', 'ETH']) {
+      app.setAssetLeverage(sym, 100);
+      assert.equal(app._isHighLeverage(sym), false, `${sym} at clamped max should NOT be high-lev`);
+    }
   });
 
-  test('SOL capped at 200x (the YOLO test ceiling)', () => {
+  test('forceLeverage test helper bypasses the cap to exercise survival-mode code', () => {
     const { app } = loadApp();
-    assert.equal(app.ASSET_LEVERAGE_SPEC.SOL.max, 200);
-    assert.equal(app.setAssetLeverage('SOL', 200), 200, 'accepts the explicit YOLO 200x');
-    assert.equal(app.setAssetLeverage('SOL', 500), 200, 'clamped to SOL cap');
-    assert.equal(app.setAssetLeverage('SOL', 25),  25);
-  });
-
-  test('SOL default leverage is 200x (matches user request)', () => {
-    const { app } = loadApp();
-    // Wipe any prior persisted value so we observe the seed default.
-    try { app.localStorage.removeItem('ict_mexc_sol_leverage'); } catch (e) {}
+    forceLeverage(app, 'SOL', 200);
     assert.equal(app.getAssetLeverage('SOL'), 200);
+    assert.equal(app._isHighLeverage('SOL'), true);
   });
 
-  test('Unknown asset falls back to generic default (def=10, max=200)', () => {
-    // ASSET_LEVERAGE_DEFAULT bumped to {10, 200} so the user can flip ANY
-    // asset to auto-exec and pick up to 200× without me having to whitelist
-    // each symbol case-by-case.
+  test('Unknown asset falls back to generic default (def=10, max=25)', () => {
     const { app } = loadApp();
+    assert.equal(app.ASSET_LEVERAGE_SPEC.NEVER_HEARD, undefined);
     assert.equal(app.getAssetLeverage('NEVER_HEARD'), 10);
-    assert.equal(app.setAssetLeverage('NEVER_HEARD', 500), 200);
-    assert.equal(app.setAssetLeverage('NEVER_HEARD', 50), 50);
+    assert.equal(app.setAssetLeverage('NEVER_HEARD', 500), 25);
+    assert.equal(app.setAssetLeverage('NEVER_HEARD', 20), 20);
   });
 
   test('getSilverLeverage backwards-compat alias still works', () => {
@@ -92,10 +79,6 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap', () => {
 
 describe('_mexcContractSymbol — any asset with a MEXC contract is eligible', () => {
   test('SILVER, SOL, BTC, ETH, BNB all derive a MEXC contract symbol', () => {
-    // _mexcContractSymbol now delegates to _resolveSymbols, so any asset
-    // whose .mexc field is non-null is eligible — no symbol-by-symbol
-    // whitelist. The user wanted to add any asset without me having to
-    // touch the code.
     const { app } = loadApp();
     assert.equal(app._mexcContractSymbol({ symbol: 'SILVER' }), 'SILVER_USDT');
     assert.equal(app._mexcContractSymbol({ symbol: 'SOL' }),    'SOL_USDT');
@@ -125,31 +108,24 @@ describe('_mexcContractSymbol — any asset with a MEXC contract is eligible', (
   });
 });
 
-describe('Default leverage spec applies to any asset not explicitly listed', () => {
-  test('BTC unlisted → default 10×, max 200×', () => {
+describe('Auto-fire gate (post-90d-OOS — disabled in production)', () => {
+  test('_scalpAutoFireEnabled defaults to false (production safe)', () => {
     const { app } = loadApp();
-    // BTC isn't in ASSET_LEVERAGE_SPEC — should fall through to the
-    // generic ASSET_LEVERAGE_DEFAULT.
-    assert.equal(app.ASSET_LEVERAGE_SPEC.BTC, undefined);
-    // No persisted value → returns the default.
-    assert.equal(app.getAssetLeverage('BTC'), 10);
-    // Accepts up to 200×, clamps higher.
-    assert.equal(app.setAssetLeverage('BTC', 200), 200);
-    assert.equal(app.setAssetLeverage('BTC', 500), 200);
-    assert.equal(app.setAssetLeverage('BTC', 0), 1);
+    assert.equal(app.getScalpAutoFire(), false);
   });
 
-  test('User can set ETH to 200× without me touching the code', () => {
+  test('setScalpAutoFire(true) / (false) toggles the gate', () => {
     const { app } = loadApp();
-    assert.equal(app.setAssetLeverage('ETH', 200), 200);
-    assert.equal(app._isHighLeverage('ETH'), true);
+    assert.equal(app.setScalpAutoFire(true), true);
+    assert.equal(app.getScalpAutoFire(), true);
+    assert.equal(app.setScalpAutoFire(false), false);
+    assert.equal(app.getScalpAutoFire(), false);
   });
 });
 
 describe('Kill-switch toggleLiveTradingKillSwitch', () => {
   test('toggles _liveTradingEnabled OFF → ON → OFF', () => {
     const { app } = loadApp();
-    // The harness boots with master OFF by default — confirm.
     assert.equal(app._liveTradingEnabled, false);
     app.toggleLiveTradingKillSwitch();
     assert.equal(app._liveTradingEnabled, true,  'first tap arms');
