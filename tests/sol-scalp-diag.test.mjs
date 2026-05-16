@@ -1,24 +1,24 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
 describe('_scalpProximityPct widens for high-lev', () => {
   test('SOL@200x → 0.50 (wider tolerance for the trio ultra-trade loop)', () => {
     const { app } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SOL', 200);
+    forceLeverage(app, 'SOL', 200);
     assert.equal(app._scalpProximityPct('SOL'), 0.50);
   });
   test('SILVER@3x → 0.15 (default tolerance)', () => {
     const { app } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SILVER', 3);
+    forceLeverage(app, 'SILVER', 3);
     assert.equal(app._scalpProximityPct('SILVER'), 0.15);
   });
   test('SOL dropped to 50x → 0.15 (no longer high-lev)', () => {
     const { app } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SOL', 50);
+    forceLeverage(app, 'SOL', 50);
     assert.equal(app._scalpProximityPct('SOL'), 0.15);
   });
   test('threshold constants match: SCALP_PROXIMITY_PCT=0.15, SCALP_PROXIMITY_PCT_HIGH_LEV=0.50', () => {
@@ -31,7 +31,7 @@ describe('_scalpProximityPct widens for high-lev', () => {
 describe('scalpMonitorTick records to _scalpDiag on every return path', () => {
   function bootSolHigh(app) {
     app.loadTradeModes();
-    app.setAssetLeverage('SOL', 200);
+    forceLeverage(app, 'SOL', 200);
     app.setLiveTradingEnabled(true);
     return app.ASSETS.find(a => a.symbol === 'SOL');
   }
@@ -97,7 +97,7 @@ describe('scalpMonitorTick records to _scalpDiag on every return path', () => {
     // back to 'htf' when leverage falls below the threshold.
     const { app } = loadApp();
     const sol = bootSolHigh(app);
-    app.setAssetLeverage('SOL', 50);
+    forceLeverage(app, 'SOL', 50);
     app.setScalpTf('SOL', '1m');
     sol.bias  = 'BEARISH';
     sol.price = 86;

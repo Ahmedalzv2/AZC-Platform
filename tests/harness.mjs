@@ -88,6 +88,7 @@ const EXPORTS = [
   // scalp mode
   'getScalpTf', 'setScalpTf',
   'scalpMonitorTick', '_normalizeBiasDir', '_suggestedEntryForTf',
+  'setScalpAutoFire', 'getScalpAutoFire',
 ];
 
 function extractScript(html) {
@@ -278,4 +279,17 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
  */
 export function gstDate(hour, minute = 0, second = 0) {
   return new Date(2024, 5, 15, hour, minute, second);
+}
+
+/**
+ * Production caps leverage at 25× (post-90d-OOS policy). The high-lev /
+ * survival-mode code paths remain in the source for the moment but are
+ * unreachable through the normal API. Tests that exercise those paths use
+ * this helper to bump the spec cap before setting leverage.
+ */
+export function forceLeverage(app, symbol, lev) {
+  const spec = app.ASSET_LEVERAGE_SPEC[symbol];
+  if (spec) spec.max = Math.max(spec.max, lev);
+  else app.ASSET_LEVERAGE_DEFAULT.max = Math.max(app.ASSET_LEVERAGE_DEFAULT.max, lev);
+  return app.setAssetLeverage(symbol, lev);
 }

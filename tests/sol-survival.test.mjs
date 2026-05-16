@@ -1,12 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
 const SOL_ENTRY = 86;
 
 function setupSol(app, leverage) {
   app.loadTradeModes();
-  app.setAssetLeverage('SOL', leverage);
+  forceLeverage(app, 'SOL', leverage);
   return app.ASSETS.find(a => a.symbol === 'SOL');
 }
 

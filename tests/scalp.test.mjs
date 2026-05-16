@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp } from './harness.mjs';
+import { loadApp, forceLeverage } from './harness.mjs';
 
 describe('scalp mode storage', () => {
   // BTC + ETH are non-trio (default 10×), so their default scalp TF stays 'htf'.
@@ -11,11 +11,14 @@ describe('scalp mode storage', () => {
     assert.equal(app.getScalpTf('ETH'), 'htf');
   });
 
-  test('trio assets auto-default to "5m" because they sit at 200×', () => {
+  test('all assets default to "htf" (no high-lev auto-default after 25× cap)', () => {
     const { app } = loadApp();
+    assert.equal(app.getScalpTf('SILVER'), 'htf');
+    assert.equal(app.getScalpTf('GOLD'), 'htf');
+    assert.equal(app.getScalpTf('SOL'), 'htf');
+    // forceLeverage past the threshold restores the 5m auto-default
+    forceLeverage(app, 'SILVER', 200);
     assert.equal(app.getScalpTf('SILVER'), '5m');
-    assert.equal(app.getScalpTf('GOLD'), '5m');
-    assert.equal(app.getScalpTf('SOL'), '5m');
   });
 
   test('valid values persist; invalid values are coerced to "htf"', () => {
@@ -143,7 +146,7 @@ describe('scalpMonitorTick', () => {
     app.setLiveTradingEnabled(true);
     app.setScalpTf('SILVER', '1m');
     // HTF gate is enforced only on non-high-lev paths. Drop SILVER to 50×.
-    app.setAssetLeverage('SILVER', 50);
+    forceLeverage(app, 'SILVER', 50);
     const r = await app.scalpMonitorTick({
       symbol: 'SILVER', bias: 'BEARISH', price: 75.65,
       tfEntries: {
@@ -178,7 +181,9 @@ describe('scalpMonitorTick', () => {
       },
     });
     app.loadLiveTradingState();
-    // SILVER defaults to 200× — high-lev → cross-asset gate disabled.
+    app.setScalpAutoFire(true);
+    forceLeverage(app, 'SILVER', 200);
+    // SILVER at 200× — high-lev → cross-asset gate disabled.
     app._openPositions = { GOLD: [{ holdVol: 1, holdAvgPrice: 4715, leverage: 10 }] };
     const r = await app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.fired, true, 'SILVER@200× fires while GOLD holds');
@@ -227,6 +232,7 @@ describe('scalpMonitorTick', () => {
       },
     });
     ctx.app.loadLiveTradingState();
+    ctx.app.setScalpAutoFire(true);
     const r = await ctx.app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.fired, true, `expected fired:true, got ${JSON.stringify(r)}`);
     assert.equal(r.side, 'SHORT');
@@ -264,6 +270,8 @@ describe('scalpMonitorTick', () => {
       },
     });
     ctx.app.loadLiveTradingState();
+    ctx.app.setScalpAutoFire(true);
+    forceLeverage(ctx.app, 'SILVER', 200);
     const r = await ctx.app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.fired, true);
     assert.equal(r.result.sent, true);
@@ -299,6 +307,7 @@ describe('scalpMonitorTick', () => {
         ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }), ict_scalp_tf_SILVER: '1m' },
     });
     bullCtx.app.loadLiveTradingState();
+    bullCtx.app.setScalpAutoFire(true);
     const rBull = await bullCtx.app.scalpMonitorTick(silverWithBull1m());
     assert.equal(rBull.fired, true, `bull fire expected, got ${JSON.stringify(rBull)}`);
     assert.equal(rBull.side, 'LONG', 'bull FVG must map to LONG side');
@@ -309,6 +318,7 @@ describe('scalpMonitorTick', () => {
         ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }), ict_scalp_tf_SILVER: '1m' },
     });
     bearCtx.app.loadLiveTradingState();
+    bearCtx.app.setScalpAutoFire(true);
     const rBear = await bearCtx.app.scalpMonitorTick(silverWithBear1m());
     assert.equal(rBear.fired, true);
     assert.equal(rBear.side, 'SHORT', 'bear FVG must map to SHORT side');
@@ -329,6 +339,7 @@ describe('scalpMonitorTick', () => {
       },
     });
     ctx.app.loadLiveTradingState();
+    ctx.app.setScalpAutoFire(true);
     const a = silverWithBear1m();
     const first = await ctx.app.scalpMonitorTick(a);
     assert.equal(first.fired, true, 'first fire goes through');
@@ -355,6 +366,7 @@ describe('scalpMonitorTick', () => {
       },
     });
     ctx.app.loadLiveTradingState();
+    ctx.app.setScalpAutoFire(true);
     const a = silverWithBear1m();
     const [r1, r2] = await Promise.all([
       ctx.app.scalpMonitorTick(a),
@@ -378,6 +390,7 @@ describe('scalpMonitorTick', () => {
       },
     });
     ctx.app.loadLiveTradingState();
+    ctx.app.setScalpAutoFire(true);
     const a = silverWithBear1m();
     const r = await ctx.app.scalpMonitorTick(a);
     assert.equal(r.fired, true, 'tick attempted a fire');
@@ -395,6 +408,7 @@ describe('scalpMonitorTick', () => {
       },
     });
     ctx.app.loadLiveTradingState();
+    ctx.app.setScalpAutoFire(true);
     const a = silverWithBear1m();
     await ctx.app.scalpMonitorTick(a);
     assert.equal(ctx.app._isPendingFire('SILVER'), true);

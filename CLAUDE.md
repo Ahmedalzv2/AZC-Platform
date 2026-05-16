@@ -14,29 +14,37 @@
 5. **Skip Monitor polling when CI is short.** A single `get_check_runs`
    call after ~10s is fine; reserve Monitor for genuinely long waits.
 
-## Trade-mode policy (v5 + onward)
+## Trade-mode policy (v6 — post-90d-OOS research)
 
-- Auto-exec trio on MEXC perp: **SOL, SILVER, GOLD** — all default 200×
-  for the ultra-trade scalp loop. Cap 200×.
-- US100 stays futures-mode for trade-call signals but doesn't auto-fire
-  (CFD-only, not on MEXC).
-- Everything else (BTC, ETH, BNB, XRP, SUI, ASTR) = spot, buy-low /
-  sell-high accumulation. No auto-exec.
-- High-Leverage Survival Mode kicks in at ≥ 100×: mechanical SL/TP
-  (SL = 0.7 × 100/lev %, **TP = 2× SL for 1:2 R:R**), Scalp 1m auto-
-  default, HTF auto-fire skipped, 1m kline fast-refresh every 5s.
-- **Ultra-trade scalp gates** on high-lev assets: proximity widened to
-  **0.50%**, HTF agreement check skipped — the 1m FVG signal alone fires,
-  accepting counter-bias scalps for more total trades.
-- One-at-a-time gate: scalp + force-fire skip while any asset holds an
-  open position. 60s per-asset cooldown post-fire.
+The 200× ICT auto-scalp loop is **closed**. 90d Binance/MEXC OOS
+backtests across SOL/BTC/ETH/SILVER at 200×/100×/50×/25×/10× found
+**zero** positive-EV configs on >100 fills. Forward-bias diagnostic
+confirmed crypto ICT signals are statistically indistinguishable from
+random (delta-mean −0.018% to +0.009%). SILVER had a real signal
+(+0.11–0.16% at 1–4h horizons) but trade machinery friction ate it.
+The artifacts live at `tests/backtest-scalp.mjs` + `tests/forward-bias.mjs`
+— don't re-litigate without re-running them.
 
-## YOLO test is on (don't re-warn)
+Resulting policy:
 
-User is running $1.20 isolated at 200× on the trio. They've explicitly
-accepted: liquidation distance ≈ 0.5%, mechanical levels, no rails.
-**The kill-switch is the only safety surface.** Don't re-litigate the
-risk on every fire — just ship the feature they asked for.
+- **US100**: ICT manual trade-call (already wired). Session-driven, this
+  is where ICT was designed to work. Unchanged.
+- **GOLD + SILVER**: ICT manual trade-call. 10–25× when fired (no auto-
+  fire). Treat like US100 — session-driven, eyes on the setup.
+- **SOL + BTC + ETH + BNB + XRP + SUI + ASTR**: Spot Watch only. HTF
+  buy/sell zones, accumulate low, distribute high. No leverage, no
+  scalp. ICT doesn't apply to 24/7 assets with no session structure.
+- **Auto-fire**: globally disabled. `_scalpAutoFireEnabled = false`.
+  Signal generation, FIRE STATUS badges, force-fire button, and the
+  kill-switch UI all stay live (useful as manual-eyes inputs). Tests
+  opt in via `setScalpAutoFire(true)`.
+- **Leverage**: capped at 25× universally. Dropdown ladder is
+  `[1, 2, 3, 5, 7, 10, 15, 20, 25]`. Default per-asset is 10×. The
+  high-leverage survival code path (`_isHighLeverage`,
+  `LEVERAGE_HIGH_THRESHOLD = 100`) is now unreachable in production —
+  flagged for removal in a follow-up PR.
+- One-at-a-time gate + 60s per-asset cooldown remain on the force-fire
+  path so the user can't accidentally double-fire by mashing buttons.
 
 ## Communication style
 
