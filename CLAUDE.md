@@ -47,6 +47,9 @@ risk on every fire — just ship the feature they asked for.
 - No emojis in code unless the UI uses them (the trading dashboard does).
 - "Honest answer" framing for things I can't actually verify (live
   trading state, browser-side behaviour).
+- Simplicity first. Prefer the minimal 2-line solution over the 30-line
+  "enterprise" one. If a rewrite makes the change bigger than the
+  request, you've gone too far.
 
 ## Repo-specific facts
 
