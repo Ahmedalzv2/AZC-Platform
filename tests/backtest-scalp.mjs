@@ -60,9 +60,13 @@ const CONTRACT_SYM = {
   SOL: 'SOL_USDT',
   SILVER: 'SILVER_USDT',
   GOLD: 'GOLD_USDT',
+  BTC: 'BTC_USDT',
+  ETH: 'ETH_USDT',
+  BNB: 'BNB_USDT',
+  XRP: 'XRP_USDT',
 }[ASSET];
 if (!CONTRACT_SYM) {
-  console.error(`Unknown asset "${ASSET}". Use SOL, SILVER, or GOLD.`);
+  console.error(`Unknown asset "${ASSET}". Use SOL, SILVER, GOLD, BTC, ETH, BNB, or XRP.`);
   process.exit(1);
 }
 
