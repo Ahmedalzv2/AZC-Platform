@@ -2749,14 +2749,14 @@
     const spec = _leverageSpec(symbol);
     try {
       const v = parseInt(localStorage.getItem(`ict_mexc_${(symbol||'').toLowerCase()}_leverage`) || String(spec.def), 10);
-      if (v >= 1 && v <= spec.max) return v;
+      if (v >= 10 && v <= spec.max) return v;
     } catch (e) {}
     return spec.def;
   }
   function setAssetLeverage(symbol, v) {
     const spec = _leverageSpec(symbol);
     const parsed = parseInt(v, 10);
-    const n = isFinite(parsed) ? Math.max(1, Math.min(spec.max, parsed)) : spec.def;
+    const n = isFinite(parsed) ? Math.max(10, Math.min(spec.max, parsed)) : spec.def;
     try { localStorage.setItem(`ict_mexc_${(symbol||'').toLowerCase()}_leverage`, String(n)); } catch (e) {}
     return n;
   }
@@ -4325,7 +4325,7 @@
     const hiLev = lev >= LEVERAGE_HIGH_THRESHOLD;
     // Dropdown options — full leverage ladder when the asset's cap allows
     // it, trimmed to the cap when it doesn't.
-    const opts = [1,2,3,5,7,10,15,20,25].filter(n => n <= spec.max);
+    const opts = [10,15,20,25].filter(n => n <= spec.max);
     const headerColor = hiLev ? 'var(--bear)' : 'var(--gold)';
     const headerPrefix = hiLev ? '⚠ ' : '';
     const headerSuffix = hiLev ? ' (YOLO TEST)' : '';

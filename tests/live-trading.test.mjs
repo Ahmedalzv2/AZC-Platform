@@ -85,12 +85,12 @@ describe('Worker URL + leverage storage', () => {
     assert.equal(app.getMexcWorkerUrl(), 'https://my.workers.dev');
   });
 
-  test('SILVER leverage defaults to 10× and clamps 1..25', () => {
+  test('SILVER leverage defaults to 10× and clamps 10..25', () => {
     const { app } = loadApp();
     assert.equal(app.getSilverLeverage(), 10);
-    assert.equal(app.setSilverLeverage(7), 7);
-    assert.equal(app.getSilverLeverage(), 7);
-    assert.equal(app.setSilverLeverage(0),   1);
+    assert.equal(app.setSilverLeverage(15), 15);
+    assert.equal(app.getSilverLeverage(), 15);
+    assert.equal(app.setSilverLeverage(0),  10);
     assert.equal(app.setSilverLeverage(20), 20);
     assert.equal(app.setSilverLeverage(500), 25);
   });

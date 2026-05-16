@@ -41,7 +41,7 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-rese
       assert.equal(app.ASSET_LEVERAGE_SPEC[sym].max, 25, `${sym} cap`);
       assert.equal(app.setAssetLeverage(sym, 200), 25, `${sym} clamps to new cap`);
       assert.equal(app.setAssetLeverage(sym, 10), 10);
-      assert.equal(app.setAssetLeverage(sym, 0), 1, `${sym} clamps low`);
+      assert.equal(app.setAssetLeverage(sym, 0), 10, `${sym} clamps low to 10×`);
     }
   });
 
@@ -70,10 +70,10 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-rese
 
   test('getSilverLeverage backwards-compat alias still works', () => {
     const { app } = loadApp();
-    app.setAssetLeverage('SILVER', 7);
-    assert.equal(app.getSilverLeverage(), 7);
-    app.setSilverLeverage(4);
-    assert.equal(app.getAssetLeverage('SILVER'), 4);
+    app.setAssetLeverage('SILVER', 15);
+    assert.equal(app.getSilverLeverage(), 15);
+    app.setSilverLeverage(20);
+    assert.equal(app.getAssetLeverage('SILVER'), 20);
   });
 });
 

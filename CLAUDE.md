@@ -38,11 +38,11 @@ Resulting policy:
   Signal generation, FIRE STATUS badges, force-fire button, and the
   kill-switch UI all stay live (useful as manual-eyes inputs). Tests
   opt in via `setScalpAutoFire(true)`.
-- **Leverage**: capped at 25× universally. Dropdown ladder is
-  `[1, 2, 3, 5, 7, 10, 15, 20, 25]`. Default per-asset is 10×. The
-  high-leverage survival code path (`_isHighLeverage`,
-  `LEVERAGE_HIGH_THRESHOLD = 100`) is now unreachable in production —
-  flagged for removal in a follow-up PR.
+- **Leverage**: floor 10×, cap 25× universally. Dropdown ladder is
+  `[10, 15, 20, 25]`. Default per-asset is 10×. Margin sizing is a
+  separate concern (decided later). The high-leverage survival code
+  path (`_isHighLeverage`, `LEVERAGE_HIGH_THRESHOLD = 100`) is now
+  unreachable in production — flagged for removal in a follow-up PR.
 - One-at-a-time gate + 60s per-asset cooldown remain on the force-fire
   path so the user can't accidentally double-fire by mashing buttons.
 
