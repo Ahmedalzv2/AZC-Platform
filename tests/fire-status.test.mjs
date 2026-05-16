@@ -18,9 +18,9 @@ describe('Policy v4 — GOLD joins SOL + SILVER as default auto-exec futures', (
     assert.equal(app._isFuturesAsset(gold), true);
   });
 
-  test('GOLD has a valid MEXC contract (GOLD_USDT) so auto-exec is wired', () => {
+  test('GOLD has a valid MEXC contract (XAUT_USDT) so auto-exec is wired', () => {
     const { app } = loadApp();
-    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), 'GOLD_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), 'XAUT_USDT');
   });
 
   test('Default futures trio = {SOL, SILVER, GOLD} get auto-exec out of the box', () => {

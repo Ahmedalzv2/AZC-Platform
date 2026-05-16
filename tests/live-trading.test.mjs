@@ -134,7 +134,7 @@ describe('_mexcContractSymbol — per-asset rollout gate', () => {
     // _mexcContractSymbol now delegates to _resolveSymbols so any asset
     // the user flips to futures auto-exec works without me whitelisting it.
     const { app } = loadApp();
-    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }),  'GOLD_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }),  'XAUT_USDT');
     assert.equal(app._mexcContractSymbol({ symbol: 'BTC' }),   'BTC_USDT');
     assert.equal(app._mexcContractSymbol({ symbol: 'ETH' }),   'ETH_USDT');
     // US100 stays null — it's an FP Markets CFD, not on MEXC at all.

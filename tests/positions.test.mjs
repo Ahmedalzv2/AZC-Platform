@@ -65,7 +65,7 @@ describe('_positionsTick — populates _openPositions keyed by bare symbol', () 
     assert.equal(fetchCalls, 0, 'no fetch when master OFF');
   });
 
-  test('normalizes SOL_USDT → SOL, SILVER_USDT → SILVER, GOLD_USDT → GOLD', async () => {
+  test('normalizes SOL_USDT → SOL, SILVER_USDT → SILVER, XAUT_USDT → GOLD', async () => {
     const { app, sandbox } = loadApp();
     withConnected(app, sandbox);
     sandbox.fetch = async () => ({
@@ -75,7 +75,7 @@ describe('_positionsTick — populates _openPositions keyed by bare symbol', () 
         data: [
           { symbol: 'SOL_USDT',    positionType: 1, holdVol: 2.79, holdAvgPrice: 86.42, leverage: 200, unrealised: 0.23 },
           { symbol: 'SILVER_USDT', positionType: 2, holdVol: 1.0,  holdAvgPrice: 33.2,  leverage: 200, unrealised: -0.05 },
-          { symbol: 'GOLD_USDT',   positionType: 1, holdVol: 0.1,  holdAvgPrice: 4710,  leverage: 10,  unrealised: 0.01 },
+          { symbol: 'XAUT_USDT',   positionType: 1, holdVol: 0.1,  holdAvgPrice: 4710,  leverage: 10,  unrealised: 0.01 },
         ],
       }),
     });

@@ -181,7 +181,7 @@ describe('fetchMexcPositionHistory — wire format', () => {
       fetch: async (url, init) => {
         calls.push({ url: String(url) });
         const u = String(url);
-        if (u.includes('symbol=GOLD_USDT')) {
+        if (u.includes('symbol=XAUT_USDT')) {
           // Simulated MEXC "Contract does not exist" for GOLD.
           return { ok: true, status: 200, text: async () => JSON.stringify({ success: false, code: 1001, message: 'Contract does not exist' }) };
         }
@@ -195,11 +195,11 @@ describe('fetchMexcPositionHistory — wire format', () => {
       },
     });
     ctx.app.loadLiveTradingState();
-    const r = await ctx.app.fetchMexcPositionHistory({ days: 1, symbols: ['SILVER_USDT', 'GOLD_USDT'] });
+    const r = await ctx.app.fetchMexcPositionHistory({ days: 1, symbols: ['SILVER_USDT', 'XAUT_USDT'] });
     assert.equal(r.ok, true, 'overall ok — at least one symbol succeeded');
     assert.equal(r.orders.length, 2, 'SILVER orders returned even though GOLD failed');
     assert.equal(r.errors.length, 1, 'GOLD failure captured in errors[]');
-    assert.equal(r.errors[0].symbol, 'GOLD_USDT');
+    assert.equal(r.errors[0].symbol, 'XAUT_USDT');
     assert.equal(r.errors[0].response.code, 1001);
   });
 

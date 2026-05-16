@@ -11,18 +11,18 @@ describe('_exchangeUrl — MEXC routing per asset and tradeMode', () => {
     assert.match(url, /type=swap/);
   });
 
-  test('GOLD (spot) → MEXC spot with GOLD_USDT', () => {
+  test('GOLD (spot) → MEXC spot with XAUT_USDT (Tether Gold)', () => {
     const { app } = loadApp();
     const a = { symbol: 'GOLD', tradeMode: 'spot' };
     const url = app._exchangeUrl(a);
-    assert.match(url, /^https:\/\/www\.mexc\.com\/exchange\/GOLD_USDT/);
+    assert.match(url, /^https:\/\/www\.mexc\.com\/exchange\/XAUT_USDT/);
   });
 
-  test('GOLD (futures override) → MEXC futures with GOLD_USDT', () => {
+  test('GOLD (futures override) → MEXC futures with XAUT_USDT', () => {
     const { app } = loadApp();
     const a = { symbol: 'GOLD', tradeMode: 'futures' };
     const url = app._exchangeUrl(a);
-    assert.match(url, /futures\.mexc\.com\/exchange\/GOLD_USDT/);
+    assert.match(url, /futures\.mexc\.com\/exchange\/XAUT_USDT/);
   });
 
   test('BTC (spot) → MEXC spot with BTC_USDT', () => {

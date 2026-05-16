@@ -1426,7 +1426,7 @@
   // Policy v4: GOLD flipped to futures so the kill-switch ON enables the
   // trio (SOL + GOLD + SILVER) trading on MEXC perp out of the box.
   // Reasoning: SILVER closes weekends, SOL covers 24/7, GOLD on MEXC perp
-  // (GOLD_USDT) trades 24/7 too — three correlated commodities/crypto
+  // (XAUT_USDT) is the Tether Gold perp — three correlated commodities/crypto
   // gives multiple shots at signals each session. The user keeps full
   // control via setTradeMode + the × Remove button in the modal.
   const DEFAULT_TRADE_MODES = {
@@ -3023,7 +3023,7 @@
 
   // MEXC contract symbol per asset. Single source of truth is _resolveSymbols
   // (which already handles every asset correctly): generic cryptos derive
-  // {SYMBOL}_USDT, SILVER stays SILVER_USDT, GOLD maps to GOLD_USDT, US100
+  // {SYMBOL}_USDT, SILVER stays SILVER_USDT, GOLD maps to XAUT_USDT, US100
   // returns null because it's a CFD that doesn't trade on MEXC. The user can
   // flip ANY asset to tradeMode='futures' and it'll auto-fire here without
   // me having to whitelist it case-by-case.
@@ -3433,7 +3433,7 @@
     // asset). User can override via opts.symbols.
     const defaultSymbols = (typeof ASSETS !== 'undefined' && Array.isArray(ASSETS))
       ? ASSETS.map(a => _mexcContractSymbol && _mexcContractSymbol(a)).filter(Boolean)
-      : ['SOL_USDT', 'SILVER_USDT', 'GOLD_USDT'];
+      : ['SOL_USDT', 'SILVER_USDT', 'XAUT_USDT'];
     const symbols = Array.isArray(opts.symbols) && opts.symbols.length ? opts.symbols : defaultSymbols;
     const all = [];
     const errors = [];
@@ -3649,10 +3649,11 @@
     const next = {};
     for (const p of r.positions) {
       if (!p || !p.symbol) continue;
-      // MEXC returns 'SILVER_USDT', 'GOLD_USDT', 'SOL_USDT' etc. We use
-      // the asset's bare symbol everywhere else, so reverse the contract
-      // map to normalize. Falls back to stripping _USDT for unknown pairs.
+      // MEXC returns 'SILVER_USDT', 'XAUT_USDT', 'SOL_USDT' etc. We use
+      // the asset's bare symbol everywhere else, so strip _USDT then map
+      // any MEXC-specific aliases back to the dashboard label.
       let bare = String(p.symbol).replace(/_USDT$/, '');
+      bare = MEXC_CONTRACT_TO_ASSET[bare] || bare;
       if (!next[bare]) next[bare] = [];
       next[bare].push(p);
     }
@@ -7965,15 +7966,22 @@
     };
   }
 
+  // Reverse map: MEXC contract base → dashboard label. Only listed for assets
+  // where MEXC's symbol differs from our UI label (GOLD trades as XAUT_USDT).
+  // Used by the open-positions resolver to normalize incoming position symbols.
+  const MEXC_CONTRACT_TO_ASSET = { XAUT: 'GOLD' };
+
   function _resolveSymbols(asset) {
     // Returns { binance, mexc, mexcSpot, binanceFallback } pair-symbol candidates per asset.
     // GOLD/SILVER are MEXC-only by agreement: never fall back to Binance synthetic
-    // XAGUSDT/XAUTUSDT — they quote a different scale (~$32 spot silver) and would
-    // produce candle data that doesn't align with the perp-scale (~$72) entries on
-    // the dashboard. SILVER MEXC-spot XAGUSDT has the same scale problem and is also
-    // skipped. GOLD spot pair GOLDUSDT tracks the GOLD_USDT perp at the same scale,
-    // safe as a fallback.
-    if (asset.symbol === 'GOLD')   return { binance:null, mexc:'GOLD_USDT',   mexcSpot:'GOLDUSDT', binanceFallback:null };
+    // XAGUSDT — it quotes a different scale (~$32 spot silver) and would produce
+    // candle data that doesn't align with the perp-scale (~$72) entries on the
+    // dashboard. SILVER MEXC-spot XAGUSDT has the same scale problem and is also
+    // skipped. GOLD perp on MEXC is XAUT_USDT (Tether Gold), spot XAUTUSDT at
+    // the same scale (~$4500), safe as a fallback.
+    // GOLD trades on MEXC as XAUT_USDT (Tether Gold perpetual). The label
+    // "GOLD" is just our UI alias.
+    if (asset.symbol === 'GOLD')   return { binance:null, mexc:'XAUT_USDT',   mexcSpot:'XAUTUSDT', binanceFallback:null };
     if (asset.symbol === 'SILVER') return { binance:null, mexc:'SILVER_USDT', mexcSpot:null,       binanceFallback:null };
     if (asset.symbol === 'US100')  return { binance:null, mexc:null,          mexcSpot:null,       binanceFallback:null }; // CFD-only
     const base = asset.symbol + 'USDT';
@@ -8360,16 +8368,16 @@
       } catch(e) { return null; }
     };
 
-    // ── GOLD (MEXC-only): MEXC perp GOLD_USDT → MEXC spot GOLDUSDT → TV scanner MEXC:GOLDUSDT.P ──
+    // ── GOLD (MEXC-only): MEXC perp XAUT_USDT → MEXC spot XAUTUSDT → TV scanner MEXC:XAUTUSDT.P ──
     // All three sources are MEXC. The TV scanner is just a CORS-friendly proxy
     // for MEXC's quote — never falls through to OANDA/Binance/spot-gold pairs
     // which would either drift from the perp or quote at a different scale.
     const goldAsset = ASSETS.find(a => a.symbol === 'GOLD');
     if (goldAsset) {
-      let price = await mexcContractPrice('GOLD_USDT');
-      if (!(price > 1000)) price = await mexcSpotPrice('GOLDUSDT');
+      let price = await mexcContractPrice('XAUT_USDT');
+      if (!(price > 1000)) price = await mexcSpotPrice('XAUTUSDT');
       if (!(price > 1000)) try {
-        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['MEXC:GOLDUSDT.P']},columns:['close']}), cache:'no-store', signal:sig()});
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['MEXC:XAUTUSDT.P']},columns:['close']}), cache:'no-store', signal:sig()});
         if (r.ok) { const j = await r.json(); const p = j?.data?.[0]?.d?.[0]; if (p > 1000) price = p; }
       } catch(e) {}
       if (price && price > 1000) {
@@ -8450,7 +8458,7 @@
     'SUI': 'BINANCE:SUIUSDT',
     'ASTR': 'BINANCE:ASTRUSDT',
     'US100': 'FPMARKETS:US100',
-    'GOLD': 'MEXC:GOLDUSDT.P',
+    'GOLD': 'MEXC:XAUTUSDT.P',
     'SILVER': 'MEXC:SILVERUSDT.P'
   };
 
@@ -8867,12 +8875,12 @@
     if (sym === 'US100') return null; // no MEXC counterpart
     const mode = asset.tradeMode === 'spot' ? 'spot' : 'futures';
     // MEXC pair-code mapping — the dashboard already tracks these for kline
-    // fetches in _resolveSymbols, but those use API codes (GOLD_USDT, etc.).
+    // fetches in _resolveSymbols, but those use API codes (XAUT_USDT for GOLD, etc.).
     // The web UI uses the same underscore-separated codes.
     const futurePair = sym === 'SILVER' ? 'SILVER_USDT'
-                     : sym === 'GOLD'   ? 'GOLD_USDT'
+                     : sym === 'GOLD'   ? 'XAUT_USDT'
                      : sym + '_USDT';
-    const spotPair   = sym === 'GOLD'   ? 'GOLD_USDT' : sym + '_USDT';
+    const spotPair   = sym === 'GOLD'   ? 'XAUT_USDT' : sym + '_USDT';
     if (mode === 'spot') return `https://www.mexc.com/exchange/${spotPair}`;
     return `https://futures.mexc.com/exchange/${futurePair}?type=swap`;
   }
@@ -10377,7 +10385,7 @@
   const MEXC_WS_TFS = ['Min1', 'Min5', 'Min15', 'Min60', 'Hour4', 'Day1'];
   const MEXC_WS_SUBSCRIPTIONS = [
     { symbol: 'SILVER_USDT', asset: 'SILVER' },
-    { symbol: 'GOLD_USDT',   asset: 'GOLD'   },
+    { symbol: 'XAUT_USDT',   asset: 'GOLD'   },
   ];
 
   function initMexcWebSocket() {

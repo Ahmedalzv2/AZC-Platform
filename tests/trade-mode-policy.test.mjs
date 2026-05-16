@@ -12,7 +12,7 @@ describe('Trade-mode policy: futures vs spot', () => {
     assert.equal(modes.SILVER, 'futures');
     assert.equal(modes.US100,  'futures');
     assert.equal(modes.SOL,    'futures', 'v3: SOL for weekend coverage');
-    assert.equal(modes.GOLD,   'futures', 'v4: GOLD joins the trio (GOLD_USDT on MEXC)');
+    assert.equal(modes.GOLD,   'futures', 'v4: GOLD joins the trio (XAUT_USDT on MEXC)');
     assert.equal(modes.BTC,    'spot');
     assert.equal(modes.ETH,    'spot');
     assert.equal(modes.BNB,    'spot');

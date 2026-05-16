@@ -146,9 +146,10 @@ describe('contract-detail pre-warm on master ON', () => {
     // Pre-warm is fire-and-forget; let microtasks settle.
     await new Promise(r => setTimeout(r, 50));
     assert.ok(detailCalls.length >= 1, `expected at least one contract-detail call, got ${detailCalls.length}`);
-    // The trio (SOL, GOLD, SILVER) are all futures by default
+    // The trio (SOL, GOLD, SILVER) are all futures by default. GOLD's MEXC
+    // contract is XAUT_USDT (Tether Gold), so the prewarm call uses that.
     assert.ok(detailCalls.some(s => s.startsWith('SOL')),    `expected SOL pre-warm; saw ${detailCalls.join(',')}`);
-    assert.ok(detailCalls.some(s => s.startsWith('GOLD')),   `expected GOLD pre-warm; saw ${detailCalls.join(',')}`);
+    assert.ok(detailCalls.some(s => s.startsWith('XAUT')),   `expected GOLD (XAUT) pre-warm; saw ${detailCalls.join(',')}`);
     assert.ok(detailCalls.some(s => s.startsWith('SILVER')), `expected SILVER pre-warm; saw ${detailCalls.join(',')}`);
   });
 
