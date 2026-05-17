@@ -51,7 +51,7 @@ const LEVERAGE = Number(args.lev) || 200;  // override via --lev=100 (etc.)
 const MARGIN_USD = 0.20;     // per fire
 const HIGH_LEV_PROXIMITY_PCT = 0.50;
 
-const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '1h': 60 };
+const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240 };
 const TF_REQUESTED = (() => {
   const raw = args.tf ? String(args.tf).toLowerCase() : 'all';
   if (raw === 'all') return ['1m', '3m', '5m'];
@@ -673,6 +673,20 @@ function fmt(s) {
     'SW-E · 72h hold · SL 2.0 / TP 4.0':      {marketEntry: true, slPricePct: 2.00, tpPricePct: 4.0, simHorizonHours: 72, proximityPct: 2.0 },
     'SW-F · SW-D + killZone (London/NY)':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, killZone: true },
     'SW-G · SW-C + confluenceOnly':           {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 24, proximityPct: 1.0, confluenceOnly: true },
+    // Iteration 4 (May 2026): grid-search around the SW-A (SILVER 30m/1h)
+    // and SW-C (ETH 1h) local maxima found in the May sweep. Goal: confirm
+    // 0.5/1.0 and 1.0/2.0 are actual maxima vs accidental cells.
+    'SW-A1 · 4h hold · SL 0.3 / TP 0.6':      {marketEntry: true, slPricePct: 0.30, tpPricePct: 0.6, simHorizonHours: 4,  proximityPct: 1.0 },
+    'SW-A2 · 4h hold · SL 0.7 / TP 1.4':      {marketEntry: true, slPricePct: 0.70, tpPricePct: 1.4, simHorizonHours: 4,  proximityPct: 1.0 },
+    'SW-A3 · 4h hold · SL 0.5 / TP 1.5 (3:1)':{marketEntry: true, slPricePct: 0.50, tpPricePct: 1.5, simHorizonHours: 4,  proximityPct: 1.0 },
+    'SW-C1 · 12h hold · SL 1.0 / TP 2.0':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 12, proximityPct: 1.0 },
+    'SW-C2 · 48h hold · SL 1.0 / TP 2.0':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 48, proximityPct: 1.0 },
+    'SW-C5 · 72h hold · SL 1.0 / TP 2.0':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 72, proximityPct: 1.0 },
+    'SW-C6 · 96h hold · SL 1.0 / TP 2.0':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 96, proximityPct: 1.0 },
+    'SW-C7 · 48h hold · SL 1.5 / TP 3.0':     {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0 },
+    'SW-C8 · 48h hold · SL 0.7 / TP 1.4':     {marketEntry: true, slPricePct: 0.70, tpPricePct: 1.4, simHorizonHours: 48, proximityPct: 1.0 },
+    'SW-C3 · 24h hold · SL 0.7 / TP 1.4':     {marketEntry: true, slPricePct: 0.70, tpPricePct: 1.4, simHorizonHours: 24, proximityPct: 1.0 },
+    'SW-C4 · 24h hold · SL 1.5 / TP 3.0':     {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0 },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
