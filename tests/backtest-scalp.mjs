@@ -16,6 +16,12 @@
 //   node tests/backtest-scalp.mjs --asset=SILVER --tf=5m       (single TF)
 //   node tests/backtest-scalp.mjs --asset=SILVER --tf=all      (1m + 3m + 5m, default)
 //
+// Offline replay (no MEXC fetch — for sandboxed runs):
+//   node tests/backtest-scalp.mjs --cache=path/to/silver.json --lev=25 --tf=all
+//   node tests/backtest-scalp.mjs --asset=SILVER --days=30 --dump=fixtures/silver-30d.json
+//     (run --dump once where you have network, then ship the file and replay it
+//      anywhere with --cache).
+//
 // MEXC contract only ships 1m as the finest native interval. 3m bars are
 // aggregated client-side from 1m OHLCV (open=first 1m open, high=max, low=min,
 // close=last 1m close, vol=sum). 5m bars same way. This is the same data the
@@ -128,6 +134,28 @@ async function fetchKlineChunk(symbol, startSec, endSec) {
 }
 
 async function loadKlines(symbol, days) {
+  // --cache=path forces an offline replay from the given snapshot file.
+  // Accepts both the legacy wrapper { fetchedAt, klines: [...] } and a flat
+  // [{t,o,h,l,c,v}, ...] array. Use this when network access to MEXC is
+  // unavailable (sandbox / remote sessions / CI).
+  if (args.cache) {
+    const p = path.resolve(String(args.cache));
+    if (!existsSync(p)) {
+      console.error(`--cache="${p}" not found.`);
+      process.exit(1);
+    }
+    const raw = JSON.parse(readFileSync(p, 'utf8'));
+    const klines = Array.isArray(raw) ? raw : raw.klines;
+    if (!Array.isArray(klines) || klines.length === 0) {
+      console.error(`--cache="${p}" contains no klines.`);
+      process.exit(1);
+    }
+    const first = new Date(klines[0].t).toISOString().slice(0, 10);
+    const last  = new Date(klines[klines.length - 1].t).toISOString().slice(0, 10);
+    console.log(`(offline cache: ${klines.length} candles · ${first} → ${last})`);
+    return klines;
+  }
+
   const tag = MEXC_INTERVAL_MIN > 1 ? `-${MEXC_INTERVAL}` : '';
   const cacheFile = path.join(CACHE_DIR, `${symbol}-${days}d${tag}.json`);
   if (existsSync(cacheFile)) {
@@ -155,6 +183,14 @@ async function loadKlines(symbol, days) {
   for (const c of chunks) for (const k of c) byTs.set(k.t, k);
   const klines = Array.from(byTs.values()).sort((a, b) => a.t - b.t);
   writeFileSync(cacheFile, JSON.stringify({ fetchedAt: Date.now(), klines }));
+  // --dump=path writes a flat snapshot suitable for committing + replaying
+  // later with --cache=path. Useful for capturing a known-good dataset on a
+  // machine that can reach MEXC, then shipping it to where backtests run.
+  if (args.dump) {
+    const out = path.resolve(String(args.dump));
+    writeFileSync(out, JSON.stringify(klines));
+    console.log(`(dumped ${klines.length} candles → ${out})`);
+  }
   return klines;
 }
 
