@@ -93,8 +93,7 @@ describe('scalpMonitorTick', () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
-    // SILVER auto-defaults to '1m' (200× trio) — explicitly override to 'htf'
-    // so we hit the scalp-off gate.
+    // The test needs the HTF path regardless of the user's saved scalp mode.
     app.setScalpTf('SILVER', 'htf');
     const r = await app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.reason, 'scalp-off');

@@ -1,8 +1,10 @@
 # ICT AutoPilot
 
 Single-page trading dashboard for ICT (Inner Circle Trader) setups across
-crypto, futures, and US100. Auto-executes scalp trades on MEXC perp for
-a configured asset trio when 1m FVG signals fire.
+crypto, futures, and US100. Current policy is manual execution only:
+auto-fire is disabled after OOS research found no positive-EV crypto
+scalp configuration. The dashboard still shows signals, fire status,
+spot zones, live positions, and manual Force Fire controls.
 
 Hosted on GitHub Pages — open `index.html` directly or visit the live
 URL: <https://ahmedalzv2.github.io/ict-autopilot/>.
@@ -17,6 +19,15 @@ URL: <https://ahmedalzv2.github.io/ict-autopilot/>.
 | `worker.js`   | Cloudflare Worker that proxies signed MEXC contract calls. |
 | `tests/`      | Node-native test suite (`npm test`, ~2s).                  |
 | `CLAUDE.md`   | Operating manual for the Claude Code agent.                |
+| `AGENTS.md`   | Operating manual for Codex and other coding agents.        |
+
+## Agent coordination
+
+Codex and Claude Code both work on this repo. Before changing anything,
+read `AGENTS.md`, `CLAUDE.md`, recent commits, and open PR notes so both
+agents stay aligned on current policy, shipped work, and known risks.
+If one agent changes trade policy, live-order behavior, tests, or repo
+workflow, update both manuals in the same PR.
 
 ## Deploy
 

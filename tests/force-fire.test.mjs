@@ -167,14 +167,12 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
 
 });
 
-describe('_fastRefreshTick covers low-lev futures assets too', () => {
-  test('SILVER at 10× still gets a fetch in _fastRefreshTick', async () => {
-    // Before this change, fast-refresh was gated to high-lev only — meaning
-    // SILVER@10× stayed on the 30s render-tick cadence. That made the
-    // dashboard's per-TF entry zone stale by the time auto-exec ran.
+describe('_fastRefreshTick covers manual futures assets too', () => {
+  test('SILVER at 10× refreshes the 5m setup used by Force Fire', async () => {
+    // Force Fire needs fresh per-TF levels even with auto-fire disabled.
     const { app, sandbox } = loadApp();
     app.loadTradeModes();
-    app.setAssetLeverage('SILVER', 10);   // explicitly low-lev
+    app.setAssetLeverage('SILVER', 10);
     app.setLiveTradingEnabled(true);
     const fetchedUrls = [];
     sandbox.fetch = async (url) => {
@@ -187,5 +185,6 @@ describe('_fastRefreshTick covers low-lev futures assets too', () => {
     // the symbol anywhere.
     const sawSilver = fetchedUrls.some(u => u.includes('SILVER'));
     assert.ok(sawSilver, `expected SILVER fetch even at 10×, urls=${JSON.stringify(fetchedUrls).slice(0,200)}`);
+    assert.ok(fetchedUrls.some(u => u.includes('interval=Min5')), `expected 5m refresh for Force Fire setup, urls=${JSON.stringify(fetchedUrls).slice(0,200)}`);
   });
 });

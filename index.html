@@ -43,7 +43,7 @@
        (single source of truth with the toolbar badge). -->
   <button id="liveKillSwitch"
           onclick="toggleLiveTradingKillSwitch()"
-          title="Live trading master switch — tap to STOP/START all auto-execution">
+          title="Live trading master switch — tap to STOP/START live order access">
     ▶ LIVE OFF
   </button>
 
@@ -150,6 +150,16 @@
             <div class="ap-card-title">⚡ Claude's Active Market Read</div>
             <div id="marketRead" style="font-size:13px;color:var(--text-dim);line-height:1.8;">
               Loading market analysis...
+            </div>
+          </div>
+
+          <div class="ap-card full" style="border-color:rgba(92,184,138,0.32);">
+            <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>🧭 Market Intelligence</span>
+              <span id="marketIntelStamp" style="color:var(--text-mute);font-size:10px;font-family:'JetBrains Mono',monospace;">—</span>
+            </div>
+            <div id="marketIntelPanel" style="font-size:12px;color:var(--text-dim);line-height:1.6;">
+              Loading intelligence...
             </div>
           </div>
 
@@ -1108,6 +1118,7 @@
       session ? `Now active: ${session.name}` : 'Waiting for next session';
 
     renderSessionTimeline(gst, session);
+    try { renderMarketIntelligencePanel(); } catch (e) {}
 
     // Live Trading modal: keep the diagnostic panels (Scalp Tick Diag,
     // Last Fire, conn-test) refreshed every second
@@ -1366,6 +1377,161 @@
     `;
   }
 
+  function _marketIntelRecentNews(items, nowSec) {
+    return (items || []).filter(i => {
+      const published = Number(i && i.published);
+      return !published || nowSec - published <= 6 * 3600;
+    });
+  }
+
+  function _marketIntelNewsScore(items) {
+    const recent = _marketIntelRecentNews(items, Math.floor(Date.now() / 1000));
+    let score = 0;
+    const hits = [];
+    const neg = /\b(sec|cftc|lawsuit|hack|exploit|outflow|liquidat|hot cpi|hawkish|sanction|ban|default|bankruptcy)\b/i;
+    const pos = /\b(etf inflow|inflows|rate cut|dovish|liquidity|approval|easing|stimulus|breakout)\b/i;
+    for (const item of recent) {
+      const text = String((item && item.title) || '') + ' ' + String((item && item.body) || '');
+      if (neg.test(text)) { score -= 5; if (hits.length < 3) hits.push('negative headline cluster'); }
+      else if (pos.test(text)) { score += 4; if (hits.length < 3) hits.push('supportive headline cluster'); }
+    }
+    return { score: Math.max(-20, Math.min(16, score)), hits: Array.from(new Set(hits)) };
+  }
+
+  function getMarketIntelligence(opts) {
+    opts = opts || {};
+    const now = opts.now ? new Date(opts.now) : new Date();
+    const assets = Array.isArray(opts.assets) ? opts.assets : (typeof ASSETS !== 'undefined' ? ASSETS : []);
+    const session = Object.prototype.hasOwnProperty.call(opts, 'session')
+      ? opts.session
+      : (typeof getCurrentSession === 'function' ? getCurrentSession(getGST()) : null);
+    const macro = Object.prototype.hasOwnProperty.call(opts, 'macroBlackout')
+      ? opts.macroBlackout
+      : (typeof getMacroBlackout === 'function' ? getMacroBlackout() : null);
+    const newsItems = Array.isArray(opts.newsItems)
+      ? opts.newsItems
+      : (typeof _newsAggregateItems !== 'undefined' ? _newsAggregateItems : []);
+    const fundingRates = opts.fundingRates || (typeof _latestFundingRates !== 'undefined' ? _latestFundingRates : {});
+
+    const reasons = [];
+    if (macro) {
+      const name = macro.event || 'high-impact macro event';
+      reasons.push(`${name} ${macro.mins != null ? `${Math.abs(macro.mins)}m ${macro.mins >= 0 ? 'ahead' : 'ago'}` : 'nearby'}`);
+      return {
+        verdict: 'STAND DOWN',
+        action: 'No new trades. Wait for the macro window to clear.',
+        riskScore: -100,
+        color: 'var(--bear)',
+        session: session ? session.name : 'Off Session',
+        reasons,
+        updatedAt: now.toISOString(),
+      };
+    }
+
+    if (session && session.type === 'dead') {
+      return {
+        verdict: 'STAND DOWN',
+        action: 'Dead Zone. Manual review only; do not initiate fresh trades.',
+        riskScore: -50,
+        color: 'var(--bear)',
+        session: session.name,
+        reasons: ['Dead Zone suppresses ICT execution quality'],
+        updatedAt: now.toISOString(),
+      };
+    }
+
+    let score = 0;
+    if (session && session.type !== 'dead') {
+      score += 10;
+      reasons.push(`${session.name} active`);
+    } else {
+      score -= 8;
+      reasons.push('outside primary ICT session');
+    }
+
+    const bySym = new Map(assets.map(a => [String(a.symbol || '').toUpperCase(), a]));
+    const cryptoSyms = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'SUI'];
+    const cryptoMoves = cryptoSyms.map(s => Number(bySym.get(s)?.change24h)).filter(Number.isFinite);
+    const cryptoAvg = cryptoMoves.length ? cryptoMoves.reduce((a, b) => a + b, 0) / cryptoMoves.length : 0;
+    const btcMove = Number(bySym.get('BTC')?.change24h);
+    const metalsMoves = ['GOLD', 'SILVER'].map(s => Number(bySym.get(s)?.change24h)).filter(Number.isFinite);
+    const metalsAvg = metalsMoves.length ? metalsMoves.reduce((a, b) => a + b, 0) / metalsMoves.length : 0;
+
+    if (Number.isFinite(btcMove) && btcMove > 1 && cryptoAvg > 0.7) {
+      score += 24;
+      reasons.push(`crypto breadth positive (${cryptoAvg.toFixed(1)}%)`);
+    } else if ((Number.isFinite(btcMove) && btcMove < -1) || cryptoAvg < -1) {
+      score -= 24;
+      reasons.push(`crypto breadth weak (${cryptoAvg.toFixed(1)}%)`);
+    }
+    if (metalsAvg > 0.5 && cryptoAvg < -0.5) {
+      score -= 15;
+      reasons.push('metals bid while crypto weak');
+    }
+
+    const fundingVals = Object.values(fundingRates).map(Number).filter(Number.isFinite);
+    const hotFunding = fundingVals.filter(v => Math.abs(v) >= 0.05);
+    if (hotFunding.length) {
+      score -= 12;
+      reasons.push('funding crowded');
+    }
+
+    const news = _marketIntelNewsScore(newsItems);
+    score += news.score;
+    reasons.push(...news.hits);
+
+    let verdict = 'MIXED';
+    let action = 'Manual watch only. Wait for cleaner alignment.';
+    let color = 'var(--liq)';
+    if (score >= 25) {
+      verdict = 'RISK ON';
+      action = 'Manual longs can be watched if setup, session, and invalidation agree.';
+      color = 'var(--bull)';
+    } else if (score <= -25) {
+      verdict = 'RISK OFF';
+      action = 'Manual only or stand down. Favor shorts/defensive reads; avoid chase entries.';
+      color = 'var(--bear)';
+    }
+
+    return {
+      verdict,
+      action,
+      riskScore: Math.round(score),
+      color,
+      session: session ? session.name : 'Off Session',
+      cryptoAvg: Math.round(cryptoAvg * 10) / 10,
+      metalsAvg: Math.round(metalsAvg * 10) / 10,
+      hotFunding: hotFunding.length,
+      reasons: reasons.slice(0, 5),
+      updatedAt: now.toISOString(),
+    };
+  }
+
+  function renderMarketIntelligencePanel() {
+    const host = document.getElementById('marketIntelPanel');
+    if (!host) return;
+    const read = getMarketIntelligence();
+    const esc = v => String(v == null ? '' : v).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const stamp = document.getElementById('marketIntelStamp');
+    if (stamp) stamp.textContent = `${fmtTime(getGST())} GST`;
+    const reasons = read.reasons && read.reasons.length
+      ? read.reasons.map(r => `<span style="background:rgba(101,101,109,0.16);border:1px solid var(--border);border-radius:4px;padding:3px 7px;color:var(--text-dim);">${esc(r)}</span>`).join('')
+      : '<span style="color:var(--text-mute);">No strong drivers detected</span>';
+    host.innerHTML = `
+      <div style="display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:stretch;">
+        <div style="border:1px solid ${read.color};background:rgba(101,101,109,0.10);border-radius:8px;padding:12px;text-align:center;">
+          <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.08em;">Verdict</div>
+          <div style="font-size:18px;color:${read.color};font-weight:800;font-family:'JetBrains Mono',monospace;margin-top:4px;">${esc(read.verdict)}</div>
+          <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:4px;">score ${read.riskScore}</div>
+        </div>
+        <div style="min-width:0;">
+          <div style="font-size:13px;color:var(--text);font-weight:700;margin-bottom:6px;">${esc(read.action)}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">${reasons}</div>
+          <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">Session ${esc(read.session)} · Crypto ${read.cryptoAvg ?? '—'}% · Metals ${read.metalsAvg ?? '—'}% · Hot funding ${read.hotFunding || 0}</div>
+        </div>
+      </div>`;
+  }
+
   // ═══════════════════════════════════════
   // DASHBOARD RENDER
   // ═══════════════════════════════════════
@@ -1424,12 +1590,8 @@
   // localStorage get wiped and replaced with the new defaults. The user can
   // still flip an individual asset back via setTradeMode — that just writes
   // a new override on top of the migrated defaults.
-  // Policy v4: GOLD flipped to futures so the kill-switch ON enables the
-  // trio (SOL + GOLD + SILVER) trading on MEXC perp out of the box.
-  // Reasoning: SILVER closes weekends, SOL covers 24/7, GOLD on MEXC perp
-  // (XAUT_USDT) is the Tether Gold perp — three correlated commodities/crypto
-  // gives multiple shots at signals each session. The user keeps full
-  // control via setTradeMode + the × Remove button in the modal.
+  // Policy v6: futures defaults remain selectable for manual Force Fire and
+  // diagnostics, while auto-fire stays disabled after OOS research.
   const DEFAULT_TRADE_MODES = {
     SILVER: 'futures', US100: 'futures', SOL: 'futures', GOLD: 'futures',
     BTC: 'spot', ETH: 'spot', BNB: 'spot',
@@ -1474,7 +1636,7 @@
     showToast(mode === 'spot' ? `🏦 ${symbol} → SPOT · Hold 1–3 weeks` : `⚡ ${symbol} → FUTURES · ICT trade`, 'ok');
   }
 
-  // Policy gate: trade calls (ENTER NOW alerts, sounds, auto-execution) only
+  // Policy gate: trade calls (ENTER NOW alerts, sounds, live-order paths) only
   // fire for futures-mode assets. Spot assets get accumulation guidance via
   // the Live Chart analysis text — no overlays, no journal "ENTER" entries,
   // no auto-orders. Used by checkArmedAlerts, the signal board, and the
@@ -2639,7 +2801,7 @@
     _persistLiveTradingState();
     _updateLiveTradingBadge();
     if (_liveTradingEnabled && wasOff) {
-      // Pre-warm contract-detail for every futures auto-exec asset so the
+      // Pre-warm contract-detail for every futures asset so the
       // FIRST fire doesn't pay the ~100-200ms /contract/detail lookup. The
       // call goes through MEXC_PROXIES which is the slow path; warming once
       // up-front means every subsequent fire reads the cached scale instead.
@@ -2695,11 +2857,11 @@
       if (_liveTradingEnabled) {
         kill.classList.add('live-on');
         kill.textContent = '🛑 STOP LIVE';
-        kill.title = 'Live trading is ON — auto-execution can fire. Tap to STOP everything.';
+        kill.title = 'Live trading is ON — manual orders can be sent. Tap to STOP everything.';
       } else {
         kill.classList.remove('live-on');
         kill.textContent = '▶ LIVE OFF';
-        kill.title = 'Live trading is OFF — no auto-execution. Tap to START.';
+        kill.title = 'Live trading is OFF — no live orders. Tap to START.';
       }
     }
   }
@@ -2714,8 +2876,8 @@
     const wasOn = !!_liveTradingEnabled;
     setLiveTradingEnabled(!wasOn);
     try {
-      if (wasOn) showToast('🛑 LIVE TRADING STOPPED — no auto-execution will fire', 'warn');
-      else        showToast('🟢 LIVE TRADING STARTED — auto-execution armed', 'ok');
+      if (wasOn) showToast('🛑 LIVE TRADING STOPPED — no live orders', 'warn');
+      else        showToast('🟢 LIVE TRADING STARTED — manual fire enabled', 'ok');
     } catch (e) {}
   }
 
@@ -2768,12 +2930,11 @@
   function setSilverLeverage(v) { return setAssetLeverage('SILVER', v); }
 
   // ─────────────────────────────────────────────────────────────────────
-  // Scalp mode (per-asset). Picks which timeframe drives auto-execution.
+  // Scalp mode (per-asset). Picks which timeframe drives signal monitoring.
   //   'htf'  → fires on asset.entry (HTF setup, hours-to-days hold)
   //   '1m'   → fires on the per-TF 1m suggested entry (fast scalp)
-  //   '5m'   → fires on the per-TF 5m suggested entry (default high-lev)
-  // Storage key: ict_scalp_tf_<SYMBOL>. Defaults to 'htf' for low-lev,
-  // '5m' for high-lev (1m kept failing — user moved focus to 5m).
+  //   '5m'   → watches the per-TF 5m suggested entry
+  // Storage key: ict_scalp_tf_<SYMBOL>. Defaults to 'htf'.
   // ─────────────────────────────────────────────────────────────────────
   const SCALP_TF_VALID = new Set(['htf', '1m', '5m']);
   const SCALP_TF_FAST = new Set(['1m', '5m']);
@@ -2798,34 +2959,12 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────
-  // High-leverage survival mode (≥ 100×).
-  //
-  // The problem: ICT-structural SLs (just past the FVG body, OB, sweep, etc.)
-  // are typically 0.3–2% wide on SOL. At 200× leverage, the liquidation
-  // distance is ~0.5% (initial margin minus maintenance). So a structural SL
-  // is *physically* outside the liquidation buffer — the position blows up
-  // before any signal logic can react. The user has confirmed they want to
-  // keep 200× isolated, balance $1.20, "figure out a method".
-  //
-  // The method: when leverage ≥ LEVERAGE_HIGH_THRESHOLD, the SL/TP become
-  // mechanical (purely leverage-derived), not structural:
-  //   SL = (100 / leverage) × 0.7   →  inside 70% of liquidation buffer
-  //                                    (30% room for slippage + maintenance)
-  //   TP = SL                       →  1:1 R:R, fast realization
-  // The entry stays at the per-TF FVG mid (still a real ICT signal — we're
-  // only overriding the protective levels, not the trigger).
-  //
-  // Trade is now a leverage scalp: get in on the FVG retest, take a small
-  // win quickly, accept that the SL isn't structural. At 200× the math
-  // doesn't allow anything else.
-  // ─────────────────────────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────────────
-  // Fast-refresh path for high-leverage assets.
+  // Fast-refresh path for futures assets.
   //
   // The full autoAnalyzeAsset pulls 6 TFs per asset on a 30s cadence — fine
-  // for HTF analysis but too slow when scalp 1m is firing at 200×: by the
-  // time the auto-fire reads asset.tfEntries['1m'], the FVG mid may have
-  // shifted enough to put us on the wrong side of the trade.
+  // for HTF analysis but too slow when scalp 1m is firing: by the time the
+  // signal checks read asset.tfEntries['1m'], the FVG mid may have shifted
+  // enough to put us on the wrong side of the trade.
   //
   // _fastRefreshAssetEntry pulls *only* the 1m kline (one HTTP round-trip
   // per call) and rewrites asset.tfEntries['1m'] in place. _fastRefreshTick
@@ -2842,32 +2981,33 @@
     if (typeof isMarketClosed === 'function' && isMarketClosed(asset)) {
       return { refreshed: false, reason: 'market-closed' };
     }
+    const selectedTf = (typeof getScalpTf === 'function') ? getScalpTf(asset.symbol) : 'htf';
+    const tf = SCALP_TF_FAST.has(selectedTf) ? selectedTf : '5m';
     const syms = (typeof _resolveSymbols === 'function') ? _resolveSymbols(asset) : null;
     if (!syms) return { refreshed: false, reason: 'no-symbols' };
     let kl = null, src = 'fail';
     if (syms.binance)
-      { kl = await fetchBinanceKlines(syms.binance, '1m', 50);     if (kl && kl.length >= 22) src = 'binance'; }
+      { kl = await fetchBinanceKlines(syms.binance, tf, 50);     if (kl && kl.length >= 22) src = 'binance'; }
     if ((!kl || kl.length < 22) && syms.mexc)
-      { const k2 = await fetchMexcKlines(syms.mexc, '1m', 50);    if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-perp'; } }
+      { const k2 = await fetchMexcKlines(syms.mexc, tf, 50);    if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-perp'; } }
     if ((!kl || kl.length < 22) && syms.mexcSpot)
-      { const k2 = await fetchMexcSpotKlines(syms.mexcSpot, '1m', 50); if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-spot'; } }
+      { const k2 = await fetchMexcSpotKlines(syms.mexcSpot, tf, 50); if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-spot'; } }
     if ((!kl || kl.length < 22) && syms.binanceFallback)
-      { const k2 = await fetchBinanceKlines(syms.binanceFallback, '1m', 50); if (k2 && k2.length >= 22) { kl = k2; src = 'binance-fallback'; } }
+      { const k2 = await fetchBinanceKlines(syms.binanceFallback, tf, 50); if (k2 && k2.length >= 22) { kl = k2; src = 'binance-fallback'; } }
     if (!kl || kl.length < 22) return { refreshed: false, reason: 'fetch-failed', source: src };
     if (!asset.tfEntries) asset.tfEntries = {};
-    asset.tfEntries['1m'] = _analyzeKlines(kl);
+    asset.tfEntries[tf] = _analyzeKlines(kl);
     asset.tfEntriesUpdated = Date.now();
-    return { refreshed: true, source: src };
+    return { refreshed: true, source: src, tf };
   }
 
   async function _fastRefreshTick() {
     if (!_liveTradingEnabled) return;
     if (typeof ASSETS === 'undefined') return;
-    // Refresh all auto-exec eligible assets in PARALLEL — the trio of 1m
-    // klines are independent fetches against different endpoints. Sequential
-    // was leaking ~200ms of evaluation skew across the trio per cycle (SOL
-    // saw its FVG ~200ms before GOLD on every tick). MEXC public klines is
-    // 20 req/s rate-limited; trio at 2s interval = 1.5 req/s, well under.
+    // Refresh all futures assets in PARALLEL. Sequential refresh leaked
+    // evaluation skew across assets per cycle (SOL saw its FVG ~200ms before
+    // GOLD on every tick). MEXC public klines is
+    // 20 req/s rate-limited; the current cadence stays well under.
     const eligible = ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a));
     await Promise.all(eligible.map(a => _fastRefreshAssetEntry(a).catch(() => {})));
   }
@@ -2899,7 +3039,7 @@
   }
 
   // 90d-OOS research closed every ICT auto-scalp config on >100 fills across
-  // SOL/BTC/ETH/SILVER at lev 10–200×. Gate stays OFF in production — signal
+  // SOL/BTC/ETH/SILVER across the tested leverage ladder. Gate stays OFF in production — signal
   // generation, FIRE STATUS badges, force-fire and the kill-switch UI remain
   // live. Tests opt in via setScalpAutoFire(true).
   let _scalpAutoFireEnabled = false;
@@ -2980,8 +3120,8 @@
   //     (don't lose more than your configured tolerance per stop-out)
   //  2. Margin-based: qty × entry ≤ account × leverage
   //     (don't ask for more notional than your isolated margin can support —
-  //     MEXC will reject the order otherwise, e.g. at 200× on $1.20 the
-  //     max notional is $240, so qty × entry ≤ $240)
+  //     MEXC will reject the order otherwise when requested notional exceeds
+  //     isolated margin capacity.
   //
   // Returns the smaller of the two caps, floored at 1 contract. When
   // leverage isn't passed (legacy callers) only the risk cap applies.
@@ -3026,8 +3166,8 @@
   // (which already handles every asset correctly): generic cryptos derive
   // {SYMBOL}_USDT, SILVER stays SILVER_USDT, GOLD maps to XAUT_USDT, US100
   // returns null because it's a CFD that doesn't trade on MEXC. The user can
-  // flip ANY asset to tradeMode='futures' and it'll auto-fire here without
-  // me having to whitelist it case-by-case.
+  // flip ANY asset to tradeMode='futures' and the manual-fire path can route
+  // it without a per-symbol whitelist.
   function _mexcContractSymbol(asset) {
     if (!asset || !asset.symbol) return null;
     if (typeof _resolveSymbols !== 'function') return null;
@@ -3094,7 +3234,7 @@
     // MEXC's `vol` is contract count, not underlying units. SILVER_USDT for
     // example is 0.01 oz / contract — submitting qty=0.46 (oz, from sizing)
     // rounded to volScale=0 became 1 contract = $0.87 notional ≈ $0.0044
-    // margin at 200×, not the intended $0.20. Divide by contractSize first
+    // margin, not the intended order size. Divide by contractSize first
     // so the order represents the underlying qty the caller asked for.
     const cSize = detail && Number.isFinite(detail.contractSize) && detail.contractSize > 0 ? detail.contractSize : 1;
     const roundTo = (v, scale) => {
@@ -3130,10 +3270,8 @@
       openType: 1,               // 1 = isolated margin
       stopLossPrice: roundTo(sl, pScale),
     };
-    // tp may be null/undefined for high-lev trail-managed orders. MEXC
-    // accepts orders without takeProfitPrice — exit is handled by the
-    // trailing-TP poll instead. Sending tp:0 (legacy default) would also
-    // be rejected by MEXC as an invalid price, so explicit null check.
+    // Sending tp:0 gets rejected by MEXC as an invalid price, so keep
+    // takeProfitPrice omitted unless the caller provides a real target.
     if (tp != null && isFinite(Number(tp)) && Number(tp) > 0) {
       body.takeProfitPrice = roundTo(tp, pScale);
     }
@@ -3389,11 +3527,8 @@
   // One-at-a-time gate. Returns the bare symbol that blocks `targetSym` from
   // firing, or null when nothing's in the way.
   //
-  // For high-lev assets (trio at 200×), only the SAME asset's open position
-  // blocks — sibling trio assets can fire independently. Margin is bounded
-  // per fire ($0.20 each), so three trio assets firing in parallel is still
-  // <$1 of total exposure. At low-lev the original focus rule still applies:
-  // any open position blocks every asset.
+  // Any open position blocks every asset. This keeps manual execution focused
+  // and prevents overlapping risk when a position is already live.
   //
   // Pending-fire lock applies regardless of leverage tier — a fresh
   // submission on `targetSym` always blocks `targetSym` until the next poll
@@ -3679,9 +3814,8 @@
   // for that position. Then, if it ever retraces to <BREAK_EVEN_CLOSE_PCT
   // (≈ break-even), submit a market-out to lock in the win/no-loss.
   //
-  // At 200× on $1.20, +0.15% price move = +30% of margin = ~$0.36. Letting
-  // that round-trip back to -0.35% (the mechanical SL) would cost the
-  // whole margin. The guardian asymmetrically captures the win.
+  // Small winners can disappear quickly after fees and slippage. The guardian
+  // asymmetrically captures the win before it round-trips.
   //
   // Polled from _positionsTick (same 5s cycle — no extra HTTP overhead).
   // The mechanical SL still runs underneath; the guardian only adds
@@ -3885,7 +4019,7 @@
     if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
     if (!workerUrl) return { sent: false, reason: 'no-worker' };
     // Resolve the contract name via _resolveSymbols so GOLD/SILVER mapping etc.
-    // is handled uniformly with the rest of the auto-exec path.
+    // is handled uniformly with the rest of the futures order path.
     const fake = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
     const contract = (fake ? _mexcContractSymbol(fake) : null) || (String(symbol) + '_USDT');
     if (!contract) return { sent: false, reason: 'unsupported-symbol' };
@@ -3986,13 +4120,13 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────
-  // Scalp monitor — fires SILVER orders on the per-TF 1m setup instead
+  // Scalp monitor — fires futures orders on the selected fast-TF setup instead
   // of the HTF main entry. Runs on every poll tick. Gates:
   //   1. master switch ON
-  //   2. asset's scalp TF is '1m' (default 'htf' = no scalp)
-  //   3. _suggestedEntryForTf returned a clean 1m setup (FVG present)
-  //   4. 1m direction matches HTF bias (no counter-trend scalps)
-  //   5. live price within ARMED proximity of the 1m entry (0.15%)
+  //   2. asset's scalp TF is a fast TF (default 'htf' = no scalp)
+  //   3. _suggestedEntryForTf returned a clean fast-TF setup (FVG present)
+  //   4. fast-TF direction matches HTF bias (no counter-trend scalps)
+  //   5. live price within ARMED proximity of the fast-TF entry
   // Returns the placeMexcFuturesOrder result for visibility, or a
   // skip-shape { fired:false, reason } when any gate fails.
   // ─────────────────────────────────────────────────────────────────────
@@ -4064,8 +4198,7 @@
     if (distPct > proximityPct)      return _recordScalpDiag(sym, { fired: false, reason: 'too-far', distPct, proximityPct, sugEntry: sug.entry, price: asset.price });
 
     // Global one-at-a-time gate — focus on one trade. If ANY asset is in a
-    // live position, skip. High-lev assets only block on their own symbol —
-    // trio members fire independently. See _findBlockingPosition.
+    // live position, skip.
     const blockingSym = _findBlockingPosition(sym);
     if (blockingSym) return _recordScalpDiag(sym, { fired: false, reason: 'in-position', blockingSym });
 
@@ -4090,7 +4223,7 @@
   }
 
   // Per-asset last-fire result for the modal panel + Live Chart report.
-  // Captures EVERY fire attempt — auto-exec, scalp, and force-fire — so the
+  // Captures EVERY fire attempt — scalp, auto-fire, and force-fire — so the
   // user can see exactly what happened on the most recent trigger.
   // { [symbol]: { ts, source: 'auto'|'scalp'|'force', side, entry, sl, tp,
   //               qty, leverage, sent, dryRun, reason, error, mexcResponse } }
@@ -4114,8 +4247,8 @@
   //     liquidation-buffer SL, ceiling TP. Direction from asset.bias.
   //
   // Always writes a _lastFireResult entry so the modal panel shows what
-  // happened. The auto-exec doesn't immediately double-fire on top of this
-  // manual one.
+  // happened. The pending-fire lock prevents an automated path from
+  // double-firing on top of this manual one.
   async function forceFireAsset(symbol, opts) {
     opts = opts || {};
     const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
@@ -4205,7 +4338,7 @@
   // trigger to be easy and clear" — so this function answers "what would
   // happen if the next tick evaluates this asset?" in one tag.
   // Returns: { state, color, label, detail }
-  //   ready    🟢  — proximity met, will auto-fire next tick
+  //   ready    🟢  — proximity met
   //   near     🟡  — within 0.5%, getting close
   //   waiting  ⚪  — out of proximity (gives the distance)
   //   blocked  🔴  — master off / no contract / no price / no setup
@@ -4233,7 +4366,7 @@
         detail: `Qty ${p.holdVol} @ avg $${p.holdAvgPrice} · ${p.leverage}× · close from the Live Trading modal.`,
       };
     }
-    if (!_isFuturesAsset(asset)) return { state: 'manual', color: 'var(--text-mute)', label: '🏦 SPOT',     detail: 'Not in auto-exec — flip to futures in the asset modal.' };
+    if (!_isFuturesAsset(asset)) return { state: 'manual', color: 'var(--text-mute)', label: '🏦 SPOT',     detail: 'Spot Watch only — flip to futures in the asset modal for manual fire controls.' };
     if (!_mexcContractSymbol(asset)) return { state: 'blocked', color: 'var(--bear)',     label: '✗ NO MEXC',   detail: 'No MEXC contract for this asset (CFD-only).' };
     if (typeof _liveTradingEnabled !== 'undefined' && !_liveTradingEnabled) {
       return { state: 'blocked', color: 'var(--text-mute)', label: '⏸ LIVE OFF',  detail: 'Tap the floating kill-switch to arm.' };
@@ -4253,7 +4386,7 @@
       return { state: 'blocked', color: 'var(--liq)',      label: '🔒 CLOSED',   detail: 'Market closed for this asset.' };
     }
     if (!asset.price) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO PRICE',  detail: 'Awaiting first price tick.' };
-    // Pick the entry the auto-exec path would actually use. Fast-scalp TFs
+    // Pick the entry the fire-status path would actually use. Fast-scalp TFs
     // (1m / 5m) use _suggestedEntryForTf on the matching tfEntries bucket;
     // HTF uses asset.entry.
     const scalp = getScalpTf(asset.symbol);
@@ -4276,9 +4409,12 @@
     const distPct = Math.abs((asset.price - entry) / entry) * 100;
     const gate = _scalpProximityPct ? _scalpProximityPct(asset.symbol) : 0.15;
     if (distPct <= gate) {
+      const fireDetail = _scalpAutoFireEnabled
+        ? 'auto-fire will trigger.'
+        : 'auto-fire disabled by policy. Use Force Fire for a manual entry.';
       return { state: 'ready', color: 'var(--bull)',
                label: '🟢 READY · FIRE NEXT TICK',
-               detail: `${distPct.toFixed(3)}% from entry $${entry} (gate ${gate}%) — auto-fire will trigger.` };
+               detail: `${distPct.toFixed(3)}% from entry $${entry} (gate ${gate}%) — ${fireDetail}` };
     }
     if (distPct <= 0.5) {
       return { state: 'near', color: 'var(--liq)',
@@ -4327,7 +4463,7 @@
     return r;
   }
 
-  // Render one auto-exec asset's row inside the Live Trading modal. The
+  // Render one futures asset's row inside the Live Trading modal. The
   // user said "I don't want to manually add one by one" — so this function
   // is called in a loop over every tradeMode='futures' asset with a MEXC
   // contract. Everything (header colour, survival-mode hint, dropdown
@@ -4355,16 +4491,16 @@
           <div style="font-size:10px;color:${headerColor};font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerPrefix}${sym} leverage${headerSuffix}</div>
           <div style="display:flex;gap:6px;">
             <button onclick="_onClickForceFire('${sym}')" title="Force-fire ${sym} now — bypass proximity, use live price with mechanical SL/TP" style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);padding:2px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Force Fire</button>
-            <button onclick="setTradeMode('${sym}','spot');openLiveTradingModal();" title="Remove ${sym} from auto-exec (back to spot mode)" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:2px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">× Remove</button>
+            <button onclick="setTradeMode('${sym}','spot');openLiveTradingModal();" title="Remove ${sym} from futures controls (back to spot mode)" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:2px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">× Remove</button>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
           <select onchange="setAssetLeverage('${sym}', this.value);openLiveTradingModal();" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
             ${opts.map(n => `<option value="${n}" ${n===lev?'selected':''}>${n}×</option>`).join('')}
           </select>
-          <span style="font-size:11px;color:var(--text-mute);">Used when ${sym} auto-fires${liqLine}</span>
+          <span style="font-size:11px;color:var(--text-mute);">Used for manual Force Fire${liqLine}</span>
         </div>
-        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${sym} auto-exec timeframe</div>
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${sym} signal timeframe</div>
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
           <button onclick="setScalpTf('${sym}','htf');openLiveTradingModal();" style="background:${scalp==='htf'?'rgba(201,169,97,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${scalp==='htf'?'var(--gold)':'var(--border)'};color:${scalp==='htf'?'var(--gold)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">HTF (1H/4H)</button>
           <button onclick="setScalpTf('${sym}','5m');openLiveTradingModal();" style="background:${scalp==='5m'?'rgba(242,179,61,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${scalp==='5m'?'var(--liq)':'var(--border)'};color:${scalp==='5m'?'var(--liq)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Scalp 5m</button>
@@ -4379,7 +4515,7 @@
   }
 
   // Picker that lists every spot-mode asset that has a valid MEXC contract,
-  // so the user can promote any of them to auto-exec in one click. Renders
+  // so the user can promote any of them to futures controls in one click. Renders
   // nothing when there are no candidates (everything's already promoted).
   function _renderAutoExecAddPicker() {
     if (typeof ASSETS === 'undefined') return '';
@@ -4387,7 +4523,7 @@
     if (!candidates.length) return '';
     return `
       <div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border);">
-        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">+ Add asset to auto-exec</div>
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">+ Add asset to futures controls</div>
         <div style="display:flex;align-items:center;gap:8px;">
           <select id="ltAddAssetPicker" style="flex:1;background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
             ${candidates.map(a => `<option value="${a.symbol}">${a.symbol} · ${a.platform || a.type || 'spot'}</option>`).join('')}
@@ -4431,7 +4567,7 @@
       return `
         <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
           <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerLabel}${guardHint}</div>
-          <div style="color:var(--text-mute);font-size:11px;">No open positions. The dashboard polls every 5s — anything you (or auto-fire) opens on MEXC will appear here.</div>
+          <div style="color:var(--text-mute);font-size:11px;">No open positions. The dashboard polls every 5s — anything opened on MEXC will appear here.</div>
         </div>`;
     }
     const fmt = v => (v == null || !isFinite(Number(v))) ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -4601,9 +4737,8 @@
         </table>
         <div style="margin-top:8px;font-size:10px;color:var(--text-mute);line-height:1.5;">
           Updated each scalp tick (every render). "<em>out of proximity</em>" means
-          the price was outside the entry zone — the threshold is 0.15% normally,
-          0.30% when leverage ≥ 100×. "Detail" shows the gap so you can see how
-          near the miss was.
+          the price was outside the entry zone. "Detail" shows the gap so you can
+          see how near the miss was.
         </div>
       </div>`;
   }
@@ -4985,7 +5120,7 @@
     ASSETS.forEach(asset => {
       // Policy: only futures assets (US100, SILVER) fire trade calls. Spot
       // assets get accumulation guidance via the Live Chart analysis text;
-      // no overlays, sounds, vibration, or auto-execution for them.
+      // no overlays, sounds, vibration, or live-order path for them.
       if (!_isFuturesAsset(asset)) return;
       const sig = getSignal(asset, gst);
       const prev = prevSignalMap[asset.symbol] || 'wait';
@@ -5025,15 +5160,9 @@
           // Urgent vibration: long-short-long-short-long
           if (navigator.vibrate) navigator.vibrate([600, 150, 600, 150, 600]);
 
-          // ── AUTO-EXECUTE — any contract-supported asset, HTF path ───
-          // Asset is eligible for auto-exec when _mexcContractSymbol returns
-          // truthy. Skips:
-          //   - master switch off (also enforced inside placeMexcFutures)
-          //   - scalp mode is on for this asset (scalp monitor owns it)
-          //   - asset is at high leverage (HTF SLs are always wider than the
-          //     liquidation buffer at ≥ 100× — HTF can't survive, only the
-          //     scalp path with mechanical SL can).
-          if (_mexcContractSymbol(asset) && _liveTradingEnabled
+          // Automated HTF execution stays behind the research kill gate.
+          if (_scalpAutoFireEnabled
+              && _mexcContractSymbol(asset) && _liveTradingEnabled
               && getScalpTf(asset.symbol) === 'htf'
               && !_isHighLeverage(asset.symbol)
               && !_isPendingFire(asset.symbol)) {
@@ -5045,16 +5174,16 @@
             placeMexcFuturesOrder(asset, side, asset.entry, asset.sl, tp, qty, lev)
               .then(r => {
                 if (r && (r.sent || r.dryRun)) _markPendingFire(asset.symbol);
-                console.log('[mexc auto-exec htf]', asset.symbol, r);
+                console.log('[mexc auto-fire htf]', asset.symbol, r);
                 try {
                   if (r.dryRun) showToast(`🧪 ${asset.symbol} ENTER NOW · [DRY-RUN] logged`, 'ok');
                   else if (r.sent) showToast(`🟢 ${asset.symbol} order sent to MEXC`, 'ok');
-                  else showToast(`⚠ ${asset.symbol} auto-exec: ` + (r.reason || r.error || 'failed'), 'warn');
+                  else showToast(`⚠ ${asset.symbol} auto-fire: ` + (r.reason || r.error || 'failed'), 'warn');
                 } catch (e) {}
               })
               .catch(err => {
-                console.warn('[mexc auto-exec htf] threw:', err);
-                try { showToast(`⚠ ${asset.symbol} auto-exec error`, 'err'); } catch (e) {}
+                console.warn('[mexc auto-fire htf] threw:', err);
+                try { showToast(`⚠ ${asset.symbol} auto-fire error`, 'err'); } catch (e) {}
               });
           }
         }
@@ -5090,20 +5219,21 @@
       // ── SCALP MONITOR ──────────────────────────────────────────────
       // Independent of HTF "armed/enter" escalation. Runs every tick on
       // every asset; the function itself short-circuits unless scalp
-      // mode is on for this asset and a 1m setup is at proximity. Fire
+      // mode is on for this asset and the selected fast-TF setup is at proximity. Fire
       // and forget — scalp is async-by-design.
       try {
         scalpMonitorTick(asset).then(r => {
           if (r && r.fired) {
-            console.log('[mexc scalp 1m]', asset.symbol, r);
+            const scalpTf = r.tf || getScalpTf(asset.symbol);
+            console.log(`[mexc scalp ${scalpTf}]`, asset.symbol, r);
             try {
               const sub = r.result;
-              if (sub && sub.dryRun) showToast(`🧪 ${asset.symbol} scalp 1m · [DRY-RUN] logged`, 'ok');
-              else if (sub && sub.sent) showToast(`🟢 ${asset.symbol} scalp 1m order sent`, 'ok');
-              else showToast(`⚠ ${asset.symbol} scalp 1m: ` + (sub && (sub.reason || sub.error) || 'failed'), 'warn');
+              if (sub && sub.dryRun) showToast(`🧪 ${asset.symbol} scalp ${scalpTf} · [DRY-RUN] logged`, 'ok');
+              else if (sub && sub.sent) showToast(`🟢 ${asset.symbol} scalp ${scalpTf} order sent`, 'ok');
+              else showToast(`⚠ ${asset.symbol} scalp ${scalpTf}: ` + (sub && (sub.reason || sub.error) || 'failed'), 'warn');
             } catch (e) {}
           }
-        }).catch(err => { console.warn('[mexc scalp 1m] threw:', err); });
+        }).catch(err => { console.warn('[mexc scalp] threw:', err); });
       } catch (e) {}
     });
   }
@@ -6341,6 +6471,7 @@
   // 📈 FUNDING RATES + LONG/SHORT RATIO (Binance Futures)
   // ═══════════════════════════════════════════════════════
   const FUTURES_SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','SUIUSDT'];
+  let _latestFundingRates = {};
 
   async function fetchFundingRates() {
     const content = document.getElementById('fundingContent');
@@ -6354,6 +6485,7 @@
         const d = r.value;
         const sym = FUTURES_SYMBOLS[i].replace('USDT','');
         const rate = parseFloat(d.lastFundingRate) * 100;
+        if (Number.isFinite(rate)) _latestFundingRates[sym] = rate;
         const rateColor = rate > 0.05 ? 'var(--bear)' : rate < -0.05 ? 'var(--bull)' : 'var(--text-dim)';
         const rateLabel = rate > 0.05 ? '⚠ Longs paying — overheated' : rate < -0.05 ? '✓ Shorts paying — potential bounce' : 'Neutral';
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
@@ -6363,6 +6495,7 @@
         </div>`;
       }).filter(Boolean);
       content.innerHTML = rows.join('') || '<div style="color:var(--text-mute)">No data</div>';
+      try { renderMarketIntelligencePanel(); } catch(e) {}
     } catch(e) { if (content) content.innerHTML = '<div style="color:var(--text-mute)">Unavailable</div>'; }
   }
 
@@ -9120,9 +9253,9 @@
     const analysisPanel = document.getElementById('tvAnalysisPanel');
     if (!analysisPanel) return;
 
-    // FIRE STATUS badge — at-a-glance answer to "will it fire?" The user
+    // FIRE STATUS badge — at-a-glance answer to "is it actionable?" The user
     // said the trigger should be easy and clear; this surfaces the same
-    // signal the auto-exec loop reads, in plain English, refreshed every
+    // signal state in plain English, refreshed every
     // 1s by the existing tick() call.
     const fire = (typeof getFireStatus === 'function') ? getFireStatus(asset) : null;
     if (fire) {
@@ -10312,7 +10445,7 @@
   // ═══════════════════════════════════════
   let binanceWS = null;
 
-  // Sub-second kline pipeline. SOL is the only trio asset on Binance —
+  // Sub-second kline pipeline. SOL is the only default futures asset on Binance —
   // SILVER and GOLD stay on the 5s/60s MEXC HTTP path (MEXC contract WS
   // is a follow-up). Every WS kline tick patches the matching per-TF buffer
   // in place, re-runs _analyzeKlines, and (on 1m only) triggers
@@ -10634,6 +10767,7 @@
     _try('renderMethods', renderMethods);
     _try('renderSignals', renderSignals);
     _try('renderMarketRead', renderMarketRead);
+    _try('renderMarketIntelligencePanel', renderMarketIntelligencePanel);
     _try('renderAnalysis', renderAnalysis);
     _try('renderAlertLog', renderAlertLog);
     _try('renderJournal', renderJournal);
@@ -10646,8 +10780,8 @@
     _try('initTVPriceListener', initTVPriceListener);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
-    // Fast-refresh: pull fresh 1m klines for high-lev futures assets every
-    // 5s so the auto-fire entry zone stays current. Gated on master switch
+    // Fast-refresh: pull fresh 1m klines for futures assets every
+    // 5s so the watched entry zone stays current. Gated on master switch
     // inside _fastRefreshTick to avoid hammering APIs when nothing can fire.
     setInterval(() => { _fastRefreshTick().catch(()=>{}); }, FAST_REFRESH_INTERVAL_MS);
     // Open-positions polling — keeps the dashboard's Open Positions panel

@@ -1,4 +1,4 @@
-# CLAUDE.md — operating manual for this repo
+# AGENTS.md — operating manual for this repo
 
 ## Workflow (default behaviour, don't re-ask)
 

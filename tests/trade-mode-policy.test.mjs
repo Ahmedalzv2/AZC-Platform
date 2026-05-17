@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
 describe('Trade-mode policy: futures vs spot', () => {
-  test('DEFAULT_TRADE_MODES (v4): SILVER, US100, SOL, GOLD = futures; rest = spot', () => {
+  test('DEFAULT_TRADE_MODES (v6): SILVER, US100, SOL, GOLD = futures; rest = spot', () => {
     const { app } = loadApp();
     // The harness doesn't run window.onload, so loadTradeModes never seeds
     // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
@@ -12,7 +12,7 @@ describe('Trade-mode policy: futures vs spot', () => {
     assert.equal(modes.SILVER, 'futures');
     assert.equal(modes.US100,  'futures');
     assert.equal(modes.SOL,    'futures', 'v3: SOL for weekend coverage');
-    assert.equal(modes.GOLD,   'futures', 'v4: GOLD joins the trio (XAUT_USDT on MEXC)');
+    assert.equal(modes.GOLD,   'futures', 'v6: GOLD remains a manual futures candidate (XAUT_USDT on MEXC)');
     assert.equal(modes.BTC,    'spot');
     assert.equal(modes.ETH,    'spot');
     assert.equal(modes.BNB,    'spot');
@@ -31,7 +31,7 @@ describe('Trade-mode policy: futures vs spot', () => {
     assert.equal(seedFor('US100'),  'futures');
     assert.equal(seedFor('SOL'),    'futures', 'SOL gets weekend coverage in v3');
     assert.equal(seedFor('BTC'),    'spot');
-    assert.equal(seedFor('GOLD'),   'futures', 'v4: GOLD joins as default futures auto-exec asset');
+    assert.equal(seedFor('GOLD'),   'futures', 'v6: GOLD remains a default futures candidate');
   });
 
   test('_isFuturesAsset returns true only for futures-mode assets', () => {
@@ -46,7 +46,7 @@ describe('Trade-mode policy: futures vs spot', () => {
 
     assert.equal(app._isFuturesAsset(silver), true);
     assert.equal(app._isFuturesAsset(us100),  true);
-    assert.equal(app._isFuturesAsset(gold),   true,  'GOLD = futures in v4 (joins SOL + SILVER trio)');
+    assert.equal(app._isFuturesAsset(gold),   true,  'GOLD = futures in v6 manual policy');
     assert.equal(app._isFuturesAsset(btc),    false);
   });
 
@@ -146,5 +146,33 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     assert.ok(symbols.includes('SILVER'),  'SILVER (futures) should fire');
     assert.ok(!symbols.includes('BTC'),    'BTC (spot) must not fire');
     assert.ok(!symbols.includes('ETH'),    'ETH (spot) must not fire');
+  });
+
+  test('auto-fire disabled blocks live HTF order submission', async () => {
+    const gst = new Date('2026-05-07T08:00:00Z');
+    let fetchCalls = 0;
+    const { app } = loadApp({
+      now: gst,
+      storage: {
+        ict_mexc_api_key: 'k',
+        ict_mexc_api_secret: 's',
+        ict_mexc_worker_url: 'https://w.workers.dev',
+      },
+      fetch: async () => {
+        fetchCalls += 1;
+        return { ok: true, json: async () => ({ success: true, data: {} }), text: async () => '{}' };
+      },
+    });
+    app.loadTradeModes();
+    app.setLiveTradingEnabled(true);
+    app.setLiveTradingDryRun(false);
+    fetchCalls = 0;
+    setupAtEntry(app, 'SILVER', 'futures');
+    app.prevSignalMap = {};
+    app.alertLog = [];
+    app.checkArmedAlerts(gst);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(fetchCalls, 0, 'disabled auto-fire must not reach order submission');
+    assert.equal(app._lastFireResult.SILVER, undefined);
   });
 });

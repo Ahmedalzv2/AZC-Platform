@@ -250,9 +250,7 @@ function aggregateKlines(klines1m, intervalMins) {
   return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
 }
 
-// Apply the same fee-aware high-lev levels the live bot uses. At lev<100 we
-// fall through to the conviction-ladder sl/tp baked into _suggestedEntryForTf
-// (RR=1.5 from BPR/iFVG/OB/FVG depending on source).
+// Apply the same fee-aware mechanical levels used by the old scalp research.
 function applyLevels(sug, lev, tpNetPct, slCoef = 0.7, slPricePct = null, tpPricePct = null) {
   // SWING mode: explicit price-mode SL/TP (independent of leverage). Used by
   // the post-90d-OOS-research configs targeting GOLD/SILVER multi-day holds
@@ -597,9 +595,8 @@ function fmt(s) {
     'E · TRAIL 9/5 (even faster)':            {trail: { armPct: 9, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
     // What we used to ship before today.
     'F · Fixed +20% TP':                      {tpNetPct: 20, cancelTtlBars: 2 },
-    // Higher TP targets — needed because SL at 200× = -86% margin, so
-    // a +14-20% TP requires ~85% win rate to break even. These configs
-    // give the upside enough room to compensate for the asymmetric loss.
+    // Higher TP targets let upside compensate for fees, slippage, and
+    // asymmetric stop-outs in the old scalp research.
     'G · TRAIL 50/10 (higher target)':        {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2 },
     'H · TRAIL 100/20 (big runner)':          {trail: { armPct: 100, trailPct: 20, ceilingPct: 200 }, cancelTtlBars: 2 },
     'I · Fixed +50% TP':                      {tpNetPct: 50, cancelTtlBars: 2 },

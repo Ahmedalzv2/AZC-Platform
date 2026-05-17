@@ -33,7 +33,7 @@ describe('_mexcContractSymbol generalised', () => {
   });
 });
 
-describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-research)', () => {
+describe('getAssetLeverage / setAssetLeverage per-asset cap (1–25× post-research)', () => {
   test('Trio (SILVER/SOL/GOLD) default 10×, cap 25×', () => {
     const { app } = loadApp();
     for (const sym of ['SILVER', 'SOL', 'GOLD']) {
@@ -41,7 +41,7 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-rese
       assert.equal(app.ASSET_LEVERAGE_SPEC[sym].max, 25, `${sym} cap`);
       assert.equal(app.setAssetLeverage(sym, 200), 25, `${sym} clamps to new cap`);
       assert.equal(app.setAssetLeverage(sym, 10), 10);
-      assert.equal(app.setAssetLeverage(sym, 0), 10, `${sym} clamps low to 10×`);
+      assert.equal(app.setAssetLeverage(sym, 0), 1, `${sym} clamps low to 1×`);
     }
   });
 

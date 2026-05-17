@@ -20,6 +20,7 @@ const EXPORTS = [
   'checkArmedAlerts', 'tagHeadline', 'getNewsContext',
   'getFundingContext', 'isInvalidated',
   'getMacroBlackout', 'ECON_EVENTS', 'isMTFStale',
+  'getMarketIntelligence', 'renderMarketIntelligencePanel',
   // live stream + sparkline + backtest
   'parseTickerMessage', 'recordSignalState', 'renderSparkline',
   'SIGNAL_HISTORY_MS', 'BINANCE_WS_URL',
@@ -278,5 +279,11 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
  */
 export function gstDate(hour, minute = 0, second = 0) {
   return new Date(2024, 5, 15, hour, minute, second);
+}
+
+export function forceLeverage(app, symbol, leverage) {
+  const spec = app.ASSET_LEVERAGE_SPEC[symbol] || app.ASSET_LEVERAGE_DEFAULT;
+  spec.max = Math.max(spec.max, leverage);
+  return app.setAssetLeverage(symbol, leverage);
 }
 

@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
-describe('Policy v4 — GOLD joins SOL + SILVER as default auto-exec futures', () => {
+describe('Policy v6 — manual futures candidates remain selectable', () => {
   test('DEFAULT_TRADE_MODES has GOLD = futures', () => {
     const { app } = loadApp();
     assert.equal(app.DEFAULT_TRADE_MODES.GOLD, 'futures');
@@ -18,12 +18,12 @@ describe('Policy v4 — GOLD joins SOL + SILVER as default auto-exec futures', (
     assert.equal(app._isFuturesAsset(gold), true);
   });
 
-  test('GOLD has a valid MEXC contract (XAUT_USDT) so auto-exec is wired', () => {
+  test('GOLD has a valid MEXC contract (XAUT_USDT)', () => {
     const { app } = loadApp();
     assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), 'XAUT_USDT');
   });
 
-  test('Default futures trio = {SOL, SILVER, GOLD} get auto-exec out of the box', () => {
+  test('Default futures candidates = {SOL, SILVER, GOLD}', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const eligible = app.ASSETS
@@ -52,7 +52,7 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.equal(s.state, 'blocked');
   });
 
-  test('spot-mode asset → manual (not in auto-exec)', () => {
+  test('spot-mode asset → manual', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const btc = app.ASSETS.find(a => a.symbol === 'BTC');
@@ -95,6 +95,21 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     const s = app.getFireStatus(sol);
     assert.equal(s.state, 'ready');
     assert.match(s.label, /READY/);
+  });
+
+  test('READY detail says auto-fire is disabled by default', () => {
+    const { app } = loadApp();
+    const sol = bootLive(app);
+    app.setScalpTf('SOL', '1m');
+    sol.bias = 'BULLISH';
+    sol.tfEntries = {
+      '1m': {
+        dir: 'bull', entryReady: true, score: 4,
+        fvgZone: { dir: 'bull', lo: 99.95, hi: 100.05, mid: 100.00 },
+      },
+    };
+    const s = app.getFireStatus(sol);
+    assert.match(s.detail, /auto-fire disabled/i);
   });
 
   test('SOL scalp 1m far → WAITING', () => {
