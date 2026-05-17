@@ -753,6 +753,33 @@
   // ═══════════════════════════════════════
   const ASSETS = [
     {
+      symbol: 'US100', platform: 'FP Markets CFD', type: 'FUTURES',
+      entry: 26800, sl: 26950, tp1: 26000, tp2: 25500,
+      grade: 'a', armed: false, price: 26983.00, change24h: 0,
+      bias: 'IN FLUX', dol: 'Weekly close decides', invalidation: 'Daily close < $26,400',
+      remarks: 'Testing weekly bear OB. 3 scenarios active. Weekly close is the key.',
+      watch: '(A) Break > 26,902 → 27,500. (B) Rejection + 4H CHoCH → short 26,000. (C) Close > 27K = BULLISH.',
+      levels: null, checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — outside KZ, await weekly confirmation'
+    },
+    {
+      symbol: 'GOLD', platform: 'MEXC FUTURES', type: 'FUTURES',
+      entry: 4708.62, sl: 4700, tp1: 4750, tp2: 4800,
+      grade: 'b', armed: false, price: 4708.62, change24h: 0,
+      bias: 'BEARISH', dol: '$4,400', invalidation: 'Monthly close > $5,000',
+      remarks: 'Geopolitical-driven pullback on risk appetite. Bear OB zone.',
+      watch: 'FVG below $4,680 → long scalp to $4,750. Or break confirms short.',
+      levels: null, checks: [1,1,0,1,1,0,1,1,1,1], reason: 'B — PO3 and FVG unclear'
+    },
+    {
+      symbol: 'SILVER', platform: 'MEXC FUTURES', type: 'FUTURES',
+      entry: 75.65, sl: 75.50, tp1: 75.90, tp2: 76.20,
+      grade: 'b', armed: false, price: 75.655, change24h: 0,
+      bias: 'BEARISH', dol: '$68–70', invalidation: 'Monthly close > $90',
+      remarks: 'Retracing after strong move. Fib 0.5–0.618 zone.',
+      watch: '$0.618 Fib ($74.69) SSL sweep + CHoCH → long. Or continuation short.',
+      levels: null, checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — backup liquidity, tier B only'
+    },
+    {
       symbol: 'BTC', platform: 'Binance SPOT', type: 'SPOT',
       entry: 74000, sl: 73500, tp1: 76000, tp2: 78000,
       grade: 'a', armed: false, price: 77670.39, change24h: 0,
@@ -814,33 +841,6 @@
       remarks: '4-week consolidation $0.62–0.70. 20w HTF bearish.',
       watch: '$0.70–0.72 BSL sweep + 1m CHoCH → short $0.62.',
       levels: null, checks: [1,0,1,1,1,0,1,1,1,1], reason: 'B — HTF alignment partial, consolidation'
-    },
-    {
-      symbol: 'US100', platform: 'FP Markets CFD', type: 'FUTURES',
-      entry: 26800, sl: 26950, tp1: 26000, tp2: 25500,
-      grade: 'a', armed: false, price: 26983.00, change24h: 0,
-      bias: 'IN FLUX', dol: 'Weekly close decides', invalidation: 'Daily close < $26,400',
-      remarks: 'Testing weekly bear OB. 3 scenarios active. Weekly close is the key.',
-      watch: '(A) Break > 26,902 → 27,500. (B) Rejection + 4H CHoCH → short 26,000. (C) Close > 27K = BULLISH.',
-      levels: null, checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — outside KZ, await weekly confirmation'
-    },
-    {
-      symbol: 'GOLD', platform: 'MEXC FUTURES', type: 'FUTURES',
-      entry: 4708.62, sl: 4700, tp1: 4750, tp2: 4800,
-      grade: 'b', armed: false, price: 4708.62, change24h: 0,
-      bias: 'BEARISH', dol: '$4,400', invalidation: 'Monthly close > $5,000',
-      remarks: 'Geopolitical-driven pullback on risk appetite. Bear OB zone.',
-      watch: 'FVG below $4,680 → long scalp to $4,750. Or break confirms short.',
-      levels: null, checks: [1,1,0,1,1,0,1,1,1,1], reason: 'B — PO3 and FVG unclear'
-    },
-    {
-      symbol: 'SILVER', platform: 'MEXC FUTURES', type: 'FUTURES',
-      entry: 75.65, sl: 75.50, tp1: 75.90, tp2: 76.20,
-      grade: 'b', armed: false, price: 75.655, change24h: 0,
-      bias: 'BEARISH', dol: '$68–70', invalidation: 'Monthly close > $90',
-      remarks: 'Retracing after strong move. Fib 0.5–0.618 zone.',
-      watch: '$0.618 Fib ($74.69) SSL sweep + CHoCH → long. Or continuation short.',
-      levels: null, checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — backup liquidity, tier B only'
     }
   ];
 
@@ -8102,7 +8102,7 @@
   };
 
   let tvChartLoaded = false;
-  let tvCurrentSymbol = 'BTC'; // Changes to best-signal asset on load
+  let tvCurrentSymbol = 'US100'; // US100 is the ICT priority per CLAUDE.md
   let tvCurrentTimeframe = '1'; // default to 1m — matches the scalp setup the dashboard
                                  // actually trades on. Weekly view hid the FVG/OB
                                  // structure we care about.
@@ -10221,6 +10221,9 @@
     _try('initBinanceWebSocket', initBinanceWebSocket);
     _try('initMexcWebSocket', initMexcWebSocket);
     _try('initTVPriceListener', initTVPriceListener);
+    // Open Live Chart on US100 by default — it's the ICT priority instrument
+    // and was being hidden behind the empty-state hint until first click.
+    _try('autoLoadUS100', () => { if (TV_SYMBOLS['US100']) switchTVChart('US100'); });
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
     // Fast-refresh: pull fresh 1m klines for high-lev futures assets every
