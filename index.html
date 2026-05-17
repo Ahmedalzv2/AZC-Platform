@@ -4561,6 +4561,100 @@
              detail: `Price is far from entry $${entry} (gate ${gate}%). Tap 🔥 Force Fire to fire now anyway.` };
   }
 
+  function _fmtPct(v, digits = 2) {
+    return (isFinite(v) ? Number(v).toFixed(digits) : '—') + '%';
+  }
+
+  function _buildLiveChartDecision(asset) {
+    if (!asset) {
+      return {
+        state: 'blocked',
+        color: 'var(--text-mute)',
+        label: 'NO ASSET',
+        reason: 'Pick an asset from the sidebar.',
+        actionLabel: 'Pick Asset',
+        actionKind: 'none',
+        riskLine: 'No risk until an asset is selected.',
+      };
+    }
+
+    const fire = (typeof getFireStatus === 'function') ? getFireStatus(asset) : null;
+    const state = fire?.state || 'blocked';
+    let reason = fire?.detail || 'No decision detail available.';
+    let actionLabel = 'Open Details';
+    let actionKind = 'details';
+
+    if (state === 'ready') {
+      reason = `Ready for manual entry. ${reason}`;
+      actionLabel = 'Force Fire';
+      actionKind = 'force';
+    } else if (state === 'near' || state === 'waiting') {
+      actionLabel = 'Wait';
+      actionKind = 'details';
+    } else if (state === 'in-position') {
+      actionLabel = 'Close Position';
+      actionKind = 'live';
+    } else if (state === 'manual') {
+      reason = 'Spot Watch only. No leverage, no scalp, no futures order.';
+      actionLabel = 'Open Details';
+      actionKind = 'details';
+    } else if (/LIVE OFF/i.test(fire?.label || '') || /kill-switch|Live Trading/i.test(reason)) {
+      reason = 'Live Trading is off. Tap the kill-switch or open Live Trading controls.';
+      actionLabel = 'Open Live Trading';
+      actionKind = 'live';
+    }
+
+    let riskLine = 'Risk unavailable until price, entry, and SL are set.';
+    if (!_isFuturesAsset(asset)) {
+      const z = (typeof getSpotZone === 'function') ? getSpotZone(asset) : null;
+      const buy = z?.levels?.buy;
+      const sell = z?.levels?.sell;
+      riskLine = `Spot only · buy ${buy ? '$' + buy : '—'} · sell ${sell ? '$' + sell : '—'}`;
+    } else {
+      const lev = (typeof getAssetLeverage === 'function') ? getAssetLeverage(asset.symbol) : 1;
+      const entry = Number(asset.entry || asset.price || 0);
+      const sl = Number(asset.sl || 0);
+      const slPct = entry && sl ? Math.abs((entry - sl) / entry) * 100 : NaN;
+      const liqBuffer = lev ? 100 / lev : NaN;
+      const mode = !_liveTradingEnabled ? 'LIVE OFF' : (_liveTradingDryRun ? 'DRY-RUN' : 'LIVE');
+      riskLine = `${lev}x · SL ${_fmtPct(slPct)} · liq buffer ${_fmtPct(liqBuffer)} · ${mode}`;
+    }
+
+    return {
+      state,
+      color: fire?.color || 'var(--text-mute)',
+      label: fire?.label || 'UNKNOWN',
+      reason,
+      actionLabel,
+      actionKind,
+      riskLine,
+    };
+  }
+
+  function _renderLiveChartDecisionCenter(asset) {
+    const d = _buildLiveChartDecision(asset);
+    const sym = asset?.symbol || '';
+    const btn = d.actionKind === 'force'
+      ? `<button onclick="_onClickForceFire('${sym}')" style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
+      : d.actionKind === 'live'
+        ? `<button onclick="openLiveTradingModal()" style="background:rgba(201,169,97,0.16);border:1px solid var(--gold);color:var(--gold);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
+        : d.actionKind === 'details'
+          ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${sym}');if(a)openSetupModal(a);})()" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
+          : '';
+    return `
+      <div style="background:var(--bg);border:1px solid ${d.color};border-radius:10px;padding:14px;margin-bottom:14px;">
+        <div style="display:flex;align-items:flex-start;gap:12px;justify-content:space-between;flex-wrap:wrap;">
+          <div style="min-width:220px;flex:1;">
+            <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;margin-bottom:6px;">Now</div>
+            <div style="font-size:18px;color:${d.color};font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1.2;">${d.label}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">${btn}</div>
+        </div>
+        <div style="margin-top:10px;font-size:12px;color:var(--text-dim);line-height:1.6;">${d.reason}</div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">${d.riskLine}</div>
+      </div>`;
+  }
+
   // Modal button handlers — extracted so the inline onclick="" stays
   // simple (avoids nested-quoting nightmares with confirm() prompts).
   async function _onClickTestMexcConnection() {
@@ -9440,9 +9534,11 @@
         <button onclick="skipEntryAlert('${symbol}')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:5px 10px;border-radius:5px;font-size:11px;cursor:pointer;">Skip</button>
       </div>`;
     }
+    const decisionCenter = (typeof _renderLiveChartDecisionCenter === 'function') ? _renderLiveChartDecisionCenter(asset) : '';
     const tfReadiness = (typeof _renderTfReadinessHTML === 'function') ? _renderTfReadinessHTML(asset) : '';
     const focusedTFCard = _renderSelectedTFCard(asset, typeof tvCurrentTimeframe !== 'undefined' ? tvCurrentTimeframe : 'W');
     analysisPanel.innerHTML = `
+      ${decisionCenter}
       ${alertCallout}
       ${focusedTFCard}
       <div style="background:${sigBg};border:1px solid ${sigColor};border-radius:10px;padding:18px;margin-bottom:16px;">

@@ -82,6 +82,7 @@ const EXPORTS = [
   'fetchMexcPositionHistory', '_pairOrdersIntoTrades', '_classifyTradesAgainstJournal', '_summarizeTrades', 'compareTradeStyle',
   '_profitGuardian', 'BREAK_EVEN_TRIGGER_PCT', 'BREAK_EVEN_CLOSE_PCT',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
+  '_buildLiveChartDecision', '_renderLiveChartDecisionCenter',
   // scalp mode
   'getScalpTf', 'setScalpTf',
   'scalpMonitorTick', '_normalizeBiasDir', '_suggestedEntryForTf',
