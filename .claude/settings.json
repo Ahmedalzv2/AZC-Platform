@@ -5,6 +5,9 @@
       "mcp__github__get_file_contents"
     ]
   },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
+  },
   "hooks": {
     "SessionStart": [
       {
