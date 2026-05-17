@@ -358,6 +358,7 @@
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Sources</span>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCC" checked onchange="_onNewsFilterChange()"> CryptoCompare</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCV" checked onchange="_onNewsFilterChange()"> cryptocurrency.cv</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCG" checked onchange="_onNewsFilterChange()"> CoinGecko</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCD" checked onchange="_onNewsFilterChange()"> CoinDesk</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCT" checked onchange="_onNewsFilterChange()"> Cointelegraph</label>
@@ -5644,6 +5645,24 @@
         body: (raw.description || '').slice(0, 220)
       };
     }
+    if (source === 'cccv') {
+      // cryptocurrency.cv articles. Confirmed fields: title, source, url.
+      // Defensive on the rest — schema is undocumented beyond the quickstart.
+      const t = raw.published_at || raw.published || raw.date || raw.pub_date || raw.time || 0;
+      const tsec = typeof t === 'number'
+        ? (t > 1e12 ? Math.floor(t / 1000) : t)
+        : Math.floor(new Date(t).getTime() / 1000) || 0;
+      return {
+        id: 'cv-' + (raw.id || raw.guid || raw.url || raw.link || raw.title),
+        title: String(raw.title || raw.headline || '').replace(/<[^>]+>/g, ''),
+        url: raw.url || raw.link || raw.canonical_url || '#',
+        source: 'cccv',
+        sourceLabel: (raw.source && (raw.source.name || raw.source)) || raw.publisher || raw.author?.name || 'cryptocurrency.cv',
+        published: tsec || 0,
+        categories: (Array.isArray(raw.categories) ? raw.categories : (raw.tags || [])).map(c => String(c).toUpperCase()),
+        body: String(raw.summary || raw.description || raw.body || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 220)
+      };
+    }
     if (source === 'rss') {
       // rss2json item: { title, link, pubDate, description, content, categories, guid }
       const t = raw.pubDate ? Math.floor(new Date(raw.pubDate).getTime()/1000) : 0;
@@ -5905,6 +5924,32 @@
     } catch(e) { console.warn('CryptoCompare news fetch failed:', e.message); return []; }
   }
 
+  // cryptocurrency.cv — free crypto news aggregator, no key required.
+  // Endpoint: GET /api/news?limit=N → { articles: [...] }
+  // Try direct first; fall through to public CORS proxies if the response
+  // is missing CORS headers (same pattern as MEXC_PROXIES).
+  const CCCV_NEWS_URL = 'https://cryptocurrency.cv/api/news?limit=30';
+  const CCCV_PROXIES = [
+    (u) => u,
+    (u) => 'https://corsproxy.io/?' + encodeURIComponent(u),
+    (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+  ];
+  async function _fetchCryptocurrencyCV() {
+    for (const wrap of CCCV_PROXIES) {
+      try {
+        const r = await fetch(wrap(CCCV_NEWS_URL), { cache: 'no-store', signal: _t(10000) });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const arr = Array.isArray(j) ? j
+                  : (j.articles || j.items || j.data || j.news || j.results || []);
+        if (!Array.isArray(arr) || !arr.length) continue;
+        return arr.map(n => _normalizeNewsItem(n, 'cccv')).filter(Boolean);
+      } catch (e) { /* try next transport */ }
+    }
+    console.warn('cryptocurrency.cv news fetch failed (all proxies)');
+    return [];
+  }
+
   async function _fetchCoinGeckoGlobal() {
     // CoinGecko's public /api/v3/news endpoint was deprecated and returns 404.
     // We keep the source toggle in the UI for backwards-compat with saved
@@ -5921,18 +5966,19 @@
     const rssTasks = RSS_FEEDS.map(f => _fetchRSSFeed(f));
     // X-Live (Nitter via ScrapeBadger) is SLOW and unreliable — fetch it
     // separately so the main news refresh isn't blocked by it.
-    const [cc, cg, social, ...rssResults] = await Promise.all([
+    const [cc, cv, cg, social, ...rssResults] = await Promise.all([
       _fetchCryptoCompareGlobal(),
+      _fetchCryptocurrencyCV(),
       _fetchCoinGeckoGlobal(),
       _fetchLunarCrushSocial(),
       ...rssTasks
     ]);
     const allRss = rssResults.flat();
-    console.log('[news] sources:', { cryptocompare: cc.length, coingecko: cg.length, lunarcrush: social.length, rssTotal: allRss.length, rssBySource: RSS_FEEDS.reduce((o, f, i) => { o[f.key] = (rssResults[i]||[]).length; return o; }, {}) });
+    console.log('[news] sources:', { cryptocompare: cc.length, cccv: cv.length, coingecko: cg.length, lunarcrush: social.length, rssTotal: allRss.length, rssBySource: RSS_FEEDS.reduce((o, f, i) => { o[f.key] = (rssResults[i]||[]).length; return o; }, {}) });
     // Dedupe by URL (preserve any already-loaded X-live items in the cache)
     const byUrl = new Map();
     const existingXlive = _newsAggregateItems.filter(i => i._sourceKey === 'xlive');
-    [...cc, ...cg, ...allRss, ...social, ...existingXlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
+    [...cc, ...cv, ...cg, ...allRss, ...social, ...existingXlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
     _newsAggregateItems = Array.from(byUrl.values()).sort((a,b) => (b.published||0) - (a.published||0));
     _newsAggregateTs = Date.now();
     if (btn) btn.textContent = '↻ Refresh';
@@ -5976,6 +6022,7 @@
     return {
       sources: {
         cc: document.getElementById('newsSrcCC')?.checked,
+        cv: document.getElementById('newsSrcCV')?.checked,
         cg: document.getElementById('newsSrcCG')?.checked,
         coindesk:      document.getElementById('newsSrcCD')?.checked,
         cointelegraph: document.getElementById('newsSrcCT')?.checked,
@@ -6005,6 +6052,7 @@
     const now = Math.floor(Date.now()/1000);
     return items.filter(it => {
       if (filters.sources.cc === false && it.source === 'cryptocompare') return false;
+      if (filters.sources.cv === false && it.source === 'cccv') return false;
       if (filters.sources.cg === false && it.source === 'coingecko') return false;
       // Distinguish: 𝕏 Pulse (LunarCrush) vs 𝕏 Live (Nitter via ScrapeBadger)
       if (it.source === 'social' && it._sourceKey === 'xlive') {
@@ -6042,7 +6090,7 @@
       const f = JSON.parse(localStorage.getItem('ict_news_filters') || 'null');
       if (!f) return;
       const set = (id, val) => { const el = document.getElementById(id); if (el && typeof val === 'boolean') el.checked = val; else if (el && val != null) el.value = val; };
-      set('newsSrcCC', f.sources?.cc); set('newsSrcCG', f.sources?.cg);
+      set('newsSrcCC', f.sources?.cc); set('newsSrcCV', f.sources?.cv); set('newsSrcCG', f.sources?.cg);
       set('newsSrcCD', f.sources?.coindesk); set('newsSrcCT', f.sources?.cointelegraph);
       set('newsSrcTB', f.sources?.theblock); set('newsSrcBI', f.sources?.beincrypto);
       set('newsSrcUT', f.sources?.utoday); set('newsSrcSOC', f.sources?.social);
@@ -6069,6 +6117,7 @@
     // Source code badge
     let srcCode = 'NEWS';
     if (item.source === 'cryptocompare') srcCode = 'CC';
+    else if (item.source === 'cccv') srcCode = 'CV';
     else if (item.source === 'coingecko') srcCode = 'CG';
     else if (item.source === 'social') srcCode = item._sourceKey === 'xlive' ? '𝕏 @' + (item._xHandle || 'live') : '𝕏';
     else if (item.source === 'rss') {
@@ -6303,40 +6352,38 @@
   }
 
   // ═══════════════════════════════════════════════════════
-  // 📰 NEWS FEED (CoinGecko — free, no auth)
+  // 📰 JOURNAL-TAB NEWS FEED — pulls from cryptocurrency.cv
+  // (CoinGecko's /api/v3/news endpoint was deprecated and now returns 404.)
   // ═══════════════════════════════════════════════════════
   async function fetchNews() {
     const feed = document.getElementById('newsFeed');
     if (!feed) return;
     feed.innerHTML = '<div style="color:var(--text-mute);padding:8px 0;">Fetching latest crypto news…</div>';
-    try {
-      const r = await fetch('https://api.coingecko.com/api/v3/news?per_page=20', {signal: _t(10000)});
-      const d = await r.json();
-      const news = (d.data || d).slice(0, 15);
-      if (!news.length) throw new Error('No news');
-      // Tag which of our assets each article mentions
-      const symbols = ASSETS.map(a => a.symbol.toLowerCase());
-      const keywords = {btc:'Bitcoin',eth:'Ethereum',sol:'Solana',bnb:'BNB',xrp:'XRP',sui:'SUI',astr:'Astar',us100:'Nasdaq',gold:'Gold',silver:'Silver'};
-      feed.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:8px;">` +
-        news.map(item => {
-          const title = item.title || item.name || '';
-          const url = item.url || item.news_url || '#';
-          const src = item.author?.name || item.news_site || 'Crypto News';
-          const time = item.updated_at ? new Date(item.updated_at * 1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Dubai'}) + ' GST' : '';
-          const tagged = Object.entries(keywords).filter(([k,v]) => title.toLowerCase().includes(k) || title.toLowerCase().includes(v.toLowerCase())).map(([k])=>k.toUpperCase());
-          const tagHtml = tagged.length ? tagged.map(t=>`<span style="background:rgba(201,169,97,0.15);color:var(--gold);font-size:10px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;">${t}</span>`).join(' ') : '';
-          return `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
-            <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:6px;line-height:1.5;">${title}</div>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              ${tagHtml}
-              <span style="color:var(--text-mute);font-size:10px;">${src}</span>
-              <span style="color:var(--text-mute);font-size:10px;">${time}</span>
-            </div>
-          </div>`;
-        }).join('') + '</div>';
-    } catch(e) {
-      feed.innerHTML = '<div style="color:var(--text-mute);font-size:12px;">News feed temporarily unavailable. CoinGecko free API may be rate-limited — try again in 60s.</div>';
+    const items = await _fetchCryptocurrencyCV();
+    if (!items.length) {
+      feed.innerHTML = '<div style="color:var(--text-mute);font-size:12px;">News feed temporarily unavailable — try again in 60s.</div>';
+      return;
     }
+    const keywords = {btc:'Bitcoin',eth:'Ethereum',sol:'Solana',bnb:'BNB',xrp:'XRP',sui:'SUI',astr:'Astar',us100:'Nasdaq',gold:'Gold',silver:'Silver'};
+    feed.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:8px;">` +
+      items.slice(0, 15).map(item => {
+        const title = item.title || '';
+        const url = item.url || '#';
+        const src = item.sourceLabel || 'Crypto News';
+        const time = item.published ? new Date(item.published * 1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Dubai'}) + ' GST' : '';
+        const safeTitle = title.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const safeSrc = src.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const tagged = Object.entries(keywords).filter(([k,v]) => title.toLowerCase().includes(k) || title.toLowerCase().includes(v.toLowerCase())).map(([k])=>k.toUpperCase());
+        const tagHtml = tagged.map(t => `<span style="background:rgba(201,169,97,0.15);color:var(--gold);font-size:10px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;">${t}</span>`).join(' ');
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="display:block;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:12px 14px;text-decoration:none;color:var(--text);">
+          <div style="font-size:12px;font-weight:500;margin-bottom:6px;line-height:1.5;">${safeTitle}</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            ${tagHtml}
+            <span style="color:var(--text-mute);font-size:10px;">${safeSrc}</span>
+            <span style="color:var(--text-mute);font-size:10px;">${time}</span>
+          </div>
+        </a>`;
+      }).join('') + '</div>';
   }
 
   // ═══════════════════════════════════════════════════════
