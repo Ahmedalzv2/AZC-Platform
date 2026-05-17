@@ -4401,6 +4401,7 @@
     const hasKeys = !!(getMexcApiKey() && getMexcApiSecret());
     const masterBtn = `<button onclick="setLiveTradingEnabled(${!_liveTradingEnabled});openLiveTradingModal();" style="background:${_liveTradingEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_liveTradingEnabled?'var(--bull)':'var(--border)'};color:${_liveTradingEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingEnabled?'🟢 ON':'🔴 OFF'}</button>`;
     const dryBtn = `<button onclick="setLiveTradingDryRun(${!_liveTradingDryRun});openLiveTradingModal();" style="background:${_liveTradingDryRun?'rgba(242,179,61,0.20)':'rgba(224,93,93,0.20)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingDryRun?'📝 DRY-RUN':'🔴 LIVE'}</button>`;
+    const swBtn = `<button onclick="setSwAutoFire(${!_swAutoFireEnabled});openLiveTradingModal();" style="background:${_swAutoFireEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_swAutoFireEnabled?'var(--bull)':'var(--border)'};color:${_swAutoFireEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_swAutoFireEnabled?'🎯 SW AUTO ON':'🎯 SW AUTO OFF'}</button>`;
     const workerUrl = getMexcWorkerUrl();
     // Per-asset state is computed inside _renderAutoExecAssetBlock so the
     // modal can render a block per asset without me touching this scope.
@@ -4448,6 +4449,11 @@
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
             ${dryBtn}
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
+          </div>
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SW (swing) auto-fire · ${Object.keys(SW_ASSET_CONFIG).join(' + ')}</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+            ${swBtn}
+            <span style="font-size:11px;color:var(--text-mute);">${_swAutoFireEnabled?'Walk-forward-validated 1h ICT setups will auto-fire':'Signals tracked silently · no fires until you toggle ON'}</span>
           </div>
           ${ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a)).map(a => _renderAutoExecAssetBlock(a)).join('')}
           ${_renderAutoExecAddPicker()}
