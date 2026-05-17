@@ -730,6 +730,16 @@ function fmt(s) {
     'SW-HH · W + confluence (drop fvg-edge)': {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', confluenceOnly: true },
     'SW-II · W 48h hold short':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
     'SW-JJ · W 72h hold short':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 72, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    // Iteration 11: stack SW-BB filter (shorts + phase + score>=2) with the
+    // best geometry / horizon variants from iteration 10. Hypothesis: each
+    // filter compounds — score filter raises win rate, longer hold catches
+    // more runners, wider SL absorbs noise.
+    'SW-KK · BB asym 2.0/3.0 (1.5:1)':        {marketEntry: true, slPricePct: 2.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-LL · BB asym 1.0/3.0 (3:1)':          {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-MM · BB 48h hold':                    {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-NN · BB 72h hold':                    {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 72, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-OO · BB 48h asym 2.0/3.0':            {marketEntry: true, slPricePct: 2.00, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-PP · BB 12h hold':                    {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 12, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
