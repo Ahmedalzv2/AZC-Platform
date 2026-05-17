@@ -4102,18 +4102,20 @@
   }
 
   // Manual force-fire — the explicit "I want it to fire NOW" button.
-  // Skips every gate (proximity, HTF agreement) except the master
-  // switch and contract eligibility. Builds the entry/SL/TP fresh from the
-  // CURRENT live price (not the stale FVG mid) so the fill is realistic:
-  //   bullish bias → LONG, mechanical SL = current × (1 - margin),
-  //                  TP same distance the other way
-  //   bearish bias → SHORT, flipped
-  // High-lev mode uses the survival-mode mechanical margin (≈0.35% at 200×);
-  // low-lev mode uses 0.4% as a sensible default tight stop.
+  // Skips proximity + HTF-agreement gates, keeps master / contract /
+  // in-position / no-price gates.
+  //
+  // Entry is always the CURRENT live price (instant fill, no stale FVG mid).
+  // SL/TP shape depends on leverage:
+  //   - Low-lev (v6 manual ICT path, ≤25×): anchor SL distance + TP R:R to
+  //     the 5m setup from _suggestedEntryForTf. Direction also comes from
+  //     the 5m setup. If no 5m setup is available → no-5m-setup, no fire.
+  //   - High-lev (≥100×, legacy / unreachable in v6 prod): mechanical
+  //     liquidation-buffer SL, ceiling TP. Direction from asset.bias.
   //
   // Always writes a _lastFireResult entry so the modal panel shows what
-  // happened. The auto-exec doesn't immediately
-  // double-fire on top of this manual one.
+  // happened. The auto-exec doesn't immediately double-fire on top of this
+  // manual one.
   async function forceFireAsset(symbol, opts) {
     opts = opts || {};
     const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
@@ -4126,29 +4128,42 @@
     if (blockingSym) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'in-position', blockingSym });
     const price = Number(asset.price);
     if (!isFinite(price) || price <= 0) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-price' });
-    const dir = (asset.bias || '').toUpperCase().includes('BULL') ? 'LONG' : 'SHORT';
     const lev = getAssetLeverage(symbol);
-    // SL/TP distance: mechanical liquidation-buffer math when high-lev,
-    // a flat 0.4% otherwise.
-    const slPct = _isHighLeverage(symbol) ? (100 / lev) * 0.7 / 100 : 0.004;
-    const slDist = price * slPct;
-    // Quick-take target: NET +QUICK_TAKE_NET_MARGIN_PCT% of margin after
-    // round-trip fees. For low-lev fires we use this directly as the fixed
-    // TP. For high-lev (trio at 200×) we ship the order with a far-out
-    // CEILING tp (NET TRAIL_CEILING_NET_MARGIN_PCT%) so MEXC's UI surfaces
-    // a visible TP value — the trail poll handles all typical exits well
-    // before that ceiling fires.
-    const grossTpMarginPct = QUICK_TAKE_NET_MARGIN_PCT + _roundTripFeePctMargin(lev);
-    const tpPct = _isHighLeverage(symbol)
-      ? ((TRAIL_CEILING_NET_MARGIN_PCT + _roundTripFeePctMargin(lev)) / lev) / 100
-      : 0.004;
-    const tpDist = price * tpPct;
+    let dir, sl, tp, setupSource;
+    if (_isHighLeverage(symbol)) {
+      // Legacy high-lev path: mechanical liquidation-buffer SL, ceiling TP.
+      // Unreachable in v6 production (leverage caps at 25× < threshold 100×).
+      dir = (asset.bias || '').toUpperCase().includes('BULL') ? 'LONG' : 'SHORT';
+      const slDist = price * ((100 / lev) * 0.7 / 100);
+      const tpDist = price * (((TRAIL_CEILING_NET_MARGIN_PCT + _roundTripFeePctMargin(lev)) / lev) / 100);
+      sl = dir === 'LONG' ? price - slDist : price + slDist;
+      tp = dir === 'LONG' ? price + tpDist : price - tpDist;
+    } else {
+      // v6 manual ICT path: fire at live market price, but anchor SL and TP
+      // to the 5m setup's structural distance + R:R so the trade math
+      // matches the 5m FVG/BPR/iFVG that justifies the entry. Direction
+      // comes from the 5m setup itself — keeps us from firing against the
+      // gap we're sizing against when HTF bias and 5m setup disagree.
+      const tfData5 = asset.tfEntries && asset.tfEntries['5m'];
+      const sug5 = (tfData5 && typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData5, '5m') : null;
+      if (!sug5 || !isFinite(sug5.entry) || !isFinite(sug5.sl)) {
+        return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-5m-setup' });
+      }
+      const stopDist = Math.abs(sug5.entry - sug5.sl);
+      if (!isFinite(stopDist) || stopDist <= 0) {
+        return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'invalid-5m-stop' });
+      }
+      dir = sug5.dir === 'bull' ? 'LONG' : 'SHORT';
+      const rr = (isFinite(sug5.rr) && sug5.rr > 0) ? sug5.rr : 1.5;
+      sl = dir === 'LONG' ? price - stopDist : price + stopDist;
+      tp = dir === 'LONG' ? price + stopDist * rr : price - stopDist * rr;
+      setupSource = sug5.source;
+    }
     const entry = price;
-    const sl = dir === 'LONG' ? price - slDist : price + slDist;
-    const tp = dir === 'LONG' ? price + tpDist : price - tpDist;
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
     const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
     const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev };
+    if (setupSource) tag.setupSource = setupSource;
     // Claim the pending-fire slot BEFORE the await (race-safety, see scalp).
     _markPendingFire(symbol);
     let r;
