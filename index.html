@@ -358,6 +358,7 @@
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Sources</span>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCC" checked onchange="_onNewsFilterChange()"> CryptoCompare</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCV" checked onchange="_onNewsFilterChange()"> cryptocurrency.cv</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCG" checked onchange="_onNewsFilterChange()"> CoinGecko</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCD" checked onchange="_onNewsFilterChange()"> CoinDesk</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCT" checked onchange="_onNewsFilterChange()"> Cointelegraph</label>
@@ -753,33 +754,6 @@
   // ═══════════════════════════════════════
   const ASSETS = [
     {
-      symbol: 'US100', platform: 'FP Markets CFD', type: 'FUTURES',
-      entry: 26800, sl: 26950, tp1: 26000, tp2: 25500,
-      grade: 'a', armed: false, price: 26983.00, change24h: 0,
-      bias: 'IN FLUX', dol: 'Weekly close decides', invalidation: 'Daily close < $26,400',
-      remarks: 'Testing weekly bear OB. 3 scenarios active. Weekly close is the key.',
-      watch: '(A) Break > 26,902 → 27,500. (B) Rejection + 4H CHoCH → short 26,000. (C) Close > 27K = BULLISH.',
-      levels: null, checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — outside KZ, await weekly confirmation'
-    },
-    {
-      symbol: 'GOLD', platform: 'MEXC FUTURES', type: 'FUTURES',
-      entry: 4708.62, sl: 4700, tp1: 4750, tp2: 4800,
-      grade: 'b', armed: false, price: 4708.62, change24h: 0,
-      bias: 'BEARISH', dol: '$4,400', invalidation: 'Monthly close > $5,000',
-      remarks: 'Geopolitical-driven pullback on risk appetite. Bear OB zone.',
-      watch: 'FVG below $4,680 → long scalp to $4,750. Or break confirms short.',
-      levels: null, checks: [1,1,0,1,1,0,1,1,1,1], reason: 'B — PO3 and FVG unclear'
-    },
-    {
-      symbol: 'SILVER', platform: 'MEXC FUTURES', type: 'FUTURES',
-      entry: 75.65, sl: 75.50, tp1: 75.90, tp2: 76.20,
-      grade: 'b', armed: false, price: 75.655, change24h: 0,
-      bias: 'BEARISH', dol: '$68–70', invalidation: 'Monthly close > $90',
-      remarks: 'Retracing after strong move. Fib 0.5–0.618 zone.',
-      watch: '$0.618 Fib ($74.69) SSL sweep + CHoCH → long. Or continuation short.',
-      levels: null, checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — backup liquidity, tier B only'
-    },
-    {
       symbol: 'BTC', platform: 'Binance SPOT', type: 'SPOT',
       entry: 74000, sl: 73500, tp1: 76000, tp2: 78000,
       grade: 'a', armed: false, price: 77670.39, change24h: 0,
@@ -841,6 +815,33 @@
       remarks: '4-week consolidation $0.62–0.70. 20w HTF bearish.',
       watch: '$0.70–0.72 BSL sweep + 1m CHoCH → short $0.62.',
       levels: null, checks: [1,0,1,1,1,0,1,1,1,1], reason: 'B — HTF alignment partial, consolidation'
+    },
+    {
+      symbol: 'US100', platform: 'FP Markets CFD', type: 'FUTURES',
+      entry: 26800, sl: 26950, tp1: 26000, tp2: 25500,
+      grade: 'a', armed: false, price: 26983.00, change24h: 0,
+      bias: 'IN FLUX', dol: 'Weekly close decides', invalidation: 'Daily close < $26,400',
+      remarks: 'Testing weekly bear OB. 3 scenarios active. Weekly close is the key.',
+      watch: '(A) Break > 26,902 → 27,500. (B) Rejection + 4H CHoCH → short 26,000. (C) Close > 27K = BULLISH.',
+      levels: null, checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — outside KZ, await weekly confirmation'
+    },
+    {
+      symbol: 'GOLD', platform: 'MEXC FUTURES', type: 'FUTURES',
+      entry: 4708.62, sl: 4700, tp1: 4750, tp2: 4800,
+      grade: 'b', armed: false, price: 4708.62, change24h: 0,
+      bias: 'BEARISH', dol: '$4,400', invalidation: 'Monthly close > $5,000',
+      remarks: 'Geopolitical-driven pullback on risk appetite. Bear OB zone.',
+      watch: 'FVG below $4,680 → long scalp to $4,750. Or break confirms short.',
+      levels: null, checks: [1,1,0,1,1,0,1,1,1,1], reason: 'B — PO3 and FVG unclear'
+    },
+    {
+      symbol: 'SILVER', platform: 'MEXC FUTURES', type: 'FUTURES',
+      entry: 75.65, sl: 75.50, tp1: 75.90, tp2: 76.20,
+      grade: 'b', armed: false, price: 75.655, change24h: 0,
+      bias: 'BEARISH', dol: '$68–70', invalidation: 'Monthly close > $90',
+      remarks: 'Retracing after strong move. Fib 0.5–0.618 zone.',
+      watch: '$0.618 Fib ($74.69) SSL sweep + CHoCH → long. Or continuation short.',
+      levels: null, checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — backup liquidity, tier B only'
     }
   ];
 
@@ -2749,14 +2750,14 @@
     const spec = _leverageSpec(symbol);
     try {
       const v = parseInt(localStorage.getItem(`ict_mexc_${(symbol||'').toLowerCase()}_leverage`) || String(spec.def), 10);
-      if (v >= 10 && v <= spec.max) return v;
+      if (v >= 1 && v <= spec.max) return v;
     } catch (e) {}
     return spec.def;
   }
   function setAssetLeverage(symbol, v) {
     const spec = _leverageSpec(symbol);
     const parsed = parseInt(v, 10);
-    const n = isFinite(parsed) ? Math.max(10, Math.min(spec.max, parsed)) : spec.def;
+    const n = isFinite(parsed) ? Math.max(1, Math.min(spec.max, parsed)) : spec.def;
     try { localStorage.setItem(`ict_mexc_${(symbol||'').toLowerCase()}_leverage`, String(n)); } catch (e) {}
     return n;
   }
@@ -2779,7 +2780,14 @@
   function getScalpTf(symbol) {
     try {
       const stored = localStorage.getItem('ict_scalp_tf_' + String(symbol || ''));
-      if (stored == null || stored === '') return 'htf';
+      // Auto-default for high-lev assets. At ≥ 100× the HTF path can't
+      // survive (its SLs are wider than the liquidation buffer), so we
+      // default to a fast scalp TF. 5m beat 1m in live testing — the
+      // tighter 1m setups kept failing on noise. User can override by
+      // tapping the Scalp buttons in the modal.
+      if (stored == null || stored === '') {
+        return _isHighLeverage(symbol) ? '5m' : 'htf';
+      }
       return SCALP_TF_VALID.has(stored) ? stored : 'htf';
     } catch (e) { return 'htf'; }
   }
@@ -2790,16 +2798,39 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────
-  // Fast-refresh path for auto-exec eligible assets.
+  // High-leverage survival mode (≥ 100×).
+  //
+  // The problem: ICT-structural SLs (just past the FVG body, OB, sweep, etc.)
+  // are typically 0.3–2% wide on SOL. At 200× leverage, the liquidation
+  // distance is ~0.5% (initial margin minus maintenance). So a structural SL
+  // is *physically* outside the liquidation buffer — the position blows up
+  // before any signal logic can react. The user has confirmed they want to
+  // keep 200× isolated, balance $1.20, "figure out a method".
+  //
+  // The method: when leverage ≥ LEVERAGE_HIGH_THRESHOLD, the SL/TP become
+  // mechanical (purely leverage-derived), not structural:
+  //   SL = (100 / leverage) × 0.7   →  inside 70% of liquidation buffer
+  //                                    (30% room for slippage + maintenance)
+  //   TP = SL                       →  1:1 R:R, fast realization
+  // The entry stays at the per-TF FVG mid (still a real ICT signal — we're
+  // only overriding the protective levels, not the trigger).
+  //
+  // Trade is now a leverage scalp: get in on the FVG retest, take a small
+  // win quickly, accept that the SL isn't structural. At 200× the math
+  // doesn't allow anything else.
+  // ─────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────
+  // Fast-refresh path for high-leverage assets.
   //
   // The full autoAnalyzeAsset pulls 6 TFs per asset on a 30s cadence — fine
-  // for HTF analysis but too slow when scalp 1m is firing: by the time the
-  // auto-fire reads asset.tfEntries['1m'], the FVG mid may have shifted
-  // enough to put us on the wrong side of the trade.
+  // for HTF analysis but too slow when scalp 1m is firing at 200×: by the
+  // time the auto-fire reads asset.tfEntries['1m'], the FVG mid may have
+  // shifted enough to put us on the wrong side of the trade.
   //
   // _fastRefreshAssetEntry pulls *only* the 1m kline (one HTTP round-trip
   // per call) and rewrites asset.tfEntries['1m'] in place. _fastRefreshTick
-  // calls it every 2s for futures assets.
+  // calls it every 5s for high-lev futures assets. Other assets keep the
+  // 30s cadence to avoid Binance rate-limiting.
   //
   // Gated on _liveTradingEnabled — no point thrashing the API when nothing
   // can fire anyway.
@@ -2842,13 +2873,29 @@
   }
 
   // MEXC contract fees (standard tier). Maker = limit order resting on the
-  // book; taker = market or stop-triggered fill. Round-trip = one maker +
-  // one taker = 0.08% of notional. Used to compute fee burden as a % of
-  // margin for the QUICK_TAKE TP target.
+  // book; taker = market or stop-triggered fill. Our flow: entry is a limit
+  // (maker), TP/SL fire via stop conditions which execute as market orders
+  // (taker). Round-trip = one maker + one taker = 0.08% of notional.
+  //
+  // At leverage L, fees as % of MARGIN = 0.08% × L. That scales LINEARLY:
+  //   100× → 8% margin in fees
+  //   200× → 16% margin in fees
+  //
+  // The old QUICK_TAKE_MARGIN_PCT=7 was a GROSS target — silently below the
+  // 200× fee floor, meaning every "winning" TP hit was actually a -9% margin
+  // net loss. Now QUICK_TAKE_NET_MARGIN_PCT is the NET target after fees;
+  // _highLevLevels grosses it up to the actual TP price so wins really land
+  // at +N% margin net.
   const MEXC_MAKER_FEE_PCT = 0.02;
   const MEXC_TAKER_FEE_PCT = 0.06;
   function _roundTripFeePctMargin(lev) {
     return (MEXC_MAKER_FEE_PCT + MEXC_TAKER_FEE_PCT) * Number(lev);
+  }
+
+  const LEVERAGE_HIGH_THRESHOLD = 100;
+
+  function _isHighLeverage(symbol) {
+    return getAssetLeverage(symbol) >= LEVERAGE_HIGH_THRESHOLD;
   }
 
   // 90d-OOS research closed every ICT auto-scalp config on >100 fills across
@@ -2859,12 +2906,47 @@
   function setScalpAutoFire(on) { _scalpAutoFireEnabled = !!on; return _scalpAutoFireEnabled; }
   function getScalpAutoFire() { return _scalpAutoFireEnabled; }
 
-  // Quick-take target: NET % of margin after round-trip fees. Used as the
-  // fixed TP for low-lev fires.
+  // Override SL/TP to mechanical leverage-fit levels. Returns a new sug
+  // object (does not mutate input). When leverage < threshold, returns the
+  // input unchanged — no behaviour change for SILVER's normal 3× path.
+  //
+  // Quick-take target is NET of round-trip fees. Gross TP price has fees
+  // added back so the actual fill yields the configured net %.
+  //   200× + 11% net + 16% fees = 27% gross margin = 0.135% price
+  //   100× + 11% net + 8%  fees = 19% gross margin = 0.19%  price
+  // High-lev path no longer uses this constant for the actual TP — it
+  // ships a far-out ceiling and trail-manages the exit (see
+  // TRAIL_ARM_NET_MARGIN_PCT). This value is now: (a) the diagnostic
+  // "would-be" target shown in the UI, and (b) the fixed TP for the
+  // low-lev path. User-driven choice: faster turnover, more trades.
   const QUICK_TAKE_NET_MARGIN_PCT = 11;
   // Legacy alias preserved so any external code reading the constant still
-  // works; semantically it means the NET target.
+  // works; semantically it now means the NET target.
   const QUICK_TAKE_MARGIN_PCT = QUICK_TAKE_NET_MARGIN_PCT;
+  function _highLevLevels(asset, sug) {
+    if (!asset || !sug) return sug;
+    const lev = getAssetLeverage(asset.symbol);
+    if (lev < LEVERAGE_HIGH_THRESHOLD) return sug;
+    const slPct = (100 / lev) * 0.7;
+    // Fixed gross TP retained for diagnostics/legacy paths only — high-lev
+    // orders are now trail-managed (no takeProfitPrice on the MEXC body).
+    // _trailingTakeProfit arms at TRAIL_ARM_NET_MARGIN_PCT and exits on
+    // pullback from peak. See its docs for the why.
+    const grossTpMarginPct = QUICK_TAKE_NET_MARGIN_PCT + _roundTripFeePctMargin(lev);
+    const tpPct = grossTpMarginPct / lev;
+    const slDist = sug.entry * (slPct / 100);
+    const tpDist = sug.entry * (tpPct / 100);
+    const sl = sug.dir === 'bull' ? sug.entry - slDist : sug.entry + slDist;
+    const tp = sug.dir === 'bull' ? sug.entry + tpDist : sug.entry - tpDist;
+    const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+    // Visible ceiling TP — far out, so the trail almost always exits the
+    // position before this fires. See TRAIL_CEILING_NET_MARGIN_PCT docs.
+    const ceilingGrossMarginPct = TRAIL_CEILING_NET_MARGIN_PCT + _roundTripFeePctMargin(lev);
+    const ceilingPricePct = ceilingGrossMarginPct / lev;
+    const ceilingDist = sug.entry * (ceilingPricePct / 100);
+    const ceiling = sug.dir === 'bull' ? sug.entry + ceilingDist : sug.entry - ceilingDist;
+    return { ...sug, sl: round(sl), tp: round(ceiling), rr: +(ceilingPricePct / slPct).toFixed(3), source: (sug.source || '') + '+highlev', _diagTp: round(tp), _diagTpPct: tpPct };
+  }
 
   // HMAC-SHA256(secret, message) → lowercase hex via SubtleCrypto.
   async function _hmacSha256Hex(secret, message) {
@@ -2906,11 +2988,14 @@
   function computeMexcOrderQty(asset, entry, sl, leverage) {
     try {
       const lev = Number(leverage);
-      // User can pin a fixed margin per trade via
-      // localStorage('ict_target_margin_usdt'). Otherwise sizing falls back
-      // to the account×risk%-based path below.
+      // High-leverage trio defaults to a fixed $0.20 margin per trade so
+      // every fire commits the same chunk regardless of total balance. User
+      // can override the amount via localStorage('ict_target_margin_usdt').
+      // Lower leverage (<100×) keeps the legacy account×risk%-based sizing.
       const targetRaw = parseFloat(localStorage.getItem('ict_target_margin_usdt'));
-      const targetMargin = isFinite(targetRaw) && targetRaw > 0 ? targetRaw : null;
+      const targetMargin = isFinite(targetRaw) && targetRaw > 0
+        ? targetRaw
+        : (isFinite(lev) && lev >= LEVERAGE_HIGH_THRESHOLD ? 0.20 : null);
       if (targetMargin != null && isFinite(lev) && lev > 0 && Number(entry) > 0) {
         const units = (targetMargin * lev) / Number(entry);
         // MEXC SILVER_USDT (and most contract pairs) accept 0.01 lot
@@ -3019,13 +3104,29 @@
     let volRounded = roundTo(Number(qty) / cSize, vScale);
     if (minVol != null && volRounded < minVol) volRounded = minVol;
 
+    // Entry type. High-lev (≥100×) ships POST-ONLY LIMIT orders (type=2)
+    // so we earn the MEXC maker rebate instead of paying the 0.06% taker
+    // fee per side. At 200× that fee delta = 24% of margin round-trip —
+    // decisive (a 0.04% favorable move now nets after fees instead of
+    // bleeding into them). Live trade history confirmed: maker fills
+    // were profitable, taker fills weren't, on the same signal stream.
+    //
+    // Limit price = sug.entry (the FVG mid). For a SHORT the FVG sits
+    // above current price → sell limit rests as ask (maker). For a LONG
+    // the FVG sits below → buy limit rests as bid (maker). If price runs
+    // through the level, MEXC rejects the post-only (no taker fallback)
+    // and the signal is skipped. If it sits unfilled, the TTL below
+    // cancels it so a stale-signal late-fill can't leak in.
+    //
+    // Low-lev path keeps plain LIMIT (type=1, no post-only enforcement).
+    const useMaker = isFinite(Number(leverage)) && Number(leverage) >= LEVERAGE_HIGH_THRESHOLD;
     const body = {
       symbol: mexcSymbol,
       price: roundTo(entry, pScale),
       vol: volRounded,
       leverage: Number(leverage),
       side: mexcSide,
-      type: 1,                   // 1 = plain limit
+      type: useMaker ? 2 : 1,    // 2 = POST_ONLY maker, 1 = plain limit
       openType: 1,               // 1 = isolated margin
       stopLossPrice: roundTo(sl, pScale),
     };
@@ -3118,7 +3219,57 @@
       const error  = msg || (json && json.raw ? String(json.raw).slice(0, 200) : `HTTP ${resp.status}`);
       return { sent: false, status: resp.status, response: json, reason, error };
     }
+    // POST_ONLY maker orders that don't immediately fill should not sit
+    // forever — by the time minutes pass the signal is stale and any fill
+    // is adverse selection. Schedule a best-effort cancel after the TTL.
+    // MEXC silently no-ops the cancel if the order already filled.
+    if (ok && useMaker) {
+      const orderId = json && json.data && (json.data.orderId || json.data.order_id ||
+                                            (typeof json.data === 'string' ? json.data : null));
+      if (orderId) {
+        const t = setTimeout(() => { _cancelMexcOrder(mexcSymbol, orderId).catch(() => {}); }, MAKER_ORDER_TTL_MS);
+        if (t && typeof t.unref === 'function') t.unref();
+      }
+    }
     return { sent: ok, status: resp.status, response: json };
+  }
+
+  // TTL for unfilled POST_ONLY maker entries before we cancel them. Mirrors
+  // MAX_POSITION_HOLD_SEC (180s for the 5m scalp era) — same "if it didn't
+  // work in N seconds the signal is stale" thesis as the position hold-cap.
+  const MAKER_ORDER_TTL_MS = 180000;
+
+  // Best-effort cancel of an unfilled order. Safe to call against filled
+  // orders — MEXC returns a "not cancellable" code which we swallow.
+  async function _cancelMexcOrder(symbol, orderId) {
+    if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
+    const apiKey = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
+    if (!workerUrl) return { sent: false, reason: 'no-worker' };
+    const reqTime = String(Date.now());
+    // MEXC v1 contract cancel takes a JSON array of orderId strings.
+    const paramJson = JSON.stringify([String(orderId)]);
+    let signature;
+    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson); }
+    catch (e) { return { sent: false, reason: 'sign-failed', error: String((e && e.message) || e) }; }
+    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/cancel';
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ApiKey': apiKey,
+          'Request-Time': reqTime,
+          'Signature': signature,
+        },
+        body: paramJson,
+      });
+      return { sent: resp.ok, status: resp.status };
+    } catch (e) {
+      return { sent: false, reason: 'network', error: String((e && e.message) || e) };
+    }
   }
 
   // Read-only sanity check. Hits the signed account-assets endpoint
@@ -3249,6 +3400,10 @@
   // observes the position (or the lock expires).
   function _findBlockingPosition(targetSym) {
     if (targetSym && _isPendingFire(targetSym)) return targetSym;
+    if (targetSym && typeof _isHighLeverage === 'function' && _isHighLeverage(targetSym)) {
+      const own = _openPositions[targetSym];
+      return (own && own.length > 0) ? targetSym : null;
+    }
     for (const sym in _openPositions) {
       if ((_openPositions[sym] || []).length > 0) return sym;
     }
@@ -3504,7 +3659,16 @@
       next[bare].push(p);
     }
     _openPositions = next;
+    // Profit guardian — low-lev positions only (high-lev skip inside).
     try { await _profitGuardian(); } catch (e) {}
+    // Trailing TP — high-lev positions only. Arms at +20% NET margin,
+    // exits on 5% pullback from peak. Lets runners run.
+    try { await _trailingTakeProfit(); } catch (e) {}
+    // Hard time-stop. User's 7-day trade history showed every minute
+    // held past 30s lost money on average; cutting at 30s flips the
+    // week from -$45 to +$26. Force-closes any high-lev position
+    // older than MAX_POSITION_HOLD_SEC regardless of P/L.
+    try { await _holdTimeKill(); } catch (e) {}
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -3540,6 +3704,9 @@
       }
     }
     for (const sym in _openPositions) {
+      // High-lev positions are managed by _trailingTakeProfit (tighter +
+      // moon-aware). Skip them here to avoid duplicate-close races.
+      if (typeof _isHighLeverage === 'function' && _isHighLeverage(sym)) continue;
       const pos = _openPositions[sym][0];
       if (!pos) continue;
       const entry = Number(pos.holdAvgPrice);
@@ -3565,6 +3732,142 @@
         } catch (e) {}
         delete _positionPeakProfit[sym];
       }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Trailing take-profit — high-lev positions only.
+  //
+  // User intent: "TP 20% and keep going with a new trade unless u sure
+  // its going to moon." Fixed +20% TP closes every winner at the same
+  // point; runners that would have made +200% get capped. Trail solves
+  // that by exiting on pullback from peak rather than at a fixed target.
+  //
+  // Rules:
+  //   1. Position opens with NO takeProfitPrice on MEXC (mechanical SL
+  //      still ships normally). Exit is poll-driven from here.
+  //   2. On each 5s position-tick: compute current NET margin %
+  //      (gross price-move × lev − round-trip-fee × lev).
+  //   3. If NET margin ≥ TRAIL_ARM_NET_MARGIN_PCT, mark armed and track
+  //      the peak NET margin seen so far.
+  //   4. Once armed, if NET margin drops by TRAIL_FROM_PEAK_MARGIN_PCT
+  //      from the peak, submit a market close. Position locks in
+  //      (peak − trail) margin, minus a taker fee on exit.
+  //
+  // Tradeoffs vs the legacy fixed +20% TP:
+  //   ✓ Captures runners — no cap on the upside
+  //   ✓ Locks in ~(arm − trail) ≈ +15% on the typical hit-and-reverse
+  //   ✗ Poll-dependent — if the 5s tick misses a fast reversal the
+  //     position retraces unprotected (only SL catches it)
+  //   ✗ Cheap winners now exit ~5% lower in margin terms (1× round
+  //     trip fee worse on noise-driven hits)
+  //
+  // Backtest evidence in tests/backtest-scalp.mjs (config "TRAIL").
+  // ─────────────────────────────────────────────────────────────────────
+  const TRAIL_ARM_NET_MARGIN_PCT      = 11;   // peak NET margin % required to arm
+  const TRAIL_FROM_PEAK_MARGIN_PCT    = 2;    // pull-back from peak that triggers close
+  // Visible TP on the MEXC order body. User spec: "TP shows 25-30% on
+  // MEXC" — MEXC displays GROSS margin (price_move × leverage, no fee
+  // deduction). So ceiling NET 14% + 16% fees at 200× = GROSS 30%, the
+  // upper bound of what MEXC will display at TP. Arm at NET 11% = GROSS
+  // 27%, so any trail-pullback exit lands at GROSS ≥ 25%. At 200× the
+  // ceiling is +0.15% price (entry × 1.0015 long, × 0.9985 short). MEXC
+  // closes the instant this prints. Trail still wick-catches: peak NET
+  // 11% → 2% pullback locks in ~NET 9% = GROSS ~25%.
+  const TRAIL_CEILING_NET_MARGIN_PCT  = 14;
+  const _trailState = {};                // { [sym]: { peakNetMarginPct, armed } }
+  const _trailClosed = {};               // { [sym]: { ts, peakPct, exitPct, sent } }
+
+  async function _trailingTakeProfit() {
+    if (!_liveTradingEnabled) return;
+    // Drop trackers for symbols no longer holding a position.
+    for (const sym of Object.keys(_trailState)) {
+      if (!_openPositions[sym] || !_openPositions[sym].length) {
+        delete _trailState[sym];
+      }
+    }
+    for (const sym in _openPositions) {
+      if (typeof _isHighLeverage !== 'function' || !_isHighLeverage(sym)) continue;
+      const pos = _openPositions[sym][0];
+      if (!pos) continue;
+      const entry  = Number(pos.holdAvgPrice);
+      const vol    = Number(pos.holdVol);
+      const isLong = Number(pos.positionType) === 1;
+      const lev    = (typeof getAssetLeverage === 'function') ? getAssetLeverage(sym) : 200;
+      const asset  = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === sym) : null;
+      const mark   = asset ? Number(asset.price) : NaN;
+      if (!entry || !vol || !isFinite(mark) || mark <= 0 || !isFinite(lev) || lev <= 0) continue;
+      // Peak tracking uses the CURRENT mark only, not bar h/l. Previously
+      // we combined with the last 1m bar's favorable extreme to catch
+      // wicks between 5s polls, but that bar started BEFORE position open
+      // in most cases — so its h/l reflected price action from before we
+      // entered. The trail then computed a phantom peak (favorable extreme
+      // pre-open) and fired a close on the "pullback" from that phantom
+      // to current mark, instantly losing money on a fresh position.
+      // With market entries + 30s hold-cap, positions rarely span a full
+      // 1m bar anyway, so the wick-capture benefit was moot.
+      const feeBurden = (MEXC_MAKER_FEE_PCT + MEXC_TAKER_FEE_PCT) * lev;
+      const pricePct = isLong ? (mark - entry) / entry * 100 : (entry - mark) / entry * 100;
+      const grossMarginPct = pricePct * lev;
+      const netMarginPct = grossMarginPct - feeBurden;
+
+      // Peak tracks the most favorable NET margin SEEN ACROSS POLLS for
+      // this open position. Initialized at the first poll's mark (whatever
+      // it is, even negative — peak only ever rises from there). This way
+      // a position that opens at a slight loss doesn't carry a phantom
+      // pre-open peak.
+      const state = _trailState[sym] || { peakNetMarginPct: netMarginPct, armed: false };
+      if (netMarginPct > state.peakNetMarginPct) state.peakNetMarginPct = netMarginPct;
+      if (state.peakNetMarginPct >= TRAIL_ARM_NET_MARGIN_PCT) state.armed = true;
+      _trailState[sym] = state;
+
+      if (state.armed && (state.peakNetMarginPct - netMarginPct) >= TRAIL_FROM_PEAK_MARGIN_PCT) {
+        try {
+          const r = await closeMexcPosition(sym, vol, isLong ? 1 : 3);
+          _trailClosed[sym] = { ts: Date.now(), peakPct: state.peakNetMarginPct, exitPct: netMarginPct, sent: !!r.sent };
+          try { showToast(`🚀 ${sym} trail-TP: peak +${state.peakNetMarginPct.toFixed(0)}% → exit +${netMarginPct.toFixed(0)}% (margin)`, 'ok'); } catch (e) {}
+        } catch (e) {}
+        delete _trailState[sym];
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Hold-time kill switch — user's 7-day MEXC export shows:
+  //   0-30s holds:   401 trades, 73% win, +$26.34 NET PnL  ✅
+  //   31s-5min:      191 trades, 53% win, -$51.44 NET PnL  ❌
+  //   5-30min:        37 trades, 36% win, -$20.28 NET PnL  ❌❌
+  // Every minute held past 30s loses money on average. Force-close ANY
+  // high-lev position (bot OR manual) older than MAX_POSITION_HOLD_SEC.
+  // Trail still runs first; this is a backstop for trades that trail
+  // doesn't catch (drift sideways without retracing from peak).
+  // ─────────────────────────────────────────────────────────────────────
+  // Bumped 30s → 180s with the move from 1m to 5m scalping. A 5m candle is
+  // 5 min, so killing at 30s cuts the setup off before it can resolve. Keeps
+  // a hard ceiling so a forgotten signal doesn't run to liquidation.
+  const MAX_POSITION_HOLD_SEC = 180;
+  const _holdKillClosed = {};  // diagnostic: { [sym]: { ts, ageSec, sent } }
+
+  async function _holdTimeKill() {
+    if (!_liveTradingEnabled) return;
+    for (const sym in _openPositions) {
+      if (typeof _isHighLeverage !== 'function' || !_isHighLeverage(sym)) continue;
+      const pos = _openPositions[sym][0];
+      if (!pos) continue;
+      const openMs = Number(pos.createTime || pos.openTime || pos.updateTime || 0);
+      if (!openMs) continue;
+      const ageSec = (Date.now() - openMs) / 1000;
+      if (ageSec < MAX_POSITION_HOLD_SEC) continue;
+      const vol = Number(pos.holdVol);
+      const isLong = Number(pos.positionType) === 1;
+      if (!vol) continue;
+      let r;
+      try { r = await closeMexcPosition(sym, vol, isLong ? 1 : 3); }
+      catch (e) { r = { sent: false, error: String((e && e.message) || e) }; }
+      _holdKillClosed[sym] = { ts: Date.now(), ageSec, sent: !!r.sent };
+      try { showToast(`⏱ ${sym} 30s hold-cap: closed at ${ageSec.toFixed(0)}s`, 'info'); } catch (e) {}
+      // Clear trail state so a re-open re-arms fresh.
+      delete _trailState[sym];
     }
   }
 
@@ -3694,6 +3997,15 @@
   // skip-shape { fired:false, reason } when any gate fails.
   // ─────────────────────────────────────────────────────────────────────
   const SCALP_PROXIMITY_PCT = 0.15;  // same threshold as the HTF "armed" tier
+  // High-lev mode runs with a mechanical SL of (100/lev)×0.7% from entry
+  // (e.g. 0.35% at 200×). Filling 0.30% off the FVG mid is still inside that
+  // SL band, so the wider proximity catches fast-moving 1m setups that the
+  // tight 0.15% threshold blows past. Trade-off: entry is up to 0.30% off
+  // the structural mid, but the SL absorbs it.
+  const SCALP_PROXIMITY_PCT_HIGH_LEV = 0.50;
+  function _scalpProximityPct(symbol) {
+    return _isHighLeverage(symbol) ? SCALP_PROXIMITY_PCT_HIGH_LEV : SCALP_PROXIMITY_PCT;
+  }
 
   // Per-asset diagnostic of the most recent scalpMonitorTick — what the
   // function returned, how far price was from the suggested entry, and
@@ -3728,16 +4040,27 @@
 
     const tfData = asset.tfEntries && asset.tfEntries[tf];
     if (!tfData || tfData.error)     return _recordScalpDiag(sym, { fired: false, reason: 'no-tf-data', tf });
-    const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, tf) : null;
-    if (!sug)                        return _recordScalpDiag(sym, { fired: false, reason: 'no-tf-setup', tf });
+    const rawSug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, tf) : null;
+    if (!rawSug)                     return _recordScalpDiag(sym, { fired: false, reason: 'no-tf-setup', tf });
+    // High-leverage survival mode: rewrite SL/TP to mechanical levels that
+    // fit inside the liquidation buffer. Pass-through when leverage < threshold.
+    const sug = _highLevLevels(asset, rawSug);
 
-    const htfDir = _normalizeBiasDir(asset.bias);
-    if (!htfDir)                     return _recordScalpDiag(sym, { fired: false, reason: 'no-htf-bias', sugDir: sug.dir });
-    if (sug.dir !== htfDir)          return _recordScalpDiag(sym, { fired: false, reason: 'htf-disagrees', sugDir: sug.dir, htfDir });
+    // HTF agreement is enforced only for non-high-lev futures lanes.
+    // Trio (200×) is the ultra-trade scalp loop — the per-TF FVG signal
+    // alone fires, accepting counter-bias scalps for more total trades.
+    // The mechanical SL/TP at 0.35%/0.70% absorbs the per-trade asymmetry.
+    if (!_isHighLeverage(sym)) {
+      const htfDir = _normalizeBiasDir(asset.bias);
+      if (!htfDir)                   return _recordScalpDiag(sym, { fired: false, reason: 'no-htf-bias', sugDir: sug.dir });
+      if (sug.dir !== htfDir)        return _recordScalpDiag(sym, { fired: false, reason: 'htf-disagrees', sugDir: sug.dir, htfDir });
+    }
 
+    // Proximity check — only fire when live price is at the per-TF entry.
+    // Wider tolerance for high-lev mode because the mechanical SL absorbs slip.
     if (!asset.price || !sug.entry)  return _recordScalpDiag(sym, { fired: false, reason: 'no-price' });
     const distPct = Math.abs((asset.price - sug.entry) / sug.entry) * 100;
-    const proximityPct = SCALP_PROXIMITY_PCT;
+    const proximityPct = _scalpProximityPct(sym);
     if (distPct > proximityPct)      return _recordScalpDiag(sym, { fired: false, reason: 'too-far', distPct, proximityPct, sugEntry: sug.entry, price: asset.price });
 
     // Global one-at-a-time gate — focus on one trade. If ANY asset is in a
@@ -3779,38 +4102,68 @@
   }
 
   // Manual force-fire — the explicit "I want it to fire NOW" button.
-  // Skips every gate (proximity, HTF agreement) except the master
-  // switch and contract eligibility. Builds the entry/SL/TP fresh from the
-  // CURRENT live price (not the stale FVG mid) so the fill is realistic:
-  //   bullish bias → LONG, SL = current × (1 - 0.4%), TP same distance other way
-  //   bearish bias → SHORT, flipped
+  // Skips proximity + HTF-agreement gates, keeps master / contract /
+  // in-position / no-price gates.
+  //
+  // Entry is always the CURRENT live price (instant fill, no stale FVG mid).
+  // SL/TP shape depends on leverage:
+  //   - Low-lev (v6 manual ICT path, ≤25×): anchor SL distance + TP R:R to
+  //     the 5m setup from _suggestedEntryForTf. Direction also comes from
+  //     the 5m setup. If no 5m setup is available → no-5m-setup, no fire.
+  //   - High-lev (≥100×, legacy / unreachable in v6 prod): mechanical
+  //     liquidation-buffer SL, ceiling TP. Direction from asset.bias.
   //
   // Always writes a _lastFireResult entry so the modal panel shows what
-  // happened. The auto-exec doesn't immediately
-  // double-fire on top of this manual one.
+  // happened. The auto-exec doesn't immediately double-fire on top of this
+  // manual one.
   async function forceFireAsset(symbol, opts) {
     opts = opts || {};
     const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
     if (!asset)                       return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-asset' });
     if (!_liveTradingEnabled)         return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'master-off' });
     if (!_mexcContractSymbol(asset))  return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'unsupported-symbol' });
-    // One-at-a-time policy: force-fire respects it too, otherwise the gate leaks.
+    // One-at-a-time policy: force-fire respects it too, otherwise the gate
+    // leaks. High-lev only blocks on the same symbol.
     const blockingSym = _findBlockingPosition(symbol);
     if (blockingSym) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'in-position', blockingSym });
     const price = Number(asset.price);
     if (!isFinite(price) || price <= 0) return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-price' });
-    const dir = (asset.bias || '').toUpperCase().includes('BULL') ? 'LONG' : 'SHORT';
     const lev = getAssetLeverage(symbol);
-    const slPct = 0.004;
-    const slDist = price * slPct;
-    const tpPct = 0.004;
-    const tpDist = price * tpPct;
+    let dir, sl, tp, setupSource;
+    if (_isHighLeverage(symbol)) {
+      // Legacy high-lev path: mechanical liquidation-buffer SL, ceiling TP.
+      // Unreachable in v6 production (leverage caps at 25× < threshold 100×).
+      dir = (asset.bias || '').toUpperCase().includes('BULL') ? 'LONG' : 'SHORT';
+      const slDist = price * ((100 / lev) * 0.7 / 100);
+      const tpDist = price * (((TRAIL_CEILING_NET_MARGIN_PCT + _roundTripFeePctMargin(lev)) / lev) / 100);
+      sl = dir === 'LONG' ? price - slDist : price + slDist;
+      tp = dir === 'LONG' ? price + tpDist : price - tpDist;
+    } else {
+      // v6 manual ICT path: fire at live market price, but anchor SL and TP
+      // to the 5m setup's structural distance + R:R so the trade math
+      // matches the 5m FVG/BPR/iFVG that justifies the entry. Direction
+      // comes from the 5m setup itself — keeps us from firing against the
+      // gap we're sizing against when HTF bias and 5m setup disagree.
+      const tfData5 = asset.tfEntries && asset.tfEntries['5m'];
+      const sug5 = (tfData5 && typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData5, '5m') : null;
+      if (!sug5 || !isFinite(sug5.entry) || !isFinite(sug5.sl)) {
+        return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'no-5m-setup' });
+      }
+      const stopDist = Math.abs(sug5.entry - sug5.sl);
+      if (!isFinite(stopDist) || stopDist <= 0) {
+        return _recordFireResult(symbol, { source: 'force', sent: false, reason: 'invalid-5m-stop' });
+      }
+      dir = sug5.dir === 'bull' ? 'LONG' : 'SHORT';
+      const rr = (isFinite(sug5.rr) && sug5.rr > 0) ? sug5.rr : 1.5;
+      sl = dir === 'LONG' ? price - stopDist : price + stopDist;
+      tp = dir === 'LONG' ? price + stopDist * rr : price - stopDist * rr;
+      setupSource = sug5.source;
+    }
     const entry = price;
-    const sl = dir === 'LONG' ? price - slDist : price + slDist;
-    const tp = dir === 'LONG' ? price + tpDist : price - tpDist;
     const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
     const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
     const tag = { source: 'force', side: dir, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev };
+    if (setupSource) tag.setupSource = setupSource;
     // Claim the pending-fire slot BEFORE the await (race-safety, see scalp).
     _markPendingFire(symbol);
     let r;
@@ -3907,14 +4260,21 @@
     let entry = null;
     if (SCALP_TF_FAST.has(scalp)) {
       const tfData = asset.tfEntries && asset.tfEntries[scalp];
-      const sug = (tfData && typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, scalp) : null;
+      const rawSug = (tfData && typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, scalp) : null;
+      const sug = rawSug ? _highLevLevels(asset, rawSug) : null;
       if (sug && sug.entry) entry = sug.entry;
     } else {
+      // HTF auto-exec is gated off at high-lev (mechanical SL too tight),
+      // so reflect that here.
+      if (_isHighLeverage(asset.symbol)) {
+        return { state: 'blocked', color: 'var(--bear)', label: '⚠ HTF + HIGH-LEV',
+                 detail: `At ${getAssetLeverage(asset.symbol)}×, HTF SLs are too wide. Switch to a Scalp TF in the modal.` };
+      }
       entry = asset.entry;
     }
     if (!entry) return { state: 'blocked', color: 'var(--text-mute)', label: '⟳ NO SETUP', detail: `Waiting for a ${scalp} FVG to form.` };
     const distPct = Math.abs((asset.price - entry) / entry) * 100;
-    const gate = SCALP_PROXIMITY_PCT;
+    const gate = _scalpProximityPct ? _scalpProximityPct(asset.symbol) : 0.15;
     if (distPct <= gate) {
       return { state: 'ready', color: 'var(--bull)',
                label: '🟢 READY · FIRE NEXT TICK',
@@ -3970,18 +4330,29 @@
   // Render one auto-exec asset's row inside the Live Trading modal. The
   // user said "I don't want to manually add one by one" — so this function
   // is called in a loop over every tradeMode='futures' asset with a MEXC
-  // contract. Driven by the asset's symbol, current leverage, and scalp tf.
+  // contract. Everything (header colour, survival-mode hint, dropdown
+  // options) is driven by the asset's symbol + current leverage + scalp tf.
   function _renderAutoExecAssetBlock(asset) {
     if (!asset || !_mexcContractSymbol(asset)) return '';
     const sym = asset.symbol;
     const spec = _leverageSpec(sym);
     const lev  = getAssetLeverage(sym);
     const scalp = getScalpTf(sym);
-    const opts = [10,15,20,25].filter(n => n <= spec.max);
+    const hiLev = lev >= LEVERAGE_HIGH_THRESHOLD;
+    // Dropdown options — full leverage ladder when the asset's cap allows
+    // it, trimmed to the cap when it doesn't.
+    const opts = [1,2,3,5,7,10,15,20,25].filter(n => n <= spec.max);
+    const headerColor = hiLev ? 'var(--bear)' : 'var(--gold)';
+    const headerPrefix = hiLev ? '⚠ ' : '';
+    const headerSuffix = hiLev ? ' (YOLO TEST)' : '';
+    const liqLine = hiLev ? ` · liquidation ≈ ${(100/lev).toFixed(2)}% from entry` : '';
+    const survivalHint = hiLev
+      ? `<br><br><span style="color:var(--bear);">⚠ At ${lev}× on ${sym}, a ${(100/lev).toFixed(2)}% adverse move = full liquidation.</span> <span style="color:var(--gold);">🛡 High-Leverage Survival Mode active.</span> The structural ICT SL is wider than the liquidation buffer at this leverage, so the auto-fire overrides SL/TP to mechanical levels: SL ≈ ${((100/lev)*0.7).toFixed(3)}% from entry, TP same distance (1:1 R:R). The entry stays at the 5m FVG mid — only the protective levels are mechanical. HTF auto-fire is skipped (SLs too wide); only Scalp 5m fires at this leverage. <strong>5m kline fast-refresh every 5s</strong> so the entry zone stays current right up to fire-time.`
+      : '';
     return `
       <div style="margin-top:6px;padding-top:14px;border-top:1px dashed var(--border);">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <div style="font-size:10px;color:var(--gold);font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${sym} leverage</div>
+          <div style="font-size:10px;color:${headerColor};font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerPrefix}${sym} leverage${headerSuffix}</div>
           <div style="display:flex;gap:6px;">
             <button onclick="_onClickForceFire('${sym}')" title="Force-fire ${sym} now — bypass proximity, use live price with mechanical SL/TP" style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);padding:2px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Force Fire</button>
             <button onclick="setTradeMode('${sym}','spot');openLiveTradingModal();" title="Remove ${sym} from auto-exec (back to spot mode)" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:2px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">× Remove</button>
@@ -3991,17 +4362,18 @@
           <select onchange="setAssetLeverage('${sym}', this.value);openLiveTradingModal();" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
             ${opts.map(n => `<option value="${n}" ${n===lev?'selected':''}>${n}×</option>`).join('')}
           </select>
-          <span style="font-size:11px;color:var(--text-mute);">Used when ${sym} auto-fires</span>
+          <span style="font-size:11px;color:var(--text-mute);">Used when ${sym} auto-fires${liqLine}</span>
         </div>
         <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${sym} auto-exec timeframe</div>
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
           <button onclick="setScalpTf('${sym}','htf');openLiveTradingModal();" style="background:${scalp==='htf'?'rgba(201,169,97,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${scalp==='htf'?'var(--gold)':'var(--border)'};color:${scalp==='htf'?'var(--gold)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">HTF (1H/4H)</button>
-          <button onclick="setScalpTf('${sym}','1m');openLiveTradingModal();" style="background:${scalp==='1m'?'rgba(242,179,61,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${scalp==='1m'?'var(--liq)':'var(--border)'};color:${scalp==='1m'?'var(--liq)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Scalp 1m</button>
+          <button onclick="setScalpTf('${sym}','5m');openLiveTradingModal();" style="background:${scalp==='5m'?'rgba(242,179,61,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${scalp==='5m'?'var(--liq)':'var(--border)'};color:${scalp==='5m'?'var(--liq)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Scalp 5m</button>
         </div>
         <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-bottom:14px;">
-          ${scalp==='1m'
-            ? '⚡ <strong>Scalp 1m active.</strong> Fires on the per-TF 1m FVG/OB setup, only when 1m direction matches HTF bias.'
+          ${SCALP_TF_FAST.has(scalp)
+            ? `⚡ <strong>Scalp ${scalp} active.</strong> Fires on the per-TF ${scalp} FVG/OB setup, only when ${scalp} direction matches HTF bias.`
             : 'HTF mode — fires on the main asset entry/SL/TP, killzone-timed.'}
+          ${survivalHint}
         </div>
       </div>`;
   }
@@ -4321,12 +4693,13 @@
         ${_renderScalpDiagHTML()}
 
         <div style="margin-top:12px;padding:10px;background:var(--bg-elevated);border:1px dashed var(--border);border-radius:8px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.6;">
-          ℹ Auto-execution is wired for <strong style="color:var(--text);">SILVER + SOL</strong>.
-          HTF mode fires on the main entry; Scalp 1m fires on the per-TF
-          1m FVG/OB setup. Both require 1m or HTF direction to match the
-          asset's HTF bias so a flickering price can't fire repeated
-          orders. Leverage is capped at 10–25×. Other assets stay manual
-          (use 🔗 Open on MEXC).
+          ℹ Auto-fire is <strong style="color:var(--text);">globally disabled</strong> per the post-90d-OOS
+          verdict (no positive-EV configs found on crypto ICT scalp). Signals,
+          FIRE STATUS badges, and the 🔥 Force Fire button stay live for
+          manual entries. HTF mode fires on the main entry; Scalp 5m fires on
+          the per-TF 5m FVG/OB setup (both require direction to match the
+          asset's HTF bias). Leverage is capped at 25× universally; default
+          per asset is 10×. Use 🔗 Open on MEXC for everything else.
         </div>
         ` : ''}
     `;
@@ -4657,8 +5030,12 @@
           // truthy. Skips:
           //   - master switch off (also enforced inside placeMexcFutures)
           //   - scalp mode is on for this asset (scalp monitor owns it)
+          //   - asset is at high leverage (HTF SLs are always wider than the
+          //     liquidation buffer at ≥ 100× — HTF can't survive, only the
+          //     scalp path with mechanical SL can).
           if (_mexcContractSymbol(asset) && _liveTradingEnabled
               && getScalpTf(asset.symbol) === 'htf'
+              && !_isHighLeverage(asset.symbol)
               && !_isPendingFire(asset.symbol)) {
             const tp = asset.tp || asset.tp1 || 0;
             const lev = getAssetLeverage(asset.symbol);
@@ -5283,6 +5660,24 @@
         body: (raw.description || '').slice(0, 220)
       };
     }
+    if (source === 'cccv') {
+      // cryptocurrency.cv articles. Confirmed fields: title, source, url.
+      // Defensive on the rest — schema is undocumented beyond the quickstart.
+      const t = raw.published_at || raw.published || raw.date || raw.pub_date || raw.time || 0;
+      const tsec = typeof t === 'number'
+        ? (t > 1e12 ? Math.floor(t / 1000) : t)
+        : Math.floor(new Date(t).getTime() / 1000) || 0;
+      return {
+        id: 'cv-' + (raw.id || raw.guid || raw.url || raw.link || raw.title),
+        title: String(raw.title || raw.headline || '').replace(/<[^>]+>/g, ''),
+        url: raw.url || raw.link || raw.canonical_url || '#',
+        source: 'cccv',
+        sourceLabel: (raw.source && (raw.source.name || raw.source)) || raw.publisher || raw.author?.name || 'cryptocurrency.cv',
+        published: tsec || 0,
+        categories: (Array.isArray(raw.categories) ? raw.categories : (raw.tags || [])).map(c => String(c).toUpperCase()),
+        body: String(raw.summary || raw.description || raw.body || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 220)
+      };
+    }
     if (source === 'rss') {
       // rss2json item: { title, link, pubDate, description, content, categories, guid }
       const t = raw.pubDate ? Math.floor(new Date(raw.pubDate).getTime()/1000) : 0;
@@ -5544,6 +5939,32 @@
     } catch(e) { console.warn('CryptoCompare news fetch failed:', e.message); return []; }
   }
 
+  // cryptocurrency.cv — free crypto news aggregator, no key required.
+  // Endpoint: GET /api/news?limit=N → { articles: [...] }
+  // Try direct first; fall through to public CORS proxies if the response
+  // is missing CORS headers (same pattern as MEXC_PROXIES).
+  const CCCV_NEWS_URL = 'https://cryptocurrency.cv/api/news?limit=30';
+  const CCCV_PROXIES = [
+    (u) => u,
+    (u) => 'https://corsproxy.io/?' + encodeURIComponent(u),
+    (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+  ];
+  async function _fetchCryptocurrencyCV() {
+    for (const wrap of CCCV_PROXIES) {
+      try {
+        const r = await fetch(wrap(CCCV_NEWS_URL), { cache: 'no-store', signal: _t(10000) });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const arr = Array.isArray(j) ? j
+                  : (j.articles || j.items || j.data || j.news || j.results || []);
+        if (!Array.isArray(arr) || !arr.length) continue;
+        return arr.map(n => _normalizeNewsItem(n, 'cccv')).filter(Boolean);
+      } catch (e) { /* try next transport */ }
+    }
+    console.warn('cryptocurrency.cv news fetch failed (all proxies)');
+    return [];
+  }
+
   async function _fetchCoinGeckoGlobal() {
     // CoinGecko's public /api/v3/news endpoint was deprecated and returns 404.
     // We keep the source toggle in the UI for backwards-compat with saved
@@ -5560,18 +5981,19 @@
     const rssTasks = RSS_FEEDS.map(f => _fetchRSSFeed(f));
     // X-Live (Nitter via ScrapeBadger) is SLOW and unreliable — fetch it
     // separately so the main news refresh isn't blocked by it.
-    const [cc, cg, social, ...rssResults] = await Promise.all([
+    const [cc, cv, cg, social, ...rssResults] = await Promise.all([
       _fetchCryptoCompareGlobal(),
+      _fetchCryptocurrencyCV(),
       _fetchCoinGeckoGlobal(),
       _fetchLunarCrushSocial(),
       ...rssTasks
     ]);
     const allRss = rssResults.flat();
-    console.log('[news] sources:', { cryptocompare: cc.length, coingecko: cg.length, lunarcrush: social.length, rssTotal: allRss.length, rssBySource: RSS_FEEDS.reduce((o, f, i) => { o[f.key] = (rssResults[i]||[]).length; return o; }, {}) });
+    console.log('[news] sources:', { cryptocompare: cc.length, cccv: cv.length, coingecko: cg.length, lunarcrush: social.length, rssTotal: allRss.length, rssBySource: RSS_FEEDS.reduce((o, f, i) => { o[f.key] = (rssResults[i]||[]).length; return o; }, {}) });
     // Dedupe by URL (preserve any already-loaded X-live items in the cache)
     const byUrl = new Map();
     const existingXlive = _newsAggregateItems.filter(i => i._sourceKey === 'xlive');
-    [...cc, ...cg, ...allRss, ...social, ...existingXlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
+    [...cc, ...cv, ...cg, ...allRss, ...social, ...existingXlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
     _newsAggregateItems = Array.from(byUrl.values()).sort((a,b) => (b.published||0) - (a.published||0));
     _newsAggregateTs = Date.now();
     if (btn) btn.textContent = '↻ Refresh';
@@ -5615,6 +6037,7 @@
     return {
       sources: {
         cc: document.getElementById('newsSrcCC')?.checked,
+        cv: document.getElementById('newsSrcCV')?.checked,
         cg: document.getElementById('newsSrcCG')?.checked,
         coindesk:      document.getElementById('newsSrcCD')?.checked,
         cointelegraph: document.getElementById('newsSrcCT')?.checked,
@@ -5644,6 +6067,7 @@
     const now = Math.floor(Date.now()/1000);
     return items.filter(it => {
       if (filters.sources.cc === false && it.source === 'cryptocompare') return false;
+      if (filters.sources.cv === false && it.source === 'cccv') return false;
       if (filters.sources.cg === false && it.source === 'coingecko') return false;
       // Distinguish: 𝕏 Pulse (LunarCrush) vs 𝕏 Live (Nitter via ScrapeBadger)
       if (it.source === 'social' && it._sourceKey === 'xlive') {
@@ -5681,7 +6105,7 @@
       const f = JSON.parse(localStorage.getItem('ict_news_filters') || 'null');
       if (!f) return;
       const set = (id, val) => { const el = document.getElementById(id); if (el && typeof val === 'boolean') el.checked = val; else if (el && val != null) el.value = val; };
-      set('newsSrcCC', f.sources?.cc); set('newsSrcCG', f.sources?.cg);
+      set('newsSrcCC', f.sources?.cc); set('newsSrcCV', f.sources?.cv); set('newsSrcCG', f.sources?.cg);
       set('newsSrcCD', f.sources?.coindesk); set('newsSrcCT', f.sources?.cointelegraph);
       set('newsSrcTB', f.sources?.theblock); set('newsSrcBI', f.sources?.beincrypto);
       set('newsSrcUT', f.sources?.utoday); set('newsSrcSOC', f.sources?.social);
@@ -5708,6 +6132,7 @@
     // Source code badge
     let srcCode = 'NEWS';
     if (item.source === 'cryptocompare') srcCode = 'CC';
+    else if (item.source === 'cccv') srcCode = 'CV';
     else if (item.source === 'coingecko') srcCode = 'CG';
     else if (item.source === 'social') srcCode = item._sourceKey === 'xlive' ? '𝕏 @' + (item._xHandle || 'live') : '𝕏';
     else if (item.source === 'rss') {
@@ -5942,40 +6367,38 @@
   }
 
   // ═══════════════════════════════════════════════════════
-  // 📰 NEWS FEED (CoinGecko — free, no auth)
+  // 📰 JOURNAL-TAB NEWS FEED — pulls from cryptocurrency.cv
+  // (CoinGecko's /api/v3/news endpoint was deprecated and now returns 404.)
   // ═══════════════════════════════════════════════════════
   async function fetchNews() {
     const feed = document.getElementById('newsFeed');
     if (!feed) return;
     feed.innerHTML = '<div style="color:var(--text-mute);padding:8px 0;">Fetching latest crypto news…</div>';
-    try {
-      const r = await fetch('https://api.coingecko.com/api/v3/news?per_page=20', {signal: _t(10000)});
-      const d = await r.json();
-      const news = (d.data || d).slice(0, 15);
-      if (!news.length) throw new Error('No news');
-      // Tag which of our assets each article mentions
-      const symbols = ASSETS.map(a => a.symbol.toLowerCase());
-      const keywords = {btc:'Bitcoin',eth:'Ethereum',sol:'Solana',bnb:'BNB',xrp:'XRP',sui:'SUI',astr:'Astar',us100:'Nasdaq',gold:'Gold',silver:'Silver'};
-      feed.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:8px;">` +
-        news.map(item => {
-          const title = item.title || item.name || '';
-          const url = item.url || item.news_url || '#';
-          const src = item.author?.name || item.news_site || 'Crypto News';
-          const time = item.updated_at ? new Date(item.updated_at * 1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Dubai'}) + ' GST' : '';
-          const tagged = Object.entries(keywords).filter(([k,v]) => title.toLowerCase().includes(k) || title.toLowerCase().includes(v.toLowerCase())).map(([k])=>k.toUpperCase());
-          const tagHtml = tagged.length ? tagged.map(t=>`<span style="background:rgba(201,169,97,0.15);color:var(--gold);font-size:10px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;">${t}</span>`).join(' ') : '';
-          return `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
-            <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:6px;line-height:1.5;">${title}</div>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              ${tagHtml}
-              <span style="color:var(--text-mute);font-size:10px;">${src}</span>
-              <span style="color:var(--text-mute);font-size:10px;">${time}</span>
-            </div>
-          </div>`;
-        }).join('') + '</div>';
-    } catch(e) {
-      feed.innerHTML = '<div style="color:var(--text-mute);font-size:12px;">News feed temporarily unavailable. CoinGecko free API may be rate-limited — try again in 60s.</div>';
+    const items = await _fetchCryptocurrencyCV();
+    if (!items.length) {
+      feed.innerHTML = '<div style="color:var(--text-mute);font-size:12px;">News feed temporarily unavailable — try again in 60s.</div>';
+      return;
     }
+    const keywords = {btc:'Bitcoin',eth:'Ethereum',sol:'Solana',bnb:'BNB',xrp:'XRP',sui:'SUI',astr:'Astar',us100:'Nasdaq',gold:'Gold',silver:'Silver'};
+    feed.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:8px;">` +
+      items.slice(0, 15).map(item => {
+        const title = item.title || '';
+        const url = item.url || '#';
+        const src = item.sourceLabel || 'Crypto News';
+        const time = item.published ? new Date(item.published * 1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Dubai'}) + ' GST' : '';
+        const safeTitle = title.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const safeSrc = src.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const tagged = Object.entries(keywords).filter(([k,v]) => title.toLowerCase().includes(k) || title.toLowerCase().includes(v.toLowerCase())).map(([k])=>k.toUpperCase());
+        const tagHtml = tagged.map(t => `<span style="background:rgba(201,169,97,0.15);color:var(--gold);font-size:10px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;">${t}</span>`).join(' ');
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="display:block;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:12px 14px;text-decoration:none;color:var(--text);">
+          <div style="font-size:12px;font-weight:500;margin-bottom:6px;line-height:1.5;">${safeTitle}</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            ${tagHtml}
+            <span style="color:var(--text-mute);font-size:10px;">${safeSrc}</span>
+            <span style="color:var(--text-mute);font-size:10px;">${time}</span>
+          </div>
+        </a>`;
+      }).join('') + '</div>';
   }
 
   // ═══════════════════════════════════════════════════════
@@ -8102,7 +8525,7 @@
   };
 
   let tvChartLoaded = false;
-  let tvCurrentSymbol = 'US100'; // US100 is the ICT priority per CLAUDE.md
+  let tvCurrentSymbol = 'BTC'; // Changes to best-signal asset on load
   let tvCurrentTimeframe = '1'; // default to 1m — matches the scalp setup the dashboard
                                  // actually trades on. Weekly view hid the FVG/OB
                                  // structure we care about.
@@ -10221,9 +10644,6 @@
     _try('initBinanceWebSocket', initBinanceWebSocket);
     _try('initMexcWebSocket', initMexcWebSocket);
     _try('initTVPriceListener', initTVPriceListener);
-    // Open Live Chart on US100 by default — it's the ICT priority instrument
-    // and was being hidden behind the empty-state hint until first click.
-    _try('autoLoadUS100', () => { if (TV_SYMBOLS['US100']) switchTVChart('US100'); });
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
     // Fast-refresh: pull fresh 1m klines for high-lev futures assets every
