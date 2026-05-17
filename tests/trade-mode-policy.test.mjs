@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
 describe('Trade-mode policy: futures vs spot', () => {
-  test('DEFAULT_TRADE_MODES (v6): SILVER, US100, SOL, GOLD = futures; rest = spot', () => {
+  test('DEFAULT_TRADE_MODES: SILVER/US100/SOL/GOLD/ETH/XRP = futures; rest = spot', () => {
     const { app } = loadApp();
     // The harness doesn't run window.onload, so loadTradeModes never seeds
     // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
@@ -12,11 +12,11 @@ describe('Trade-mode policy: futures vs spot', () => {
     assert.equal(modes.SILVER, 'futures');
     assert.equal(modes.US100,  'futures');
     assert.equal(modes.SOL,    'futures', 'v3: SOL for weekend coverage');
-    assert.equal(modes.GOLD,   'futures', 'v6: GOLD remains a manual futures candidate (XAUT_USDT on MEXC)');
+    assert.equal(modes.GOLD,   'futures', 'v4: GOLD joins the trio (XAUT_USDT on MEXC)');
+    assert.equal(modes.ETH,    'futures', 'v5: ETH validated by SW walk-forward (SW-O)');
+    assert.equal(modes.XRP,    'futures', 'v5: XRP validated by SW walk-forward (SW-OO)');
     assert.equal(modes.BTC,    'spot');
-    assert.equal(modes.ETH,    'spot');
-    assert.equal(modes.BNB,    'spot');
-    assert.equal(modes.XRP,    'spot');
+    assert.equal(modes.BNB,    'spot', 'v5: BNB fails walk-forward (33% OOS+)');
     assert.equal(modes.SUI,    'spot');
     assert.equal(modes.ASTR,   'spot');
   });
@@ -138,14 +138,14 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     app.loadTradeModes();
     setupAtEntry(app, 'SILVER', 'futures');
     setupAtEntry(app, 'BTC',    'spot');
-    setupAtEntry(app, 'ETH',    'spot');
+    setupAtEntry(app, 'BNB',    'spot');
     app.prevSignalMap = {};
     app.alertLog = [];
     app.checkArmedAlerts(gst);
     const symbols = app.alertLog.map(x => x.symbol);
     assert.ok(symbols.includes('SILVER'),  'SILVER (futures) should fire');
     assert.ok(!symbols.includes('BTC'),    'BTC (spot) must not fire');
-    assert.ok(!symbols.includes('ETH'),    'ETH (spot) must not fire');
+    assert.ok(!symbols.includes('BNB'),    'BNB (spot) must not fire');
   });
 
   test('auto-fire disabled blocks live HTF order submission', async () => {

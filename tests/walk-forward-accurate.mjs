@@ -212,7 +212,7 @@ function monthlyStats(fills) {
   return { monthly, greenMonths, totalMonths: pnls.length, meanMonthly: mean, stddevMonthly: stddev, sharpe };
 }
 
-const fixtureFiles = readdirSync(FIX_DIR).filter(f => /^[A-Z]+-365d-Min15\.json$/.test(f));
+const fixtureFiles = readdirSync(FIX_DIR).filter(f => /^[A-Z]+-1095d-Min15\.json$/.test(f));
 let assets = fixtureFiles.map(f => f.match(/^([A-Z]+)-/)[1]);
 if (ASSET_FILTER) assets = assets.filter(a => a === ASSET_FILTER);
 
@@ -224,7 +224,7 @@ console.log('═'.repeat(110));
 const { app } = loadApp();
 
 for (const asset of assets) {
-  const fp = path.join(FIX_DIR, `${asset}-365d-Min15.json`);
+  const fp = path.join(FIX_DIR, `${asset}-1095d-Min15.json`);
   const klines1m = JSON.parse(readFileSync(fp, 'utf8'));
   const klines = aggregate(klines1m, 60);
   console.log(`\n══════ ${asset} ══════`);

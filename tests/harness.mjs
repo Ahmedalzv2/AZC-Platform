@@ -86,6 +86,9 @@ const EXPORTS = [
   'getScalpTf', 'setScalpTf',
   'scalpMonitorTick', '_normalizeBiasDir', '_suggestedEntryForTf',
   'setScalpAutoFire', 'getScalpAutoFire',
+  // swing (SW) methodology — validated 1h ICT for ETH/XRP
+  'SW_ASSET_CONFIG', '_swingMonitorTick', '_swHoldKillTick',
+  'setSwAutoFire', 'getSwAutoFire', '_swPositions', '_swDiag',
   // forex factory econ calendar (free FairEconomy JSON feed)
   'fetchForexFactoryCalendar',
 ];

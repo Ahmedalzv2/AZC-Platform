@@ -1594,10 +1594,10 @@
   // diagnostics, while auto-fire stays disabled after OOS research.
   const DEFAULT_TRADE_MODES = {
     SILVER: 'futures', US100: 'futures', SOL: 'futures', GOLD: 'futures',
-    BTC: 'spot', ETH: 'spot', BNB: 'spot',
-    XRP: 'spot', SUI: 'spot', ASTR: 'spot',
+    ETH: 'futures', XRP: 'futures',
+    BTC: 'spot', BNB: 'spot', SUI: 'spot', ASTR: 'spot',
   };
-  const TRADE_MODE_POLICY_VERSION = 4;
+  const TRADE_MODE_POLICY_VERSION = 5;
 
   function loadTradeModes() {
     try {
@@ -3046,19 +3046,45 @@
   function setScalpAutoFire(on) { _scalpAutoFireEnabled = !!on; return _scalpAutoFireEnabled; }
   function getScalpAutoFire() { return _scalpAutoFireEnabled; }
 
-  // Override SL/TP to mechanical leverage-fit levels. Returns a new sug
-  // object (does not mutate input). When leverage < threshold, returns the
-  // input unchanged — no behaviour change for SILVER's normal 3× path.
+  // SW (swing) methodology — validated by tests/walk-forward-accurate.mjs
+  // across 365d Min15 fixtures with realistic frictions (5bps slip/side,
+  // 1bps funding/8h). Only assets that pass walk-forward validation get a
+  // config here. To add an asset, dump its 365d fixture and re-run the
+  // accurate sim; require ≥67% rolling-window OOS positivity.
   //
-  // Quick-take target is NET of round-trip fees. Gross TP price has fees
-  // added back so the actual fill yields the configured net %.
-  //   200× + 11% net + 16% fees = 27% gross margin = 0.135% price
-  //   100× + 11% net + 8%  fees = 19% gross margin = 0.19%  price
-  // High-lev path no longer uses this constant for the actual TP — it
-  // ships a far-out ceiling and trail-manages the exit (see
-  // TRAIL_ARM_NET_MARGIN_PCT). This value is now: (a) the diagnostic
-  // "would-be" target shown in the UI, and (b) the fixed TP for the
-  // low-lev path. User-driven choice: faster turnover, more trades.
+  // Mechanics: read asset.tfEntries['1h'] populated by autoAnalyzeAsset,
+  // apply per-asset filters (dir / score / phase), and on a match place
+  // a market entry with fixed price-% SL/TP. Position is force-closed at
+  // market after holdH hours regardless of P&L (see _swHoldKillTick).
+  //
+  // dir: 'bear' = shorts only · 'bull' = longs only · null = both directions
+  // scoreMin: minimum analysis.score (0–4 confluence count) · null = no gate
+  // phaseGate: true = skip 'consolidation' + 'reversal-suspect' phases
+  // slPct / tpPct: SL/TP distance from entry, as % of price (not margin)
+  // holdH: max hold in hours before force-close at market
+  const SW_ASSET_CONFIG = {
+    ETH: { dir: null,    scoreMin: null, phaseGate: true, slPct: 1.5, tpPct: 3.0, holdH: 24 },
+    XRP: { dir: 'bear',  scoreMin: 2,    phaseGate: true, slPct: 2.0, tpPct: 3.0, holdH: 48 },
+  };
+  let _swAutoFireEnabled = false;
+  function setSwAutoFire(on) { _swAutoFireEnabled = !!on; return _swAutoFireEnabled; }
+  function getSwAutoFire() { return _swAutoFireEnabled; }
+  // Per-asset open-position tracker: { [sym]: { openTs, holdH, orderId } }.
+  // Populated when _swingMonitorTick fires; consumed by _swHoldKillTick which
+  // closes the position at market once Date.now() − openTs ≥ holdH × 3600s.
+  const _swPositions = {};
+  // Per-asset diagnostic of the most recent _swingMonitorTick — what it
+  // returned and why. Mirrors _scalpDiag so the modal can surface "why didn't
+  // SW fire on this tick".
+  const _swDiag = {};
+  function _recordSwDiag(symbol, result) {
+    if (!symbol) return result;
+    _swDiag[symbol] = { ...result, ts: Date.now(), symbol };
+    return result;
+  }
+
+  // Quick-take target: NET % of margin after round-trip fees. Used as the
+  // fixed TP for low-lev fires.
   const QUICK_TAKE_NET_MARGIN_PCT = 11;
   // Legacy alias preserved so any external code reading the constant still
   // works; semantically it now means the NET target.
@@ -3804,6 +3830,10 @@
     // week from -$45 to +$26. Force-closes any high-lev position
     // older than MAX_POSITION_HOLD_SEC regardless of P/L.
     try { await _holdTimeKill(); } catch (e) {}
+    // SW hold-horizon force-close runs alongside the positions tick — same
+    // 5s cadence is fine since holds are 24-72h. _swHoldKillTick is a no-op
+    // when no SW positions are tracked.
+    try { await _swHoldKillTick(); } catch (e) {}
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -4222,10 +4252,115 @@
     return _recordScalpDiag(sym, { fired: true, tf, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r });
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Swing monitor — fires the validated SW methodology on the per-asset
+  // 1h ICT setup (see SW_ASSET_CONFIG above). Runs on every poll tick.
+  //
+  // Differs from scalpMonitorTick:
+  //   - 1h TF analysis (not 1m)
+  //   - Market entry with fixed price-% SL/TP (not leverage-derived)
+  //   - 24-72h hold horizon → _swHoldKillTick force-closes at horizon
+  //   - Per-asset direction / score / phase filters from SW_ASSET_CONFIG
+  // ─────────────────────────────────────────────────────────────────────
+  const SW_TF = '1h';
+  const SW_PROXIMITY_PCT = 1.0;  // wider than scalp — 1h candles + 24h+ holds tolerate slip
+
+  async function _swingMonitorTick(asset) {
+    if (!asset) return { fired: false, reason: 'no-asset' };
+    const sym = asset.symbol;
+    const cfg = SW_ASSET_CONFIG[sym];
+    if (!cfg)                        return _recordSwDiag(sym, { fired: false, reason: 'no-sw-config' });
+    if (!_liveTradingEnabled)        return _recordSwDiag(sym, { fired: false, reason: 'master-off' });
+    if (!_mexcContractSymbol(asset)) return _recordSwDiag(sym, { fired: false, reason: 'unsupported-symbol' });
+
+    const tfData = asset.tfEntries && asset.tfEntries[SW_TF];
+    if (!tfData || tfData.error)     return _recordSwDiag(sym, { fired: false, reason: 'no-tf-data' });
+    if (cfg.phaseGate && (tfData.phase === 'consolidation' || tfData.phase === 'reversal-suspect')) {
+      return _recordSwDiag(sym, { fired: false, reason: 'phase-gated', phase: tfData.phase });
+    }
+    if (cfg.scoreMin != null && (tfData.score || 0) < cfg.scoreMin) {
+      return _recordSwDiag(sym, { fired: false, reason: 'score-too-low', score: tfData.score || 0, scoreMin: cfg.scoreMin });
+    }
+
+    const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, SW_TF) : null;
+    if (!sug)                        return _recordSwDiag(sym, { fired: false, reason: 'no-tf-setup' });
+    if (cfg.dir && sug.dir !== cfg.dir) {
+      return _recordSwDiag(sym, { fired: false, reason: 'dir-filter', sugDir: sug.dir, want: cfg.dir });
+    }
+
+    if (!asset.price || !sug.entry)  return _recordSwDiag(sym, { fired: false, reason: 'no-price' });
+    const distPct = Math.abs((asset.price - sug.entry) / sug.entry) * 100;
+    if (distPct > SW_PROXIMITY_PCT)  return _recordSwDiag(sym, { fired: false, reason: 'too-far', distPct, proximityPct: SW_PROXIMITY_PCT });
+
+    // Per-asset one-at-a-time gate — don't fire if SW already holds a
+    // position on this symbol. _swPositions tracks our own SW fires;
+    // _openPositions includes any open MEXC position (incl. manual).
+    if (_swPositions[sym]) return _recordSwDiag(sym, { fired: false, reason: 'sw-already-open', sinceMs: Date.now() - _swPositions[sym].openTs });
+    if (_openPositions[sym] && _openPositions[sym].length > 0) {
+      return _recordSwDiag(sym, { fired: false, reason: 'position-held' });
+    }
+
+    // Build SW order: market entry at live price, SL/TP from cfg's price-%.
+    const side = sug.dir === 'bull' ? 'LONG' : 'SHORT';
+    const lev = getAssetLeverage(sym);
+    const entry = asset.price;
+    const slPctFrac = cfg.slPct / 100;
+    const tpPctFrac = cfg.tpPct / 100;
+    const sl = sug.dir === 'bear' ? entry * (1 + slPctFrac) : entry * (1 - slPctFrac);
+    const tp = sug.dir === 'bear' ? entry * (1 - tpPctFrac) : entry * (1 + tpPctFrac);
+    const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+    const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
+
+    if (!_swAutoFireEnabled) {
+      return _recordSwDiag(sym, { fired: false, reason: 'auto-fire-disabled', side, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev, holdH: cfg.holdH });
+    }
+
+    _markPendingFire(sym);
+    const r = await placeMexcFuturesOrder(asset, side, round(entry), round(sl), round(tp), qty, lev, { sw: true, tf: SW_TF });
+    if (!r || (!r.sent && !r.dryRun)) {
+      _clearPendingFire(sym);
+    } else {
+      _swPositions[sym] = { openTs: Date.now(), holdH: cfg.holdH, side };
+    }
+    _recordFireResult(sym, { source: 'sw', tf: SW_TF, side, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
+    return _recordSwDiag(sym, { fired: true, side, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev, holdH: cfg.holdH, result: r });
+  }
+
+  // Hold-horizon force-close — for each tracked SW position, close at
+  // market once Date.now() − openTs ≥ holdH × 3600s. Runs alongside the
+  // positions tick. Removes the tracker entry once the close goes through
+  // so a re-open can re-arm.
+  async function _swHoldKillTick() {
+    if (!_liveTradingEnabled) return;
+    for (const sym of Object.keys(_swPositions)) {
+      const p = _swPositions[sym];
+      if (!p) continue;
+      const ageMs = Date.now() - p.openTs;
+      const horizonMs = p.holdH * 3600 * 1000;
+      if (ageMs < horizonMs) continue;
+      const pos = (_openPositions[sym] || [])[0];
+      if (!pos) {
+        // Position closed externally (SL/TP hit); just drop the tracker.
+        delete _swPositions[sym];
+        continue;
+      }
+      const vol = Number(pos.holdVol);
+      const isLong = Number(pos.positionType) === 1;
+      try {
+        const r = await closeMexcPosition(sym, vol, isLong ? 1 : 3);
+        try { showToast(`⏱ ${sym} SW hold ${p.holdH}h reached · closed at market`, 'info'); } catch (e) {}
+        delete _swPositions[sym];
+        return r;
+      } catch (e) {
+        // Leave tracker so next tick retries.
+      }
+    }
+  }
+
   // Per-asset last-fire result for the modal panel + Live Chart report.
   // Captures EVERY fire attempt — scalp, auto-fire, and force-fire — so the
   // user can see exactly what happened on the most recent trigger.
-  // { [symbol]: { ts, source: 'auto'|'scalp'|'force', side, entry, sl, tp,
+  // { [symbol]: { ts, source: 'auto'|'scalp'|'force'|'sw', side, entry, sl, tp,
   //               qty, leverage, sent, dryRun, reason, error, mexcResponse } }
   const _lastFireResult = {};
   function _recordFireResult(symbol, payload) {
@@ -4762,6 +4897,7 @@
     const hasKeys = !!(getMexcApiKey() && getMexcApiSecret());
     const masterBtn = `<button onclick="setLiveTradingEnabled(${!_liveTradingEnabled});openLiveTradingModal();" style="background:${_liveTradingEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_liveTradingEnabled?'var(--bull)':'var(--border)'};color:${_liveTradingEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingEnabled?'🟢 ON':'🔴 OFF'}</button>`;
     const dryBtn = `<button onclick="setLiveTradingDryRun(${!_liveTradingDryRun});openLiveTradingModal();" style="background:${_liveTradingDryRun?'rgba(242,179,61,0.20)':'rgba(224,93,93,0.20)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingDryRun?'📝 DRY-RUN':'🔴 LIVE'}</button>`;
+    const swBtn = `<button onclick="setSwAutoFire(${!_swAutoFireEnabled});openLiveTradingModal();" style="background:${_swAutoFireEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_swAutoFireEnabled?'var(--bull)':'var(--border)'};color:${_swAutoFireEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_swAutoFireEnabled?'🎯 SW AUTO ON':'🎯 SW AUTO OFF'}</button>`;
     const workerUrl = getMexcWorkerUrl();
     // Per-asset state is computed inside _renderAutoExecAssetBlock so the
     // modal can render a block per asset without me touching this scope.
@@ -4809,6 +4945,11 @@
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
             ${dryBtn}
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
+          </div>
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SW (swing) auto-fire · ${Object.keys(SW_ASSET_CONFIG).join(' + ')}</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+            ${swBtn}
+            <span style="font-size:11px;color:var(--text-mute);">${_swAutoFireEnabled?'Walk-forward-validated 1h ICT setups will auto-fire':'Signals tracked silently · no fires until you toggle ON'}</span>
           </div>
           ${ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a)).map(a => _renderAutoExecAssetBlock(a)).join('')}
           ${_renderAutoExecAddPicker()}
@@ -8330,6 +8471,14 @@
     // Refresh Live Chart analysis panel immediately if this is the charted asset
     if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === asset.symbol && typeof updateTVAnalysis === 'function') {
       try { updateTVAnalysis(asset.symbol); } catch(e) {}
+    }
+    // SW (swing) monitor — fires the validated 1h ICT methodology for assets
+    // listed in SW_ASSET_CONFIG. Runs on every fresh 1h analysis (this
+    // function refreshes 1h tfEntries among others). Gated on _swAutoFireEnabled.
+    if (SW_ASSET_CONFIG[asset.symbol]) {
+      _swingMonitorTick(asset).then(r => {
+        if (r && r.fired) console.log('[sw fire]', asset.symbol, r);
+      }).catch(() => {});
     }
   }
 
