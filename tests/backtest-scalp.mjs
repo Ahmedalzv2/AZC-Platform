@@ -687,6 +687,25 @@ function fmt(s) {
     'SW-C8 · 48h hold · SL 0.7 / TP 1.4':     {marketEntry: true, slPricePct: 0.70, tpPricePct: 1.4, simHorizonHours: 48, proximityPct: 1.0 },
     'SW-C3 · 24h hold · SL 0.7 / TP 1.4':     {marketEntry: true, slPricePct: 0.70, tpPricePct: 1.4, simHorizonHours: 24, proximityPct: 1.0 },
     'SW-C4 · 24h hold · SL 1.5 / TP 3.0':     {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0 },
+    // Iteration 6 (May 2026): the SW-C7 baseline is the only signal where
+    // both IS and OOS halves are profitable. Stack filters on top — fewer
+    // fires, higher win rate. Hypothesis: 2:1 R:R × 50%+ win = positive
+    // expectancy that survives both halves.
+    'SW-H · C7 + confluenceOnly':             {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, confluenceOnly: true },
+    'SW-I · C7 + confluence + phase':         {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, confluenceOnly: true, phaseGate: true },
+    'SW-J · C7 + confluence + phase + KZ':    {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, confluenceOnly: true, phaseGate: true, killZone: true },
+    'SW-K · C5 + confluence + phase + KZ':    {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 72, proximityPct: 1.0, confluenceOnly: true, phaseGate: true, killZone: true },
+    'SW-L · C7 NY-AM only':                   {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, killZone: [[13, 15]] },
+    'SW-M · C7 + phase only':                 {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
+    // Iteration 7: SW-M (SW-C7 + phaseGate) is the durable winner. Vary
+    // hold horizon + SL/TP to find the local maximum within the phase-gate
+    // signal space.
+    'SW-N · C5 + phase (72h 1.0/2.0)':        {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 72, proximityPct: 1.0, phaseGate: true },
+    'SW-O · C4 + phase (24h 1.5/3.0)':        {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true },
+    'SW-P · C2 + phase (48h 1.0/2.0)':        {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
+    'SW-Q · phase 48h 2.0/4.0':               {marketEntry: true, slPricePct: 2.00, tpPricePct: 4.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
+    'SW-R · phase 96h 1.5/3.0':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 96, proximityPct: 1.0, phaseGate: true },
+    'SW-S · phase 48h 1.5/4.5 (3:1)':         {marketEntry: true, slPricePct: 1.50, tpPricePct: 4.5, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
