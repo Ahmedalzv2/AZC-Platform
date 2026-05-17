@@ -456,11 +456,14 @@ function runConfig(klines, app, cfg, tf = '1m') {
     if (!analysis) continue;
 
     if (cfg.phaseGate && (analysis.phase === 'consolidation' || analysis.phase === 'reversal-suspect')) continue;
+    if (cfg.scoreMin != null && (analysis.score || 0) < cfg.scoreMin) continue;
 
     const rawSug = app._suggestedEntryForTf(analysis, tf);
     if (!rawSug) continue;
 
     if (cfg.confluenceOnly && rawSug.source === 'fvg-edge') continue;
+    if (cfg.dirOnly && rawSug.dir !== cfg.dirOnly) continue;
+    if (cfg.sourceOnly && !cfg.sourceOnly.includes(rawSug.source)) continue;
 
     const sug = applyLevels(rawSug, lev, tpNetPct, slCoef, slPricePct, tpPricePct);
 
@@ -706,6 +709,27 @@ function fmt(s) {
     'SW-Q · phase 48h 2.0/4.0':               {marketEntry: true, slPricePct: 2.00, tpPricePct: 4.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
     'SW-R · phase 96h 1.5/3.0':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 96, proximityPct: 1.0, phaseGate: true },
     'SW-S · phase 48h 1.5/4.5 (3:1)':         {marketEntry: true, slPricePct: 1.50, tpPricePct: 4.5, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
+    // Iteration 8: signal-strength + direction filters on top of SW-O baseline.
+    'SW-T · O + scoreMin=3':                  {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, scoreMin: 3 },
+    'SW-U · O + scoreMin=4':                  {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, scoreMin: 4 },
+    'SW-V · O + longs only':                  {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bull' },
+    'SW-W · O + shorts only':                 {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-X · O asym 1.0/3.0 (3:1)':            {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true },
+    'SW-Y · O asym 2.0/3.0 (1.5:1)':          {marketEntry: true, slPricePct: 2.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true },
+    'SW-Z · O + score=3 + longs':             {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, scoreMin: 3, dirOnly: 'bull' },
+    'SW-AA · O + score=4 + longs':            {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, scoreMin: 4, dirOnly: 'bull' },
+    // Iteration 9-10: shorts-only is the breakthrough on ETH/XRP/SILVER.
+    // Push further: TF-level analysis.score gate, premium-source-only (drop
+    // fvg-edge entirely), wider-SL shorts to absorb retraces.
+    'SW-BB · W + scoreMin=2':                 {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-CC · W + scoreMin=3':                 {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 3 },
+    'SW-DD · W + premium sources only':       {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', sourceOnly: ['bpr', 'ifvg', 'ob+fvg', 'fvg+sweep'] },
+    'SW-EE · W asym 2.0/3.0 short':           {marketEntry: true, slPricePct: 2.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-FF · W asym 1.0/3.0 short':           {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-GG · W asym 1.5/4.5 short (3:1)':     {marketEntry: true, slPricePct: 1.50, tpPricePct: 4.5, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-HH · W + confluence (drop fvg-edge)': {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', confluenceOnly: true },
+    'SW-II · W 48h hold short':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-JJ · W 72h hold short':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 72, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
