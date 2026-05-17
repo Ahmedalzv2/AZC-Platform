@@ -45,21 +45,44 @@ const LEVERAGE = Number(args.lev) || 200;  // override via --lev=100 (etc.)
 const MARGIN_USD = 0.20;     // per fire
 const HIGH_LEV_PROXIMITY_PCT = 0.50;
 
-const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5, '15m': 15 };
+const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '1h': 60 };
 const TF_REQUESTED = (() => {
   const raw = args.tf ? String(args.tf).toLowerCase() : 'all';
-  if (raw === 'all') return ['1m', '3m', '5m', '15m'];
-  if (!TF_MINUTES[raw]) {
-    console.error(`Unknown --tf "${raw}". Use 1m, 3m, 5m, 15m, or all.`);
-    process.exit(1);
+  if (raw === 'all') return ['1m', '3m', '5m'];
+  const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  for (const tf of list) {
+    if (!TF_MINUTES[tf]) {
+      console.error(`Unknown TF "${tf}" in --tf="${raw}". Use 1m, 3m, 5m, 15m, 1h, all, or a comma list.`);
+      process.exit(1);
+    }
   }
-  return [raw];
+  return list;
 })();
 
+// MEXC retains Min1 ~30d but Min5 / Min15 / Min60 much further back. Pass
+// --mexc-interval=Min5 (or Min15) to fetch wider 90d windows on SILVER/GOLD.
+// All requested --tf values must be a multiple of the base interval.
+const MEXC_INTERVAL = String(args['mexc-interval'] || 'Min1');
+const MEXC_INTERVAL_MIN = { Min1: 1, Min5: 5, Min15: 15, Min60: 60 }[MEXC_INTERVAL];
+if (!MEXC_INTERVAL_MIN) {
+  console.error(`Unknown --mexc-interval "${MEXC_INTERVAL}". Use Min1, Min5, Min15, or Min60.`);
+  process.exit(1);
+}
+if (MEXC_INTERVAL_MIN > 1) {
+  for (const tf of TF_REQUESTED) {
+    if (TF_MINUTES[tf] < MEXC_INTERVAL_MIN || TF_MINUTES[tf] % MEXC_INTERVAL_MIN !== 0) {
+      console.error(`--mexc-interval=${MEXC_INTERVAL} can't produce TF ${tf} (base ${MEXC_INTERVAL_MIN}m must divide ${TF_MINUTES[tf]}m).`);
+      process.exit(1);
+    }
+  }
+}
+
+// GOLD on MEXC trades as XAUT_USDT (Tether Gold perpetual). The bare label
+// "GOLD" used in the dashboard is just our UI alias.
 const CONTRACT_SYM = {
   SOL: 'SOL_USDT',
   SILVER: 'SILVER_USDT',
-  GOLD: 'GOLD_USDT',
+  GOLD: 'XAUT_USDT',
   BTC: 'BTC_USDT',
   ETH: 'ETH_USDT',
   BNB: 'BNB_USDT',
@@ -70,27 +93,10 @@ if (!CONTRACT_SYM) {
   process.exit(1);
 }
 
-// MEXC retains only ~31d of 1m history. Binance USDT-M futures keeps it much
-// further back — use --source=binance for 90d+ windows. SILVER/GOLD are MEXC
-// synthetic perps, no Binance equivalent.
-const BINANCE_SYM = {
-  SOL: 'SOLUSDT', BTC: 'BTCUSDT', ETH: 'ETHUSDT',
-  BNB: 'BNBUSDT', XRP: 'XRPUSDT',
-}[ASSET];
-const SOURCE = String(args.source || 'mexc').toLowerCase();
-if (SOURCE !== 'mexc' && SOURCE !== 'binance') {
-  console.error(`Unknown --source "${SOURCE}". Use mexc or binance.`);
-  process.exit(1);
-}
-if (SOURCE === 'binance' && !BINANCE_SYM) {
-  console.error(`--source=binance not available for ${ASSET}.`);
-  process.exit(1);
-}
-
 // MEXC kline endpoint returns up to ~2000 candles per request. We paginate
 // backwards from now in 1-day chunks to keep each request well within that.
 async function fetchKlineChunk(symbol, startSec, endSec) {
-  const url = `https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min1&start=${startSec}&end=${endSec}`;
+  const url = `https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=${MEXC_INTERVAL}&start=${startSec}&end=${endSec}`;
   const proxies = [
     (u) => u,
     (u) => 'https://corsproxy.io/?' + encodeURIComponent(u),
@@ -121,22 +127,8 @@ async function fetchKlineChunk(symbol, startSec, endSec) {
   return [];
 }
 
-// Binance USDT-M futures: array-of-arrays response [openTimeMs, o, h, l, c, v, ...].
-async function fetchKlineChunkBinance(symbol, startSec, endSec) {
-  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${startSec*1000}&endTime=${endSec*1000}&limit=1500`;
-  try {
-    const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) return [];
-    const j = await r.json();
-    if (!Array.isArray(j)) return [];
-    return j.map((k) => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
-  } catch (e) { return []; }
-}
-
 async function loadKlines(symbol, days) {
-  const tag = SOURCE === 'binance' ? '-binance' : '';
-  const fetchSym = SOURCE === 'binance' ? BINANCE_SYM : symbol;
-  const fetcher = SOURCE === 'binance' ? fetchKlineChunkBinance : fetchKlineChunk;
+  const tag = MEXC_INTERVAL_MIN > 1 ? `-${MEXC_INTERVAL}` : '';
   const cacheFile = path.join(CACHE_DIR, `${symbol}-${days}d${tag}.json`);
   if (existsSync(cacheFile)) {
     const c = JSON.parse(readFileSync(cacheFile, 'utf8'));
@@ -145,14 +137,16 @@ async function loadKlines(symbol, days) {
       return c.klines;
     }
   }
-  console.log(`Fetching ${days} days of 1m ${fetchSym} from ${SOURCE.toUpperCase()} public API...`);
+  console.log(`Fetching ${days} days of ${MEXC_INTERVAL_MIN}m ${symbol} from MEXC public API...`);
   const endSec = Math.floor(Date.now() / 1000);
   const startSec = endSec - days * 86400;
-  // Walk forward in 1-day chunks (~1440 candles each).
+  // Walk forward in chunks. Min1 → 1-day chunks (~1440). Wider intervals can
+  // fit much more per request — use 7-day chunks for Min5+ to cut request count.
+  const chunkSec = MEXC_INTERVAL_MIN >= 5 ? 7 * 86400 : 86400;
   const chunks = [];
-  for (let s = startSec; s < endSec; s += 86400) {
-    const e = Math.min(s + 86400, endSec);
-    const c = await fetcher(fetchSym, s, e);
+  for (let s = startSec; s < endSec; s += chunkSec) {
+    const e = Math.min(s + chunkSec, endSec);
+    const c = await fetchKlineChunk(symbol, s, e);
     chunks.push(c);
     process.stdout.write(`  ${new Date(s*1000).toISOString().slice(0,10)} → ${c.length} candles\n`);
   }
@@ -189,7 +183,17 @@ function aggregateKlines(klines1m, intervalMins) {
 // Apply the same fee-aware high-lev levels the live bot uses. At lev<100 we
 // fall through to the conviction-ladder sl/tp baked into _suggestedEntryForTf
 // (RR=1.5 from BPR/iFVG/OB/FVG depending on source).
-function applyLevels(sug, lev, tpNetPct, slCoef = 0.7) {
+function applyLevels(sug, lev, tpNetPct, slCoef = 0.7, slPricePct = null, tpPricePct = null) {
+  // SWING mode: explicit price-mode SL/TP (independent of leverage). Used by
+  // the post-90d-OOS-research configs targeting GOLD/SILVER multi-day holds
+  // at 10–25× where the lev-fit mechanical math doesn't apply.
+  if (slPricePct != null && tpPricePct != null) {
+    const slDist = sug.entry * (slPricePct / 100);
+    const tpDist = sug.entry * (tpPricePct / 100);
+    const sl = sug.dir === 'bull' ? sug.entry - slDist : sug.entry + slDist;
+    const tp = sug.dir === 'bull' ? sug.entry + tpDist : sug.entry - tpDist;
+    return { ...sug, sl, tp };
+  }
   if (lev < 100) return sug;
   const slPct = (100 / lev) * slCoef;
   const feePctMargin = 0.08 * lev;
@@ -337,12 +341,13 @@ function simulateSignalCancel(klines, fireIdx, sug) {
 // the live force-fire path does (sl = price × (1 - slPct), etc.) — without
 // this the SL distance balloons when actualEntry drifts from sug.entry,
 // producing impossible >100% margin losses (more than liquidation).
-function simulateMarketEntry(klines, fireIdx, sug, lev, tpNetPct, slCoef = 0.7) {
+function simulateMarketEntry(klines, fireIdx, sug, lev, tpNetPct, slCoef = 0.7, slPricePct = null, tpPricePct = null) {
   const next = klines[fireIdx + 1];
   if (!next) return { result: 'expired', exitIdx: fireIdx + 1, exit: sug.entry, filled: false, fillIdx: -1 };
   const actualEntry = next.o;
-  const slPct = (100 / lev) * slCoef / 100;          // 0.35% at 200× with default coef
-  const tpPct = (tpNetPct + 0.08 * lev) / lev / 100; // includes round-trip fee
+  // SWING-mode price-anchored SL/TP override (lev-independent).
+  const slPct = slPricePct != null ? slPricePct / 100 : (100 / lev) * slCoef / 100;
+  const tpPct = tpPricePct != null ? tpPricePct / 100 : (tpNetPct + 0.08 * lev) / lev / 100;
   const dir = sug.dir;
   const sl = dir === 'bull' ? actualEntry * (1 - slPct) : actualEntry * (1 + slPct);
   const tp = dir === 'bull' ? actualEntry * (1 + tpPct) : actualEntry * (1 - tpPct);
@@ -357,12 +362,15 @@ function runConfig(klines, app, cfg, tf = '1m') {
   const tpNetPct = cfg.tpNetPct ?? 10;
   const proximityPct = cfg.proximityPct ?? HIGH_LEV_PROXIMITY_PCT;
   const cancelTtlBars = cfg.cancelTtlBars ?? 0;
-  // slPricePct: SL in PRICE % (decimal-percent, 0.10 = 0.10%). Lets configs
-  // keep the same price-distance SL across leverage levels — the legacy
-  // slCoef formula widens price-SL as leverage drops, which breaks <100×.
-  const slCoef = cfg.slPricePct != null
-    ? (cfg.slPricePct / 100) * lev
-    : (cfg.slCoef ?? 0.7);
+  const slCoef = cfg.slCoef ?? 0.7;
+  const slPricePct = cfg.slPricePct ?? null;
+  const tpPricePct = cfg.tpPricePct ?? null;
+  // Per-config horizon override for SWING/HTF mode. Save & restore so the
+  // global TF-derived horizon is correct for non-SWING configs in this loop.
+  // simHorizonHours is TF-agnostic; simHorizonBars is an explicit override.
+  const savedHorizon = SIM_HORIZON;
+  if (cfg.simHorizonHours) SIM_HORIZON = Math.max(1, Math.round(cfg.simHorizonHours * 60 / TF_MINUTES[tf]));
+  else if (cfg.simHorizonBars) SIM_HORIZON = cfg.simHorizonBars;
 
   for (let i = WINDOW; i < klines.length - 1; i++) {
     if (klines[i].t < cursorTs) continue;
@@ -384,7 +392,7 @@ function runConfig(klines, app, cfg, tf = '1m') {
 
     if (cfg.confluenceOnly && rawSug.source === 'fvg-edge') continue;
 
-    const sug = applyLevels(rawSug, lev, tpNetPct, slCoef);
+    const sug = applyLevels(rawSug, lev, tpNetPct, slCoef, slPricePct, tpPricePct);
 
     const livePrice = klines[i].c;
     const distPct = Math.abs((livePrice - sug.entry) / sug.entry) * 100;
@@ -418,7 +426,7 @@ function runConfig(klines, app, cfg, tf = '1m') {
     } else if (cfg.trail) {
       out = simulateTrail(klines, i, sug, lev, cfg.trail.armPct, cfg.trail.trailPct, cfg.trail.ceilingPct);
     } else if (cfg.marketEntry) {
-      out = simulateMarketEntry(klines, i, sug, lev, tpNetPct, slCoef);
+      out = simulateMarketEntry(klines, i, sug, lev, tpNetPct, slCoef, slPricePct, tpPricePct);
     } else if (cfg.signalCancel) {
       out = simulateSignalCancel(klines, i, sug);
     } else {
@@ -451,6 +459,7 @@ function runConfig(klines, app, cfg, tf = '1m') {
     cursorTs = klines[Math.min(out.exitIdx, klines.length - 1)].t + 1;
   }
 
+  SIM_HORIZON = savedHorizon;
   return summarize(trades);
 }
 
@@ -579,21 +588,21 @@ function fmt(s) {
     // Direction-of-cancel test: drop confluenceOnly (let fvg-edge fire) — does
     // filter set lose too many real trades?
     'II · AA - confluenceOnly':               {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, phaseGate: true, killZone: true },
-    // === Iteration 4: price-mode SL configs for low-leverage runs ===
-    // Run these with --lev=100 or --lev=50 on the CLI. slPricePct keeps the
-    // SL distance in PRICE constant across leverages — the legacy slCoef
-    // formula widened price-SL at low lev (BB hit 1% win because SOL never
-    // moved the 1.4% needed for SL). Hypothesis: at 100× with SL=0.10% price
-    // and TP NET 20-50, R:R margin flips positive AND price moves are
-    // achievable in normal SOL volatility.
-    'JJ · SL 0.10% price + TP 20 + AA':       {trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.10, confluenceOnly: true, phaseGate: true, killZone: true },
-    'KK · SL 0.10% price + TP 50/10 + AA':    {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.10, confluenceOnly: true, phaseGate: true, killZone: true },
-    'LL · SL 0.10% price + TP 100/20 + AA':   {trail: { armPct: 100, trailPct: 20, ceilingPct: 400 }, cancelTtlBars: 2, slPricePct: 0.10, confluenceOnly: true, phaseGate: true, killZone: true },
-    'MM · SL 0.15% price + TP 50/10 + AA':    {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.15, confluenceOnly: true, phaseGate: true, killZone: true },
-    'NN · SL 0.20% price + TP 50/10 + AA':    {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.20, confluenceOnly: true, phaseGate: true, killZone: true },
-    'OO · SL 0.05% price + TP 30 + AA':       {trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.05, confluenceOnly: true, phaseGate: true, killZone: true },
-    'PP · SL 0.10% no filters no killZone':   {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.10 },
-    'QQ · SL 0.15% phaseGate only':           {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slPricePct: 0.15, phaseGate: true },
+    // SWING / HTF mode (post-90d-OOS research, May 2026). The previous scalp
+    // matrix lost on every >100-fill cell at every leverage because the 60-min
+    // walk-forward + 0.35% price SL ate the SILVER forward-bias signal before
+    // it could develop. These configs widen the horizon (4h→3d), widen SL/TP
+    // to ATR-scale (0.5–2.0% price), use market entry to skip cancel friction,
+    // and target the 15m / 1h entry TFs where forward-bias showed coherent
+    // positive delta. Run with --lev=10 or --lev=25 (10–25× is the new policy).
+    //   simHorizonBars depends on TF: 4h@15m = 16, 4h@1h = 4, 24h@15m = 96, etc.
+    'SW-A · 4h hold · SL 0.5 / TP 1.0':       {marketEntry: true, slPricePct: 0.50, tpPricePct: 1.0, simHorizonHours: 4,  proximityPct: 1.0 },
+    'SW-B · 4h hold · SL 0.5 / TP 2.0':       {marketEntry: true, slPricePct: 0.50, tpPricePct: 2.0, simHorizonHours: 4,  proximityPct: 1.0 },
+    'SW-C · 24h hold · SL 1.0 / TP 2.0':      {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 24, proximityPct: 1.0 },
+    'SW-D · 24h hold · SL 1.0 / TP 3.0':      {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0 },
+    'SW-E · 72h hold · SL 2.0 / TP 4.0':      {marketEntry: true, slPricePct: 2.00, tpPricePct: 4.0, simHorizonHours: 72, proximityPct: 2.0 },
+    'SW-F · SW-D + killZone (London/NY)':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, killZone: true },
+    'SW-G · SW-C + confluenceOnly':           {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 24, proximityPct: 1.0, confluenceOnly: true },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
