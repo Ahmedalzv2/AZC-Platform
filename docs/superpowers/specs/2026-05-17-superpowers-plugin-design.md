@@ -20,7 +20,7 @@ Two files, ~5 net lines.
 Add one top-level key:
 
 ```json
-"enabledPlugins": ["superpowers@claude-plugins-official"]
+"enabledPlugins": { "superpowers@claude-plugins-official": true }
 ```
 
 Documented field that enables the plugin at project scope. Honoured automatically wherever Claude Code reads project settings.
