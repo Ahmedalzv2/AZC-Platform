@@ -217,6 +217,15 @@
 
     /* Asset row in sidebar dropdown — scoped under .side-nav to override the
        broad .side-nav button cascade. */
+    .side-nav .side-asset-group {
+      margin: 12px 0 5px 10px;
+      color: var(--text-mute);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
     .side-nav .side-asset-row {
       display: flex;
       align-items: center;
@@ -264,6 +273,16 @@
       border-color: rgba(201,169,97,0.4);
       color: var(--gold);
     }
+    .mobile-asset-picker .side-asset-group {
+      align-self: center;
+      color: var(--text-mute);
+      flex: 0 0 auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
     .side-asset-row .sym {
       font-family: 'JetBrains Mono', monospace;
       font-weight: 700;
