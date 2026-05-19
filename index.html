@@ -4578,7 +4578,21 @@
     return !!asset && asset.symbol === 'US100';
   }
 
+  function _hasUs100ActivePlan(asset) {
+    return _isUs100IctAsset(asset) && !!asset.entryTf;
+  }
+
   function _buildUs100IctState(asset, gst, session) {
+    const hasPlan = _hasUs100ActivePlan(asset);
+    if (!hasPlan) {
+      return {
+        key: 'WAITING PLAN',
+        label: 'US100 ICT · WAITING PLAN',
+        color: 'var(--gold)',
+        reason: 'No fresh US100 trade plan is active. The old seed levels are ignored.',
+        next: 'Use the live chart/timeframe read to build a fresh entry, invalidation, and target.',
+      };
+    }
     if (typeof isInvalidated === 'function' && isInvalidated(asset)) {
       return {
         key: 'INVALIDATED',
@@ -4651,10 +4665,14 @@
     const gst = (typeof getGST === 'function') ? getGST() : new Date();
     const session = (typeof getCurrentSession === 'function') ? getCurrentSession(gst) : null;
     const ict = _buildUs100IctState(asset, gst, session);
+    const hasPlan = _hasUs100ActivePlan(asset);
     const entry = Number(asset?.entry || 0);
     const sl = Number(asset?.sl || 0);
     const tp1 = Number(asset?.tp1 || asset?.tp || 0);
-    const riskLine = `Manual ICT · entry ${entry ? '$' + entry.toLocaleString() : '—'} · invalidation ${sl ? '$' + sl.toLocaleString() : '—'} · target ${tp1 ? '$' + tp1.toLocaleString() : '—'}`;
+    const live = Number(asset?.price || 0);
+    const riskLine = hasPlan
+      ? `Manual ICT · entry ${entry ? '$' + entry.toLocaleString() : '—'} · invalidation ${sl ? '$' + sl.toLocaleString() : '—'} · target ${tp1 ? '$' + tp1.toLocaleString() : '—'}`
+      : `Manual ICT · live price ${live ? '$' + live.toLocaleString() : '—'} · no active entry / invalidation / target yet`;
     return {
       state: 'us100-ict',
       ictState: ict.key,
@@ -9683,8 +9701,11 @@
     }
 
     const gst = getGST();
-    const analysis = analyzeAsset(asset, gst);
-    const sig = getSignal(asset, gst);
+    const hasFreshUs100Plan = !_isUs100IctAsset(asset) || _hasUs100ActivePlan(asset);
+    const analysis = hasFreshUs100Plan
+      ? analyzeAsset(asset, gst)
+      : `US100 live price: $${asset.price.toLocaleString(undefined,{maximumFractionDigits:2})}.\nNo active manual ICT plan is set. Ignore the old seed levels until you rebuild entry, invalidation, and target from the live chart.`;
+    const sig = hasFreshUs100Plan ? getSignal(asset, gst) : 'wait';
     const sigColor = sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
     const sigBg = sig === 'armed' ? 'rgba(92,184,138,0.1)' : sig === 'watch' ? 'rgba(242,179,61,0.1)' : sig === 'skip' ? 'rgba(224,93,93,0.1)' : 'transparent';
 
@@ -9708,24 +9729,22 @@
     const decisionCenter = (typeof _renderLiveChartDecisionCenter === 'function') ? _renderLiveChartDecisionCenter(asset) : '';
     const tfReadiness = (typeof _renderTfReadinessHTML === 'function') ? _renderTfReadinessHTML(asset) : '';
     const focusedTFCard = _renderSelectedTFCard(asset, typeof tvCurrentTimeframe !== 'undefined' ? tvCurrentTimeframe : 'W');
-    analysisPanel.innerHTML = `
-      ${decisionCenter}
-      ${alertCallout}
-      ${focusedTFCard}
-      <div style="background:${sigBg};border:1px solid ${sigColor};border-radius:10px;padding:18px;margin-bottom:16px;">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-          <div style="font-size:20px;color:var(--gold);">${symbol}${asset.custom?' ⭐':''}</div>
-          <div style="flex:1;"></div>
-          <span style="background:${sigColor};color:${sig === 'armed' ? '#000' : '#fff'};padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">
-            ${sig.toUpperCase()}
-          </span>
+    const summaryCards = _isUs100IctAsset(asset) && !_hasUs100ActivePlan(asset)
+      ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Current Price</div>
+          <div style="font-size:16px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
         </div>
-        ${tfReadiness}
-        <div style="white-space:pre-wrap;font-size:13px;color:var(--text-dim);line-height:1.8;">
-          ${analysis}
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Plan Status</div>
+          <div style="font-size:14px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">WAITING PLAN</div>
         </div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Bias</div>
+          <div style="font-size:14px;font-weight:600;color:var(--text);font-family:'JetBrains Mono',monospace;">${asset.bias||'—'}</div>
+        </div>
+      </div>`
+      : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
         <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
           <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Current Price</div>
           <div style="font-size:16px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
@@ -9750,7 +9769,26 @@
           <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Bias</div>
           <div style="font-size:14px;font-weight:600;color:${(asset.bias||'').toUpperCase().includes('BULL')?'var(--bull)':'var(--bear)'};font-family:'JetBrains Mono',monospace;">${(asset.bias||'').substring(0,4)}</div>
         </div>
+      </div>`;
+
+    analysisPanel.innerHTML = `
+      ${decisionCenter}
+      ${alertCallout}
+      ${focusedTFCard}
+      <div style="background:${sigBg};border:1px solid ${sigColor};border-radius:10px;padding:18px;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+          <div style="font-size:20px;color:var(--gold);">${symbol}${asset.custom?' ⭐':''}</div>
+          <div style="flex:1;"></div>
+          <span style="background:${sigColor};color:${sig === 'armed' ? '#000' : '#fff'};padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">
+            ${sig.toUpperCase()}
+          </span>
+        </div>
+        ${tfReadiness}
+        <div style="white-space:pre-wrap;font-size:13px;color:var(--text-dim);line-height:1.8;">
+          ${analysis}
+        </div>
       </div>
+      ${summaryCards}
       ${_renderLiveChartTFLevels(asset)}
       ${_renderTradeOpinions(asset)}
     `;
