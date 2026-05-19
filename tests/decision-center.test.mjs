@@ -89,7 +89,7 @@ describe('Live Chart Decision Center', () => {
     us100.entry = 26800;
     us100.sl = 26950;
     us100.tp1 = 26000;
-    delete us100.entryTf;
+    us100.entryTf = '5m';
 
     const d = app._buildLiveChartDecision(us100);
 

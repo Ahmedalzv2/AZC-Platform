@@ -4578,8 +4578,15 @@
     return !!asset && asset.symbol === 'US100';
   }
 
+  function _isOldUs100SeedPlan(asset) {
+    if (!_isUs100IctAsset(asset)) return false;
+    return Number(asset.entry) === 26800
+      && Number(asset.sl) === 26950
+      && Number(asset.tp1 || asset.tp) === 26000;
+  }
+
   function _hasUs100ActivePlan(asset) {
-    return _isUs100IctAsset(asset) && !!asset.entryTf;
+    return _isUs100IctAsset(asset) && !!asset.entryTf && !_isOldUs100SeedPlan(asset);
   }
 
   function _buildUs100IctState(asset, gst, session) {
