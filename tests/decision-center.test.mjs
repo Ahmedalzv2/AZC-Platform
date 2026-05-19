@@ -81,6 +81,24 @@ describe('Live Chart Decision Center', () => {
     assert.doesNotMatch(`${d.reason} ${d.riskLine}`, /MEXC|Force Fire|FP Markets/i);
   });
 
+  test('US100 ignores stale seed levels until a fresh plan is applied', () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    const us100 = app.ASSETS.find(a => a.symbol === 'US100');
+    us100.price = 27000;
+    us100.entry = 26800;
+    us100.sl = 26950;
+    us100.tp1 = 26000;
+    us100.entryTf = '5m';
+
+    const d = app._buildLiveChartDecision(us100);
+
+    assert.equal(d.ictState, 'WAITING PLAN');
+    assert.match(d.reason, /old seed levels are ignored/i);
+    assert.match(d.riskLine, /live price \$27,000/i);
+    assert.doesNotMatch(d.riskLine, /26,800|26,950|26,000/);
+  });
+
   test('US100 decision center renders trade-plan action, not Force Fire', () => {
     const { app } = loadApp();
     app.loadTradeModes();
