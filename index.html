@@ -270,8 +270,8 @@
         <!-- Asset view (chart + analysis) — hidden until an asset is picked -->
         <div id="liveChartContent" style="display:none;">
           <div class="page-header">
-            <h1>📈 <span id="tvCurrentSymbolLabel">—</span> · Live Chart</h1>
-            <p>Price syncs every 30s. Crypto via Binance SPOT (MEXC perp fallback), GOLD/SILVER MEXC-only, US100 via FP Markets.</p>
+            <h1>📈 <span id="tvCurrentSymbolLabel">US100</span> · ICT Cockpit</h1>
+            <p>US100 is the active ICT lane. Other assets stay in Spot Watch for buy-low / sell-high context.</p>
           </div>
           <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
             <span id="tvLivePrice" style="display:inline-block;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.3);border-radius:20px;padding:4px 14px;font-size:14px;font-weight:700;color:#c9a961;font-family:'JetBrains Mono',monospace;margin-right:10px;">--</span>
@@ -327,15 +327,15 @@
           <!-- ICT Analysis Panel for selected asset -->
           <div class="ap-card full">
             <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-              <span>📊 ICT Analysis · Selected Asset</span>
+              <span id="tvAnalysisTitle">📊 US100 ICT Cockpit</span>
               <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
                 <span id="tvFireStatusBadge"
                       title="Fire status for the selected asset — READY = next tick fires, NEAR = closing in, WAITING = far, BLOCKED = some gate stops it"
                       style="background:transparent;border:1px solid var(--text-mute);color:var(--text-mute);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">— pick asset</span>
                 <button id="tvForceFireBtn"
-                        onclick="(function(){const sym=tvCurrentSymbol;if(!sym){alert('Select an asset first');return;}_onClickForceFire(sym);})()"
-                        title="Force-fire this asset on MEXC NOW — bypasses proximity, uses live price"
-                        style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Force Fire</button>
+                        onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()"
+                        title="Open the manual trade-plan details"
+                        style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">Build Trade Plan</button>
                 <button onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚙ Asset details</button>
               </div>
             </div>
@@ -2390,7 +2390,7 @@
     document.getElementById(tab).classList.add('active');
     // Sidebar nav active state
     document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
-    if (event && event.target && event.target.classList.contains('nav-btn')) {
+    if (typeof event !== 'undefined' && event.target && event.target.classList && event.target.classList.contains('nav-btn')) {
       event.target.classList.add('active');
     } else {
       // Activate matching sidebar btn
@@ -2593,7 +2593,8 @@
         try { refreshOpenModal(); } catch(e) {}
       });
     });
-    if (document.getElementById('top-setup').classList.contains('active')) renderSetups();
+    const topSetup = document.getElementById('top-setup');
+    if (topSetup && topSetup.classList.contains('active')) renderSetups();
     if (!silent && ok > 0) showToast(`✓ ${ok} prices updated${srcTag}`, 'ok');
     if (!silent && ok===0) showToast('✗ Sync failed (Binance + MEXC). Check connection.', 'err');
     // Phase 2: auto-push to sheet if URL is configured
@@ -4501,6 +4502,14 @@
         detail: `Qty ${p.holdVol} @ avg $${p.holdAvgPrice} · ${p.leverage}× · close from the Live Trading modal.`,
       };
     }
+    if (asset.symbol === 'US100') {
+      return {
+        state: 'manual-ict',
+        color: 'var(--gold)',
+        label: 'US100 ICT',
+        detail: 'Manual trade plan only. Wait for session, liquidity sweep, MSS/CHoCH, then entry model.',
+      };
+    }
     if (!_isFuturesAsset(asset)) return { state: 'manual', color: 'var(--text-mute)', label: '🏦 SPOT',     detail: 'Spot Watch only — flip to futures in the asset modal for manual fire controls.' };
     if (!_mexcContractSymbol(asset)) return { state: 'blocked', color: 'var(--bear)',     label: '✗ NO MEXC',   detail: 'No MEXC contract for this asset (CFD-only).' };
     if (typeof _liveTradingEnabled !== 'undefined' && !_liveTradingEnabled) {
@@ -4565,6 +4574,104 @@
     return (isFinite(v) ? Number(v).toFixed(digits) : '—') + '%';
   }
 
+  function _isUs100IctAsset(asset) {
+    return !!asset && asset.symbol === 'US100';
+  }
+
+  function _buildUs100IctState(asset, gst, session) {
+    if (typeof isInvalidated === 'function' && isInvalidated(asset)) {
+      return {
+        key: 'INVALIDATED',
+        label: 'US100 ICT · INVALIDATED',
+        color: 'var(--bear)',
+        reason: 'Old levels are broken. Do not reuse this setup.',
+        next: 'Wait for a fresh liquidity sweep, then MSS/CHoCH, then rebuild the entry model.',
+      };
+    }
+    const blackout = (typeof getMacroBlackout === 'function') ? getMacroBlackout(gst) : null;
+    if (blackout) {
+      return {
+        key: 'MACRO LOCKOUT',
+        label: 'US100 ICT · MACRO LOCKOUT',
+        color: 'var(--bear)',
+        reason: `${blackout.name || 'High-impact macro'} is too close.`,
+        next: 'Stand down until the event window clears and spreads normalize.',
+      };
+    }
+    if (!session || session.type === 'dead') {
+      return {
+        key: 'NO SESSION',
+        label: 'US100 ICT · NO SESSION',
+        color: 'var(--text-mute)',
+        reason: session?.name ? `${session.name} is not an entry window.` : 'No ICT entry window is active.',
+        next: 'Wait for London, NY AM, Macro, or Silver Bullet.',
+      };
+    }
+    const tf = asset?.tfEntries || {};
+    const hasSweep = Array.isArray(asset?.checks) && !!asset.checks[3];
+    const hasMss = Array.isArray(asset?.checks) && !!asset.checks[7];
+    const hasFvg = ['1m', '5m', '15m'].some(k => tf[k] && (tf[k].fvgZone || tf[k].entryReady));
+    if (!hasSweep) {
+      return {
+        key: 'WAITING SWEEP',
+        label: 'US100 ICT · WAITING SWEEP',
+        color: 'var(--liq)',
+        reason: `${session.name} active, but liquidity has not been taken yet.`,
+        next: 'Wait for buy-side or sell-side liquidity sweep.',
+      };
+    }
+    if (!hasMss) {
+      return {
+        key: 'MSS/CHoCH NEEDED',
+        label: 'US100 ICT · MSS/CHoCH NEEDED',
+        color: 'var(--liq)',
+        reason: 'Sweep is present, but displacement confirmation is not complete.',
+        next: 'Wait for 1m MSS/CHoCH in the trade direction.',
+      };
+    }
+    if (!hasFvg) {
+      return {
+        key: 'WAITING FVG RETRACE',
+        label: 'US100 ICT · WAITING FVG',
+        color: 'var(--gold)',
+        reason: 'Session, sweep, and MSS are aligned. Entry model still needs a clean FVG/OB retrace.',
+        next: 'Mark the displacement FVG/OB and wait for price to retrace.',
+      };
+    }
+    return {
+      key: 'VALID TRADE PLAN',
+      label: 'US100 ICT · VALID PLAN',
+      color: 'var(--bull)',
+      reason: `${session.name} active with sweep, MSS/CHoCH, and entry model present.`,
+      next: 'Build the manual trade plan: entry, invalidation, target, and no-trade condition.',
+    };
+  }
+
+  function _buildUs100IctDecision(asset) {
+    const gst = (typeof getGST === 'function') ? getGST() : new Date();
+    const session = (typeof getCurrentSession === 'function') ? getCurrentSession(gst) : null;
+    const ict = _buildUs100IctState(asset, gst, session);
+    const entry = Number(asset?.entry || 0);
+    const sl = Number(asset?.sl || 0);
+    const tp1 = Number(asset?.tp1 || asset?.tp || 0);
+    const riskLine = `Manual ICT · entry ${entry ? '$' + entry.toLocaleString() : '—'} · invalidation ${sl ? '$' + sl.toLocaleString() : '—'} · target ${tp1 ? '$' + tp1.toLocaleString() : '—'}`;
+    return {
+      state: 'us100-ict',
+      ictState: ict.key,
+      color: ict.color,
+      label: ict.label,
+      reason: ict.reason,
+      actionLabel: 'Build Trade Plan',
+      actionKind: 'plan',
+      riskLine,
+      stateRows: [
+        ['Session', session?.name || 'No active session'],
+        ['State', ict.key],
+        ['Next', ict.next],
+      ],
+    };
+  }
+
   function _buildLiveChartDecision(asset) {
     if (!asset) {
       return {
@@ -4576,6 +4683,10 @@
         actionKind: 'none',
         riskLine: 'No risk until an asset is selected.',
       };
+    }
+
+    if (_isUs100IctAsset(asset)) {
+      return _buildUs100IctDecision(asset);
     }
 
     const fire = (typeof getFireStatus === 'function') ? getFireStatus(asset) : null;
@@ -4634,10 +4745,20 @@
   function _renderLiveChartDecisionCenter(asset) {
     const d = _buildLiveChartDecision(asset);
     const sym = asset?.symbol || '';
+    const rows = Array.isArray(d.stateRows) && d.stateRows.length
+      ? `<div style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;">
+          ${d.stateRows.map(([k,v]) => `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:9px 10px;">
+            <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;margin-bottom:3px;">${k}</div>
+            <div style="font-size:11px;color:var(--text);font-family:'JetBrains Mono',monospace;line-height:1.4;">${v}</div>
+          </div>`).join('')}
+        </div>`
+      : '';
     const btn = d.actionKind === 'force'
       ? `<button onclick="_onClickForceFire('${sym}')" style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
       : d.actionKind === 'live'
         ? `<button onclick="openLiveTradingModal()" style="background:rgba(201,169,97,0.16);border:1px solid var(--gold);color:var(--gold);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
+        : d.actionKind === 'plan'
+          ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${sym}');if(a)openSetupModal(a);})()" style="background:rgba(201,169,97,0.16);border:1px solid var(--gold);color:var(--gold);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
         : d.actionKind === 'details'
           ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${sym}');if(a)openSetupModal(a);})()" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
           : '';
@@ -4652,6 +4773,7 @@
         </div>
         <div style="margin-top:10px;font-size:12px;color:var(--text-dim);line-height:1.6;">${d.reason}</div>
         <div style="margin-top:8px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">${d.riskLine}</div>
+        ${rows}
       </div>`;
   }
 
@@ -8901,7 +9023,7 @@
   };
 
   let tvChartLoaded = false;
-  let tvCurrentSymbol = 'BTC'; // Changes to best-signal asset on load
+  let tvCurrentSymbol = 'US100'; // Primary lane: US100 ICT cockpit first.
   let tvCurrentTimeframe = '1'; // default to 1m — matches the scalp setup the dashboard
                                  // actually trades on. Weekly view hid the FVG/OB
                                  // structure we care about.
@@ -8914,7 +9036,15 @@
     const desktopHost = document.getElementById('sideAssetsRows');
     const mobileHost = document.getElementById('mobileAssetPicker');
     if (!desktopHost && !mobileHost) return;
-    const assets = ASSETS.filter(a => TV_SYMBOLS[a.symbol]);
+    const spotWatchSyms = new Set(['BTC','ETH','SOL','BNB','XRP','SUI','ASTR']);
+    const metalSyms = new Set(['GOLD','SILVER']);
+    const assets = [
+      ...ASSETS.filter(a => a.symbol === 'US100'),
+      ...ASSETS.filter(a => spotWatchSyms.has(a.symbol)),
+      ...ASSETS.filter(a => metalSyms.has(a.symbol)),
+      ...ASSETS.filter(a => TV_SYMBOLS[a.symbol] && a.symbol !== 'US100' && !spotWatchSyms.has(a.symbol) && !metalSyms.has(a.symbol)),
+    ];
+    let lastGroup = '';
     const rows = assets.map(a => {
       const isActive = a.symbol === tvCurrentSymbol;
       const biasClass = (a.bias === 'bear' || a.bias === 'BEARISH') ? 'bias-bear'
@@ -8924,15 +9054,26 @@
         : a.bias === 'neutral' ? 'NEUTRAL'
         : (a.bias || '—');
       const grade = (a.grade || '').toString().toUpperCase();
-      const isFutures = _isFuturesAsset(a);
-      const modeBadge = isFutures
+      const isUs100 = a.symbol === 'US100';
+      const isSpotWatch = spotWatchSyms.has(a.symbol);
+      const isFutures = _isFuturesAsset(a) && !isSpotWatch;
+      const groupName = isUs100 ? 'US100 ICT Cockpit' : isSpotWatch ? 'Spot Watch' : metalSyms.has(a.symbol) ? 'Metals Manual' : 'Other';
+      const groupHeader = groupName !== lastGroup
+        ? `<div class="side-asset-group">${groupName}</div>`
+        : '';
+      lastGroup = groupName;
+      const modeBadge = isUs100
+        ? `<span class="side-mode-badge mode-fut" title="US100 manual ICT cockpit">ICT</span>`
+        : isSpotWatch
+          ? `<span class="side-mode-badge mode-spot" title="Spot Watch - buy low, sell high, no scalp">WATCH</span>`
+          : isFutures
         ? `<span class="side-mode-badge mode-fut" title="Futures — ICT entry/SL/TP, leverage, alerts">⚡ FUT</span>`
         : `<span class="side-mode-badge mode-spot" title="Spot — buy low, sell high, no alerts">🏦 SPOT</span>`;
       // Spot assets get a zone chip showing AT BUY / NEAR BUY / AT SELL / NEAR SELL.
       // 'mid' (out of zone) renders nothing — keeps the row uncluttered for the
       // 6 of 8 spot assets that aren't actionable on any given tick.
       let zoneBadge = '';
-      if (!isFutures) {
+      if (!isFutures || isSpotWatch) {
         const z = getSpotZone(a);
         if (z.state !== 'mid') {
           const dist = z.distancePct == null ? '' : ` ${z.distancePct >= 0 ? '+' : ''}${z.distancePct.toFixed(1)}%`;
@@ -8950,7 +9091,7 @@
           zoneBadge = `<span class="side-zone-badge ${cls}" title="${tip}">${label}</span>`;
         }
       }
-      return `<button class="side-asset-row${isActive?' active':''}" onclick="onSideAssetClick('${a.symbol}')" title="${a.symbol} · ${a.platform||''} · ${isFutures?'futures (calls)':'spot (buy low / sell high)'}">
+      return `${groupHeader}<button class="side-asset-row${isActive?' active':''}" onclick="onSideAssetClick('${a.symbol}')" title="${a.symbol} · ${a.platform||''} · ${isFutures?'futures (calls)':'spot (buy low / sell high)'}">
         <span class="sym">${a.symbol}${a.custom?' ⭐':''}</span>
         <span class="meta">
           ${modeBadge}
@@ -9149,6 +9290,8 @@
     if (sel) sel.value = symbol;
     const lbl = document.getElementById('tvCurrentSymbolLabel');
     if (lbl) lbl.textContent = symbol;
+    const title = document.getElementById('tvAnalysisTitle');
+    if (title) title.textContent = symbol === 'US100' ? '📊 US100 ICT Cockpit' : '📊 Spot Watch · Selected Asset';
     // Reveal the chart + analysis pane, hide the empty hint.
     const hint = document.getElementById('liveChartEmptyHint');
     const content = document.getElementById('liveChartContent');
@@ -9352,7 +9495,7 @@
     if (!a) return;
     const url = _exchangeUrl(a);
     if (!url) {
-      try { showToast(`${symbol} has no MEXC counterpart — try TradingView`, 'info'); } catch(e) {}
+      try { showToast(`${symbol} is chart-only here — use your broker/TradingView workflow`, 'info'); } catch(e) {}
       return;
     }
     _copyLevelsToClipboard(a).then(copied => {
@@ -9365,7 +9508,10 @@
   // the user explicitly asked for "bigger size entries" with wider stops/TPs.
   function _renderTradeOpinions(asset) {
     if (!asset || !asset.tfEntries || asset.tfEntries.closed) {
-      return `<div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">⟳ Computing spot vs futures opinion — needs MEXC/Binance kline analysis to populate (runs every 60s).</div>`;
+      const waiting = asset?.symbol === 'US100'
+        ? '⟳ Waiting for US100 timeframe analysis to populate the ICT plan.'
+        : '⟳ Computing spot vs futures opinion — waiting for market data to populate (runs every 60s).';
+      return `<div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">${waiting}</div>`;
     }
     const wantDir = ((asset.bias || '').toLowerCase().includes('bull')) ? 'bull' : 'bear';
     const fmt = v => v >= 1000 ? v.toFixed(2) : v >= 10 ? v.toFixed(3) : v >= 1 ? v.toFixed(4) : v.toFixed(6);
@@ -9495,19 +9641,44 @@
 
     const analysisPanel = document.getElementById('tvAnalysisPanel');
     if (!analysisPanel) return;
+    const liveDecision = (typeof _buildLiveChartDecision === 'function') ? _buildLiveChartDecision(asset) : null;
 
     // FIRE STATUS badge — at-a-glance answer to "is it actionable?" The user
     // said the trigger should be easy and clear; this surfaces the same
     // signal state in plain English, refreshed every
     // 1s by the existing tick() call.
-    const fire = (typeof getFireStatus === 'function') ? getFireStatus(asset) : null;
+    const fire = _isUs100IctAsset(asset)
+      ? liveDecision
+      : ((typeof getFireStatus === 'function') ? getFireStatus(asset) : null);
     if (fire) {
       const badge = document.getElementById('tvFireStatusBadge');
       if (badge) {
         const pulse = fire.state === 'ready' ? 'animation:zone-pulse 1.2s ease-in-out infinite;' : '';
         badge.style.cssText = `background:transparent;border:1px solid ${fire.color};color:${fire.color};border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;${pulse}`;
         badge.textContent = fire.label;
-        badge.title = fire.detail;
+        badge.title = fire.detail || fire.reason || '';
+      }
+      const forceBtn = document.getElementById('tvForceFireBtn');
+      if (forceBtn) {
+        if (_isUs100IctAsset(asset)) {
+          forceBtn.textContent = 'Build Trade Plan';
+          forceBtn.title = 'Open US100 manual ICT trade-plan details';
+          forceBtn.onclick = () => openSetupModal(asset);
+          forceBtn.style.background = 'rgba(201,169,97,0.18)';
+          forceBtn.style.borderColor = 'var(--gold)';
+          forceBtn.style.color = 'var(--gold)';
+        } else {
+          forceBtn.textContent = '🔥 Force Fire';
+          forceBtn.title = 'Force-fire this asset on MEXC NOW — bypasses proximity, uses live price';
+          forceBtn.onclick = () => {
+            const sym = tvCurrentSymbol;
+            if (!sym) { alert('Select an asset first'); return; }
+            _onClickForceFire(sym);
+          };
+          forceBtn.style.background = 'rgba(224,93,93,0.18)';
+          forceBtn.style.borderColor = 'var(--bear)';
+          forceBtn.style.color = 'var(--bear)';
+        }
       }
     }
 
@@ -11014,6 +11185,10 @@
     _try('renderMarketRead', renderMarketRead);
     _try('renderMarketIntelligencePanel', renderMarketIntelligencePanel);
     _try('renderAnalysis', renderAnalysis);
+    _try('openUS100Cockpit', () => {
+      switchTab('live-chart');
+      switchTVChart('US100');
+    });
     _try('renderAlertLog', renderAlertLog);
     _try('renderJournal', renderJournal);
     _try('renderEconCalendar', renderEconCalendar);

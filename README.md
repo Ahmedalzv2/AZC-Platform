@@ -1,10 +1,14 @@
 # ICT AutoPilot
 
-Single-page trading dashboard for ICT (Inner Circle Trader) setups across
-crypto, futures, and US100. Current policy is manual execution only:
-auto-fire is disabled after OOS research found no positive-EV crypto
-scalp configuration. The dashboard still shows signals, fire status,
-spot zones, live positions, and manual Force Fire controls.
+Single-page trading dashboard centered on a US100 ICT cockpit plus a
+separate Spot Watch lane for crypto accumulation/distribution context.
+US100 is manual planning only: session, liquidity sweep, MSS/CHoCH,
+entry model, invalidation, and next action. Crypto assets are for
+buy-low / sell-high monitoring, news context, and zone alerts.
+
+Auto-fire is disabled after OOS research found no positive-EV crypto
+scalp configuration. Live execution controls remain for supported manual
+futures lanes only; US100 never routes through them.
 
 Hosted on GitHub Pages — open `index.html` directly or visit the live
 URL: <https://ahmedalzv2.github.io/ict-autopilot/>.
@@ -13,7 +17,7 @@ URL: <https://ahmedalzv2.github.io/ict-autopilot/>.
 
 | File          | Role                                                       |
 |---------------|------------------------------------------------------------|
-| `index.html`  | Main dashboard. All app logic + UI.                        |
+| `index.html`  | Main dashboard. US100 cockpit + Spot Watch + app logic.    |
 | `styles.css`  | Theme + layout. Linked by `index.html`.                    |
 | `us100.html`  | Standalone US100 (NASDAQ) futures view.                    |
 | `worker.js`   | Cloudflare Worker that proxies signed MEXC contract calls. |

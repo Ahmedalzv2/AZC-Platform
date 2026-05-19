@@ -61,13 +61,14 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /SPOT/);
   });
 
-  test('CFD-only futures asset (US100) → blocked (no MEXC contract)', () => {
+  test('US100 stays manual ICT and does not mention exchange routing', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const us100 = app.ASSETS.find(a => a.symbol === 'US100');
     const s = app.getFireStatus(us100);
-    assert.equal(s.state, 'blocked');
-    assert.match(s.label, /NO MEXC/);
+    assert.equal(s.state, 'manual-ict');
+    assert.match(s.label, /US100 ICT/);
+    assert.doesNotMatch(`${s.label} ${s.detail}`, /MEXC|Force Fire/i);
   });
 
   test('master switch off → blocked LIVE OFF', () => {

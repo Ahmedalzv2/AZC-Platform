@@ -63,4 +63,35 @@ describe('Live Chart Decision Center', () => {
     assert.equal(d.actionLabel, 'Open Live Trading');
     assert.match(d.reason, /kill-switch|Live Trading/i);
   });
+
+  test('US100 decision uses the cockpit state machine and never points at execution', () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    const us100 = app.ASSETS.find(a => a.symbol === 'US100');
+    us100.price = 27000;
+
+    const d = app._buildLiveChartDecision(us100);
+
+    assert.equal(d.state, 'us100-ict');
+    assert.equal(d.actionLabel, 'Build Trade Plan');
+    assert.equal(d.actionKind, 'plan');
+    assert.match(d.label, /US100 ICT/);
+    assert.ok(d.ictState);
+    assert.ok(Array.isArray(d.stateRows));
+    assert.doesNotMatch(`${d.reason} ${d.riskLine}`, /MEXC|Force Fire|FP Markets/i);
+  });
+
+  test('US100 decision center renders trade-plan action, not Force Fire', () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    const us100 = app.ASSETS.find(a => a.symbol === 'US100');
+
+    const html = app._renderLiveChartDecisionCenter(us100);
+
+    assert.match(html, /Build Trade Plan/);
+    assert.match(html, /State/);
+    assert.match(html, /Next/);
+    assert.doesNotMatch(html, /Force Fire/);
+    assert.doesNotMatch(html, /_onClickForceFire\('US100'\)/);
+  });
 });
