@@ -83,6 +83,9 @@ const EXPORTS = [
   '_profitGuardian', 'BREAK_EVEN_TRIGGER_PCT', 'BREAK_EVEN_CLOSE_PCT',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   '_buildLiveChartDecision', '_renderLiveChartDecisionCenter',
+  '_isUs100IctAsset', '_hasUs100ActivePlan',
+  '_renderSelectedTFCard', '_renderTfReadinessHTML',
+  '_renderLiveChartTFLevels', '_renderTradeOpinions',
   // scalp mode
   'getScalpTf', 'setScalpTf',
   'scalpMonitorTick', '_normalizeBiasDir', '_suggestedEntryForTf',

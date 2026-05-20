@@ -112,4 +112,30 @@ describe('Live Chart Decision Center', () => {
     assert.doesNotMatch(html, /Force Fire/);
     assert.doesNotMatch(html, /_onClickForceFire\('US100'\)/);
   });
+
+  test('US100 live chart panel hides auto-TF spinners (manual ICT, no kline source)', () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    const us100 = app.ASSETS.find(a => a.symbol === 'US100');
+    us100.price = 26983;
+    us100.tfEntries = null;
+
+    assert.equal(app._renderSelectedTFCard(us100, '5'), '');
+    assert.equal(app._renderTfReadinessHTML(us100), '');
+    assert.equal(app._renderLiveChartTFLevels(us100), '');
+    assert.equal(app._renderTradeOpinions(us100), '');
+  });
+
+  test('Non-US100 assets still show the auto-TF spinners while tfEntries is loading', () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    const sol = app.ASSETS.find(a => a.symbol === 'SOL');
+    sol.price = 100;
+    sol.tfEntries = null;
+
+    assert.match(app._renderSelectedTFCard(sol, '5'), /analyzing this timeframe/);
+    assert.match(app._renderTfReadinessHTML(sol), /analyzing TFs/);
+    assert.match(app._renderLiveChartTFLevels(sol), /analyzing per-TF levels/);
+    assert.match(app._renderTradeOpinions(sol), /Computing spot vs futures/);
+  });
 });

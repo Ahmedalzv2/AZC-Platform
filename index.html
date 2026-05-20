@@ -1856,6 +1856,10 @@
   }
 
   function _renderTfReadinessHTML(asset) {
+    // US100 is manual ICT (CFD-only — no MEXC/Binance kline source). The
+    // auto per-TF readiness ladder never populates, so don't render the
+    // forever-spinning placeholder.
+    if (typeof _isUs100IctAsset === 'function' && _isUs100IctAsset(asset)) return '';
     const data = _computeTfReadiness(asset);
     if (!data) return '<div style="font-size:10px;color:var(--text-mute);margin:6px 0;font-family:\'JetBrains Mono\',monospace;">⟳ analyzing TFs…</div>';
     const actionable = data.filter(d => d.dist != null && d.score >= 1);
@@ -9345,6 +9349,7 @@
   // has selected on the chart (driven by tvCurrentTimeframe). When they click
   // 1m / 5m / 15m / 1H / 4H / Daily, this card flips to that TF's data.
   function _renderSelectedTFCard(asset, currentTimeframe) {
+    if (_isUs100IctAsset(asset)) return '';
     if (!asset.tfEntries) return '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;">⟳ analyzing this timeframe…</div>';
     if (asset.tfEntries.closed) return '';
     const tf = TV_TF_TO_INTERNAL[currentTimeframe] || '5m';
@@ -9416,6 +9421,7 @@
 
   // Per-TF entry/SL/TP rows for the Live Chart analysis panel
   function _renderLiveChartTFLevels(asset) {
+    if (_isUs100IctAsset(asset)) return '';
     if (!asset.tfEntries) return '<div style="margin-top:14px;font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;padding:10px;">⟳ analyzing per-TF levels…</div>';
     if (asset.tfEntries.closed) return `<div style="margin-top:14px;font-size:11px;color:var(--liq);font-family:'JetBrains Mono',monospace;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">🔒 Market closed for the weekend · reopens ${asset.tfEntries.reopens||'Sunday 22:00 GST'}</div>`;
     const rows = TF_LIST.map(tf => {
@@ -9532,11 +9538,12 @@
   // Designed to surface bigger setups (1H/4H/Daily) instead of 1m scalps —
   // the user explicitly asked for "bigger size entries" with wider stops/TPs.
   function _renderTradeOpinions(asset) {
+    // US100 runs as manual ICT (no kline source for the CFD), so the
+    // auto spot-vs-futures opinion card has nothing to compute. The
+    // manual decision center and the analysis text above already cover it.
+    if (_isUs100IctAsset(asset)) return '';
     if (!asset || !asset.tfEntries || asset.tfEntries.closed) {
-      const waiting = asset?.symbol === 'US100'
-        ? '⟳ Waiting for US100 timeframe analysis to populate the ICT plan.'
-        : '⟳ Computing spot vs futures opinion — waiting for market data to populate (runs every 60s).';
-      return `<div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">${waiting}</div>`;
+      return `<div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">⟳ Computing spot vs futures opinion — waiting for market data to populate (runs every 60s).</div>`;
     }
     const wantDir = ((asset.bias || '').toLowerCase().includes('bull')) ? 'bull' : 'bear';
     const fmt = v => v >= 1000 ? v.toFixed(2) : v >= 10 ? v.toFixed(3) : v >= 1 ? v.toFixed(4) : v.toFixed(6);
