@@ -9001,39 +9001,54 @@
       } else console.warn('SILVER: MEXC sources all failed');
     }
 
-    // ── US100 via TradingView Scanner — median across multiple venues ──
-    // FPMARKETS:US100 has been observed returning a stale session-close
-    // (~$26.9k) via the scanner even while its own chart widget streams the
-    // live ~$29k tick. A "first-non-null wins" chain still accepts that
-    // stale quote — so query every CFD/futures venue quoting the same
-    // Nasdaq-100 index in one bulk scanner call and take the median. A
-    // single stuck feed becomes an outlier the median rejects.
+    // ── US100: Yahoo Finance primary, TV scanner median fallback ──
+    // All-scanner approaches returned empty payloads in production (likely
+    // CORS / regional block on scanner.tradingview.com), so asset.price
+    // stayed pinned at its hardcoded $26,983 initial constant while the
+    // embedded chart streamed the live tick. Yahoo's v8 chart endpoint
+    // serves Access-Control-Allow-Origin:* and reliably returns
+    // regularMarketPrice on ^NDX — same Nasdaq-100 instrument FPMARKETS:US100
+    // tracks (matches within a few points).
     const us100Asset = ASSETS.find(a => a.symbol === 'US100');
     if (us100Asset) {
-      const tickers = [
-        'FPMARKETS:US100',
-        'OANDA:NAS100USD',
-        'CAPITALCOM:US100',
-        'CURRENCYCOM:US100',
-        'TVC:NDQ',
-      ];
-      const quotes = [];
+      let price = null, sourceUsed = null;
       try {
-        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers},columns:['lp','close']}), cache:'no-store', signal:sig()});
+        const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1m&range=1d', {cache:'no-store', signal:sig()});
         if (r.ok) {
           const j = await r.json();
-          for (const row of (j?.data || [])) {
-            const p = (row?.d?.[0] || row?.d?.[1]) || null;
-            if (p && p > 0) quotes.push({ ticker: row?.s || '?', p });
+          const result = j?.chart?.result?.[0];
+          const live = result?.meta?.regularMarketPrice;
+          if (live && live > 0) { price = live; sourceUsed = 'yahoo:^NDX'; }
+          if (!(price > 0)) {
+            const closes = result?.indicators?.quote?.[0]?.close || [];
+            for (let i = closes.length - 1; i >= 0; i--) {
+              if (closes[i] && closes[i] > 0) { price = closes[i]; sourceUsed = 'yahoo:^NDX(last-candle)'; break; }
+            }
           }
         }
       } catch(e) {}
-      if (quotes.length) {
-        quotes.sort((a,b) => a.p - b.p);
-        const mid = quotes[Math.floor(quotes.length / 2)];
-        us100Asset.price = mid.p; updated = true;
-        const tail = quotes.map(q => (q.ticker.split(':')[0] || q.ticker) + '=$' + q.p.toFixed(0)).join(' ');
-        console.log('%c📡 US100 (median ' + mid.ticker + '): $' + mid.p.toFixed(2) + ' · ' + tail, 'color:#5cb88a;font-family:monospace');
+      if (!(price > 0)) {
+        const tickers = ['FPMARKETS:US100', 'OANDA:NAS100USD', 'CAPITALCOM:US100', 'CURRENCYCOM:US100', 'TVC:NDQ'];
+        const quotes = [];
+        try {
+          const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers},columns:['lp','close']}), cache:'no-store', signal:sig()});
+          if (r.ok) {
+            const j = await r.json();
+            for (const row of (j?.data || [])) {
+              const p = (row?.d?.[0] || row?.d?.[1]) || null;
+              if (p && p > 0) quotes.push({ ticker: row?.s || '?', p });
+            }
+          }
+        } catch(e) {}
+        if (quotes.length) {
+          quotes.sort((a,b) => a.p - b.p);
+          const mid = quotes[Math.floor(quotes.length / 2)];
+          price = mid.p; sourceUsed = 'scanner-median:' + mid.ticker + '(' + quotes.length + ')';
+        }
+      }
+      if (price && price > 0) {
+        us100Asset.price = price; updated = true;
+        console.log('%c📡 US100 (' + sourceUsed + '): $' + price.toFixed(2), 'color:#5cb88a;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(us100Asset);
       } else console.warn('US100: all price sources failed');
     }
