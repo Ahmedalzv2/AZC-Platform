@@ -9001,12 +9001,13 @@
       } else console.warn('SILVER: MEXC sources all failed');
     }
 
-    // ── US100 via TradingView Scanner with multi-source fallback ──
-    // FPMARKETS:US100 occasionally returns a stale session-close even while
-    // the chart widget is streaming live ticks (user saw chart ≈ $29k while
-    // dashboard analysis still read $26.9k). Cross-check several CFD/futures
-    // venues quoting the same Nasdaq-100 index and take the first fresh quote.
-    // Each venue is a CORS-friendly TV scanner call.
+    // ── US100 via TradingView Scanner — median across multiple venues ──
+    // FPMARKETS:US100 has been observed returning a stale session-close
+    // (~$26.9k) via the scanner even while its own chart widget streams the
+    // live ~$29k tick. A "first-non-null wins" chain still accepts that
+    // stale quote — so query every CFD/futures venue quoting the same
+    // Nasdaq-100 index in one bulk scanner call and take the median. A
+    // single stuck feed becomes an outlier the median rejects.
     const us100Asset = ASSETS.find(a => a.symbol === 'US100');
     if (us100Asset) {
       const tickers = [
@@ -9016,20 +9017,23 @@
         'CURRENCYCOM:US100',
         'TVC:NDQ',
       ];
-      let price = null, sourceUsed = null;
-      for (const ticker of tickers) {
-        try {
-          const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:[ticker]},columns:['lp','close']}), cache:'no-store', signal:sig()});
-          if (!r.ok) continue;
+      const quotes = [];
+      try {
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers},columns:['lp','close']}), cache:'no-store', signal:sig()});
+        if (r.ok) {
           const j = await r.json();
-          const row = j?.data?.[0]?.d;
-          const p = (row && (row[0] || row[1])) || null;
-          if (p && p > 0) { price = p; sourceUsed = ticker; break; }
-        } catch(e) {}
-      }
-      if (price && price > 0) {
-        us100Asset.price = price; updated = true;
-        console.log('%c📡 US100 (' + sourceUsed + '): $' + price.toFixed(2), 'color:#5cb88a;font-family:monospace');
+          for (const row of (j?.data || [])) {
+            const p = (row?.d?.[0] || row?.d?.[1]) || null;
+            if (p && p > 0) quotes.push({ ticker: row?.s || '?', p });
+          }
+        }
+      } catch(e) {}
+      if (quotes.length) {
+        quotes.sort((a,b) => a.p - b.p);
+        const mid = quotes[Math.floor(quotes.length / 2)];
+        us100Asset.price = mid.p; updated = true;
+        const tail = quotes.map(q => (q.ticker.split(':')[0] || q.ticker) + '=$' + q.p.toFixed(0)).join(' ');
+        console.log('%c📡 US100 (median ' + mid.ticker + '): $' + mid.p.toFixed(2) + ' · ' + tail, 'color:#5cb88a;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(us100Asset);
       } else console.warn('US100: all price sources failed');
     }
