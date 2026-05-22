@@ -2,111 +2,104 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
-// Combined stub: routes the local /api/us100-price proxy and the TV scanner
-// to caller-supplied responders so individual tests can switch one off, the
-// other on, etc. FPMARKETS:US100 is a CFD wrapping CME_MINI:NQ1! — that's
-// the only public ticker quoting the same instrument the chart embeds.
-function makeStubs({ proxy, scanner, calls = { proxy: 0, scanner: [] } }) {
-  return async (url, init) => {
+// Stubs route by URL pattern. Three sources, in priority order:
+//  (1) `<workerUrl>/us100` — Cloudflare Worker relay, the only path that
+//      works from GitHub Pages (scanner.tradingview.com refuses cross-origin
+//      POSTs from github.io, confirmed via Playwright).
+//  (2) `/api/us100-price` — same-origin server.mjs proxy for `npm start`
+//      users.
+//  (3) Nothing — leave seed price untouched.
+function makeStubs({ worker, proxy, calls = { worker: 0, proxy: 0 } }) {
+  return async (url) => {
     const u = String(url);
+    if (u.includes('/us100') && !u.includes('/api/us100-price')) {
+      calls.worker++;
+      return worker ? worker() : { ok: false, json: async () => ({}) };
+    }
     if (u.includes('/api/us100-price')) {
       calls.proxy++;
       return proxy ? proxy() : { ok: false, json: async () => ({}) };
     }
-    if (u.includes('scanner.tradingview.com')) {
-      const body = JSON.parse(init?.body || '{}');
-      const tickers = body?.symbols?.tickers || [];
-      calls.scanner.push([...tickers]);
-      return scanner ? scanner(tickers) : { ok: false, json: async () => ({}) };
-    }
-    // GOLD / SILVER MEXC paths — return not-ok so they bail without touching us
     return { ok: false, json: async () => ({}) };
   };
 }
 
-const proxyOk = (price, source = 'CME_MINI:NQ1!') => () => ({
+const ok = (price, source = 'CME_MINI:NQ1!') => () => ({
   ok: true,
   json: async () => ({ price, source, ts: Date.now() }),
 });
 
-const scannerWithPrices = (pricesByTicker) => (tickers) => ({
-  ok: true,
-  json: async () => ({
-    data: tickers.map(t => ({ s: t, d: pricesByTicker[t] || [null, null] })),
-  }),
-});
-
-describe('US100 price — local proxy primary, TV scanner NQ1! fallback', () => {
-  test('Local proxy wins when it returns a price', async () => {
-    const calls = { proxy: 0, scanner: [] };
+describe('US100 price — worker primary, local proxy fallback', () => {
+  test('Cloudflare Worker /us100 wins when configured and reachable', async () => {
+    const calls = { worker: 0, proxy: 0 };
     const { app } = loadApp({
-      fetch: makeStubs({
-        calls,
-        proxy: proxyOk(29660.75),
-        scanner: scannerWithPrices({ 'CME_MINI:NQ1!': [29500, 29500] }),
-      }),
+      fetch: makeStubs({ calls, worker: ok(29667.25), proxy: ok(99999) }),
     });
     app.loadTradeModes();
+    app.setMexcWorkerUrl('https://my.workers.dev');
     const us100 = app.ASSETS.find(a => a.symbol === 'US100');
     await app.fetchNonBinancePrices();
-    assert.equal(us100.price, 29660.75);
+    assert.equal(us100.price, 29667.25);
+    assert.equal(calls.worker, 1);
+    assert.equal(calls.proxy, 0, 'local proxy skipped when worker succeeds');
+  });
+
+  test('Falls back to /api/us100-price when worker is unreachable', async () => {
+    const calls = { worker: 0, proxy: 0 };
+    const { app } = loadApp({
+      fetch: makeStubs({ calls, worker: null, proxy: ok(29670) }),
+    });
+    app.loadTradeModes();
+    app.setMexcWorkerUrl('https://my.workers.dev');
+    const us100 = app.ASSETS.find(a => a.symbol === 'US100');
+    await app.fetchNonBinancePrices();
+    assert.equal(us100.price, 29670);
+    assert.equal(calls.worker, 1);
     assert.equal(calls.proxy, 1);
-    const us100ScannerCalls = calls.scanner.filter(t => t.includes('CME_MINI:NQ1!'));
-    assert.equal(us100ScannerCalls.length, 0, 'scanner skipped when proxy succeeds');
   });
 
-  test('Falls back to TV scanner CME_MINI:NQ1! when proxy unreachable', async () => {
-    const calls = { proxy: 0, scanner: [] };
+  test('Skips worker call entirely when no worker URL is set', async () => {
+    const calls = { worker: 0, proxy: 0 };
     const { app } = loadApp({
-      fetch: makeStubs({
-        calls,
-        proxy: null,
-        scanner: scannerWithPrices({ 'CME_MINI:NQ1!': [null, 29660.75] }),
-      }),
+      fetch: makeStubs({ calls, worker: ok(29667), proxy: ok(29670) }),
     });
     app.loadTradeModes();
+    // no setMexcWorkerUrl call
     const us100 = app.ASSETS.find(a => a.symbol === 'US100');
     await app.fetchNonBinancePrices();
-    assert.equal(us100.price, 29660.75);
-    const us100ScannerCalls = calls.scanner.filter(t => t.includes('CME_MINI:NQ1!'));
-    assert.equal(us100ScannerCalls.length, 1, 'scanner is the fallback when proxy dies');
+    assert.equal(us100.price, 29670, 'falls straight to local proxy');
+    assert.equal(calls.worker, 0, 'no worker URL → no worker fetch');
   });
 
-  test('Scanner lp preferred over close when both present', async () => {
+  test('Leaves seed price untouched when every source fails', async () => {
     const { app } = loadApp({
-      fetch: makeStubs({
-        proxy: null,
-        scanner: scannerWithPrices({ 'CME_MINI:NQ1!': [29700, 29660] }),
-      }),
+      fetch: makeStubs({ worker: null, proxy: null }),
     });
     app.loadTradeModes();
-    const us100 = app.ASSETS.find(a => a.symbol === 'US100');
-    await app.fetchNonBinancePrices();
-    assert.equal(us100.price, 29700);
-  });
-
-  test('Leaves price untouched when both proxy and scanner fail', async () => {
-    const { app } = loadApp({
-      fetch: makeStubs({ proxy: null, scanner: null }),
-    });
-    app.loadTradeModes();
+    app.setMexcWorkerUrl('https://my.workers.dev');
     const us100 = app.ASSETS.find(a => a.symbol === 'US100');
     us100.price = 12345;
     await app.fetchNonBinancePrices();
     assert.equal(us100.price, 12345);
   });
 
-  test('Empty scanner payload leaves price untouched', async () => {
+  test('Worker URL with trailing slash is normalized', async () => {
+    const captured = [];
     const { app } = loadApp({
-      fetch: makeStubs({
-        proxy: null,
-        scanner: () => ({ ok: true, json: async () => ({ data: [] }) }),
-      }),
+      fetch: async (url) => {
+        captured.push(String(url));
+        if (String(url).endsWith('/us100')) {
+          return { ok: true, json: async () => ({ price: 29667, source: 'CME_MINI:NQ1!' }) };
+        }
+        return { ok: false, json: async () => ({}) };
+      },
     });
     app.loadTradeModes();
+    app.setMexcWorkerUrl('https://my.workers.dev/');
     const us100 = app.ASSETS.find(a => a.symbol === 'US100');
-    us100.price = 99999;
     await app.fetchNonBinancePrices();
-    assert.equal(us100.price, 99999);
+    assert.equal(us100.price, 29667);
+    assert.ok(captured.some(u => u === 'https://my.workers.dev/us100'),
+      'trailing slash on worker URL stripped before appending /us100');
   });
 });

@@ -9007,30 +9007,33 @@
       } else console.warn('SILVER: MEXC sources all failed');
     }
 
-    // ── US100: CME E-mini Nasdaq-100 Futures (NQ1!) via TV scanner ──
+    // ── US100: CME E-mini Nasdaq-100 Futures (NQ1!) via Cloudflare Worker ──
     // FPMARKETS:US100 (the chart symbol) is a CFD that tracks NQ1!, not the
-    // cash ^NDX index. Old code pulled Yahoo ^NDX (~22-26k) which is the
-    // wrong instrument — clashes by ~3k points with the chart and pinned
-    // the dashboard at a stale value. NQ1! quotes match FPMARKETS:US100
-    // within a few points. FPMARKETS:US100 itself isn't queryable on
-    // scanner.tradingview.com, so CME_MINI:NQ1! is the closest CORS-friendly
-    // public source for the same instrument.
+    // cash ^NDX index. Both scanner.tradingview.com and Yahoo's v8 chart API
+    // refuse cross-origin POSTs from github.io (confirmed via Playwright
+    // against the real deployed page), so the dashboard cannot call either
+    // directly from the browser. The MEXC Worker the user already has set
+    // up exposes a public `/us100` endpoint that relays the same TV scanner
+    // query server-side and returns it with CORS headers. The local
+    // `/api/us100-price` proxy in server.mjs is kept as a same-origin
+    // fallback for users running the dashboard from `npm start` rather than
+    // GitHub Pages.
     const us100Asset = ASSETS.find(a => a.symbol === 'US100');
     if (us100Asset) {
       let price = null, sourceUsed = null;
-      try {
+      const workerUrl = (typeof getMexcWorkerUrl === 'function') ? getMexcWorkerUrl() : '';
+      if (workerUrl) try {
+        const r = await fetch(workerUrl.replace(/\/$/, '') + '/us100', {cache:'no-store', signal:sig()});
+        if (r.ok) {
+          const j = await r.json();
+          if (j?.price && j.price > 0) { price = j.price; sourceUsed = 'worker:' + (j.source || 'NQ1!'); }
+        }
+      } catch(e) {}
+      if (!(price > 0)) try {
         const r = await fetch('/api/us100-price', {cache:'no-store', signal:sig()});
         if (r.ok) {
           const j = await r.json();
           if (j?.price && j.price > 0) { price = j.price; sourceUsed = 'local-proxy:' + (j.source || 'NQ1!'); }
-        }
-      } catch(e) {}
-      if (!(price > 0)) try {
-        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['CME_MINI:NQ1!']},columns:['lp','close']}), cache:'no-store', signal:sig()});
-        if (r.ok) {
-          const j = await r.json();
-          const p = (j?.data?.[0]?.d?.[0] || j?.data?.[0]?.d?.[1]) || null;
-          if (p && p > 0) { price = p; sourceUsed = 'tv-scanner:CME_MINI:NQ1!'; }
         }
       } catch(e) {}
       if (price && price > 0) {
