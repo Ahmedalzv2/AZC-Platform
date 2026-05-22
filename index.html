@@ -829,7 +829,7 @@
     {
       symbol: 'US100', platform: 'FP Markets CFD', type: 'FUTURES',
       entry: 26800, sl: 26950, tp1: 26000, tp2: 25500,
-      grade: 'a', armed: false, price: 26983.00, change24h: 0,
+      grade: 'a', armed: false, price: 29660.00, change24h: 0,
       bias: 'IN FLUX', dol: 'Weekly close decides', invalidation: 'Daily close < $26,400',
       remarks: 'Testing weekly bear OB. 3 scenarios active. Weekly close is the key.',
       watch: '(A) Break > 26,902 → 27,500. (B) Rejection + 4H CHoCH → short 26,000. (C) Close > 27K = BULLISH.',
@@ -6029,17 +6029,23 @@
   // Then deploy as: Execute as Me · Anyone can access
   // Paste the deployment URL below in APPS_SCRIPT_URL:
 
-  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxmszoVaDfeEQ0-t7iy3_aWcfs1V0mu49W8s5832u9iSWY_AQllAsOtZ1Vavwdt3u2pAg/exec';
+  function getLocalSetting(key) {
+    try { return localStorage.getItem(key) || ''; }
+    catch { return ''; }
+  }
+
+  const APPS_SCRIPT_URL = getLocalSetting('ict_apps_script_url');
 
   // ═══════════════════════════════════════════════════════
   // 🌐 SOCIAL PULSE — LunarCrush social sentiment per asset
-  // Sign up free at https://lunarcrush.com/developers, paste key here.
-  // Free tier = 100 calls/day, 10/min. We cache 5 min per coin.
+  // Sign up free at https://lunarcrush.com/developers, then set keys locally:
+  // localStorage.setItem('ict_lunarcrush_api_key', '...')
+  // localStorage.setItem('ict_cryptocompare_api_key', '...')
+  // localStorage.setItem('ict_scrapebadger_api_key', '...')
   // ═══════════════════════════════════════════════════════
-  const LUNARCRUSH_API_KEY = 'x81eei517ste2rhvh5k1c1tskmoorz3p6luvdra'; // <-- paste your key here, e.g. 'abcd1234...'
-  // CryptoCompare (Massive) API key — boosts rate limits + unlocks filtered endpoints
-  const CRYPTOCOMPARE_API_KEY = 'JitYqxolfZ1w8XLr8rAoRtiFRZw3UgYn';
-  const SCRAPEBADGER_API_KEY = 'sb_live_pGrrrxn_7Qz9yU_Ay33cPjYJud4VJsrPrZgDL7EaFmY';
+  const LUNARCRUSH_API_KEY = getLocalSetting('ict_lunarcrush_api_key');
+  const CRYPTOCOMPARE_API_KEY = getLocalSetting('ict_cryptocompare_api_key');
+  const SCRAPEBADGER_API_KEY = getLocalSetting('ict_scrapebadger_api_key');
   const _socialCache = {}; // { symbol: { data, ts } }
   const SOCIAL_TTL_MS = 5 * 60 * 1000;
 
@@ -9001,51 +9007,32 @@
       } else console.warn('SILVER: MEXC sources all failed');
     }
 
-    // ── US100: Yahoo Finance primary, TV scanner median fallback ──
-    // All-scanner approaches returned empty payloads in production (likely
-    // CORS / regional block on scanner.tradingview.com), so asset.price
-    // stayed pinned at its hardcoded $26,983 initial constant while the
-    // embedded chart streamed the live tick. Yahoo's v8 chart endpoint
-    // serves Access-Control-Allow-Origin:* and reliably returns
-    // regularMarketPrice on ^NDX — same Nasdaq-100 instrument FPMARKETS:US100
-    // tracks (matches within a few points).
+    // ── US100: CME E-mini Nasdaq-100 Futures (NQ1!) via TV scanner ──
+    // FPMARKETS:US100 (the chart symbol) is a CFD that tracks NQ1!, not the
+    // cash ^NDX index. Old code pulled Yahoo ^NDX (~22-26k) which is the
+    // wrong instrument — clashes by ~3k points with the chart and pinned
+    // the dashboard at a stale value. NQ1! quotes match FPMARKETS:US100
+    // within a few points. FPMARKETS:US100 itself isn't queryable on
+    // scanner.tradingview.com, so CME_MINI:NQ1! is the closest CORS-friendly
+    // public source for the same instrument.
     const us100Asset = ASSETS.find(a => a.symbol === 'US100');
     if (us100Asset) {
       let price = null, sourceUsed = null;
       try {
-        const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1m&range=1d', {cache:'no-store', signal:sig()});
+        const r = await fetch('/api/us100-price', {cache:'no-store', signal:sig()});
         if (r.ok) {
           const j = await r.json();
-          const result = j?.chart?.result?.[0];
-          const live = result?.meta?.regularMarketPrice;
-          if (live && live > 0) { price = live; sourceUsed = 'yahoo:^NDX'; }
-          if (!(price > 0)) {
-            const closes = result?.indicators?.quote?.[0]?.close || [];
-            for (let i = closes.length - 1; i >= 0; i--) {
-              if (closes[i] && closes[i] > 0) { price = closes[i]; sourceUsed = 'yahoo:^NDX(last-candle)'; break; }
-            }
-          }
+          if (j?.price && j.price > 0) { price = j.price; sourceUsed = 'local-proxy:' + (j.source || 'NQ1!'); }
         }
       } catch(e) {}
-      if (!(price > 0)) {
-        const tickers = ['FPMARKETS:US100', 'OANDA:NAS100USD', 'CAPITALCOM:US100', 'CURRENCYCOM:US100', 'TVC:NDQ'];
-        const quotes = [];
-        try {
-          const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers},columns:['lp','close']}), cache:'no-store', signal:sig()});
-          if (r.ok) {
-            const j = await r.json();
-            for (const row of (j?.data || [])) {
-              const p = (row?.d?.[0] || row?.d?.[1]) || null;
-              if (p && p > 0) quotes.push({ ticker: row?.s || '?', p });
-            }
-          }
-        } catch(e) {}
-        if (quotes.length) {
-          quotes.sort((a,b) => a.p - b.p);
-          const mid = quotes[Math.floor(quotes.length / 2)];
-          price = mid.p; sourceUsed = 'scanner-median:' + mid.ticker + '(' + quotes.length + ')';
+      if (!(price > 0)) try {
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['CME_MINI:NQ1!']},columns:['lp','close']}), cache:'no-store', signal:sig()});
+        if (r.ok) {
+          const j = await r.json();
+          const p = (j?.data?.[0]?.d?.[0] || j?.data?.[0]?.d?.[1]) || null;
+          if (p && p > 0) { price = p; sourceUsed = 'tv-scanner:CME_MINI:NQ1!'; }
         }
-      }
+      } catch(e) {}
       if (price && price > 0) {
         us100Asset.price = price; updated = true;
         console.log('%c📡 US100 (' + sourceUsed + '): $' + price.toFixed(2), 'color:#5cb88a;font-family:monospace');
@@ -11241,7 +11228,7 @@
     });
   }
 
-  window.onload = () => {
+  window.onload = async () => {
     const _errors = [];
     const _try = (label, fn) => {
       try { fn(); }
@@ -11265,6 +11252,15 @@
     _try('rebuildTVSymbolSelect', rebuildTVSymbolSelect);
     _try('loadLevels', loadLevels);
     _try('loadTradeModes', loadTradeModes);
+    await (async () => {
+      try {
+        const r = await fetch('/api/us100-price', {cache:'no-store'});
+        if (!r.ok) return;
+        const j = await r.json();
+        const us100 = ASSETS.find(a => a.symbol === 'US100');
+        if (us100 && j?.price > 0) us100.price = j.price;
+      } catch(e) {}
+    })();
     _try('loadLiveTradingState', loadLiveTradingState);
     _try('loadJournal', loadJournal);
     _try('checkPendingOutcomes', checkPendingOutcomes);
