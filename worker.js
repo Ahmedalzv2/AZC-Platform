@@ -43,6 +43,37 @@ const FORWARD_HEADERS = new Set([
   'apikey', 'request-time', 'signature', 'recv-window', 'content-type',
 ]);
 
+// Public price-relay paths (no MEXC signing, no auth needed). Cloudflare
+// Workers don't have CORS headaches calling upstream, so the dashboard hits
+// us instead of trying to call scanner.tradingview.com directly — that one
+// rejects browser-origin POSTs from github.io with a CORS failure.
+async function us100Price(cors) {
+  try {
+    const r = await fetch('https://scanner.tradingview.com/global/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols: { tickers: ['CME_MINI:NQ1!'] }, columns: ['lp', 'close'] }),
+      cf: { cacheTtl: 1, cacheEverything: false },
+    });
+    if (!r.ok) {
+      return new Response(JSON.stringify({ error: 'scanner-http', status: r.status }),
+        { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
+    }
+    const j = await r.json();
+    const row = j?.data?.[0];
+    const price = (row?.d?.[0] || row?.d?.[1]) || 0;
+    if (!(price > 0)) {
+      return new Response(JSON.stringify({ error: 'no-price', raw: j }),
+        { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ price, source: 'CME_MINI:NQ1!', ts: Date.now() }),
+      { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: 'upstream-failed', message: String((e && e.message) || e) }),
+      { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
+  }
+}
+
 function corsHeaders(reqOrigin) {
   const origin = ALLOWED_ORIGIN === '*'
     ? (reqOrigin || '*')
@@ -68,6 +99,10 @@ export default {
     const url = new URL(request.url);
     let mexcPath = url.pathname;
     if (mexcPath.startsWith('/proxy')) mexcPath = mexcPath.slice('/proxy'.length);
+
+    // Public US100 quote (TV scanner CME_MINI:NQ1! relay) — no auth.
+    if (mexcPath === '/us100') return us100Price(cors);
+
     if (!mexcPath.startsWith(ALLOWED_PATH_PREFIX)) {
       return new Response(
         JSON.stringify({ error: 'path not allowed', allowed: ALLOWED_PATH_PREFIX }),
