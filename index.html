@@ -11294,7 +11294,10 @@
     // inside _positionsTick.
     setInterval(() => { _positionsTick().catch(()=>{}); }, POSITIONS_REFRESH_INTERVAL_MS);
     fetchNonBinancePrices();
-    setInterval(fetchNonBinancePrices, 8000);
+    // Tight cadence so US100/GOLD/SILVER analysis feels live — comparable
+    // to Binance WS-driven assets. Three small fetches per cycle (MEXC
+    // gold, MEXC silver, TV-scanner NQ1!), well under any rate ceiling.
+    setInterval(fetchNonBinancePrices, 2000);
     fetchFearGreed();
     fetchFundingRates();
     fetchNews();
