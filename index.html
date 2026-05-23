@@ -1212,11 +1212,22 @@
       </button>`;
     }).join('');
 
+    // Buy calls are only actionable when there's cash in the bank to deploy.
+    // With bank=$0 the chips are noise — surface a one-tap "set bank" prompt
+    // instead so the user knows the system saw picks but is gated on funds.
+    const bankForPicks = (typeof _userCapital !== 'undefined') ? (Number(_userCapital.bank) || 0) : 0;
+    const picksGatedByBank = pickChips && bankForPicks <= 0;
     if (!pickChips && !holdChips) {
       host.style.display = 'none'; host.innerHTML = ''; return;
     }
     const rows = [];
-    if (pickChips) {
+    if (picksGatedByBank) {
+      rows.push(`<div class="picks-bar picks-gated">
+        <span class="picks-title">📈 ${picks.length} pick${picks.length>1?'s':''} waiting</span>
+        <span class="picks-chips" style="color:var(--text-mute);font-size:11px;">No bank set — buy calls hidden until funds are available.</span>
+        <button class="cap-edit-btn" onclick="_editCapital('bank')" style="margin-left:auto;">Set Bank</button>
+      </div>`);
+    } else if (pickChips) {
       rows.push(`<div class="picks-bar">
         <span class="picks-title">📈 ${picks.length} pick${picks.length>1?'s':''}</span>
         <span class="picks-chips">${pickChips}</span>
