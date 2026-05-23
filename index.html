@@ -3300,9 +3300,18 @@
       // can override the amount via localStorage('ict_target_margin_usdt').
       // Lower leverage (<100×) keeps the legacy account×risk%-based sizing.
       const targetRaw = parseFloat(localStorage.getItem('ict_target_margin_usdt'));
+      // When the micro-capital lane is enabled, default per-fire margin to
+      // $0.20 even at non-high-leverage tiers. Without this, qty falls back
+      // to 1 unit (e.g. 1 BTC at $95k) and the gate's risk cap rejects it.
+      // Devtools / preset override still wins.
+      let _laneDefaultMargin = null;
+      try {
+        const _laneCfg = (typeof _microCapitalConfig === 'function') ? _microCapitalConfig() : null;
+        if (_laneCfg && _laneCfg.laneEnabled) _laneDefaultMargin = 0.20;
+      } catch (e) {}
       const targetMargin = isFinite(targetRaw) && targetRaw > 0
         ? targetRaw
-        : (isFinite(lev) && lev >= LEVERAGE_HIGH_THRESHOLD ? 0.20 : null);
+        : (isFinite(lev) && lev >= LEVERAGE_HIGH_THRESHOLD ? 0.20 : _laneDefaultMargin);
       if (targetMargin != null && isFinite(lev) && lev > 0 && Number(entry) > 0) {
         const units = (targetMargin * lev) / Number(entry);
         // MEXC SILVER_USDT (and most contract pairs) accept 0.01 lot
@@ -3518,6 +3527,24 @@
     setMicroCapitalConfig({ armed: !!on });
     try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
   }
+  // Read the per-fire target margin from localStorage. Single source of truth
+  // for both computeMexcOrderQty and the MEXC panel input — keeps the UI and
+  // the order funnel reading the same value without a second config field.
+  function getTargetMarginUsdt() {
+    try {
+      const v = parseFloat(localStorage.getItem('ict_target_margin_usdt'));
+      return (isFinite(v) && v > 0) ? v : null;
+    } catch (e) { return null; }
+  }
+  function setTargetMarginUsdt(v) {
+    const n = parseFloat(v);
+    try {
+      if (isFinite(n) && n > 0) localStorage.setItem('ict_target_margin_usdt', String(n));
+      else localStorage.removeItem('ict_target_margin_usdt');
+    } catch (e) {}
+    try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
+    try { showToast(isFinite(n) && n > 0 ? `✓ Target margin → $${n.toFixed(2)}/fire` : 'Target margin cleared', 'ok'); } catch (e) {}
+  }
   function _renderMicroCapitalGateHTML() {
     const cfg = _microCapitalConfig();
     const wallet = (typeof _userCapital !== 'undefined') ? Number(_userCapital.mexcMicroCapital || 0) : 0;
@@ -3526,14 +3553,31 @@
       Number(cfg.dailyLossCapUsdAbs) || 0,
       wallet * (Number(cfg.dailyLossCapPct) || 0) / 100,
     );
+    const margin = getTargetMarginUsdt();
+    const marginStr = margin != null ? `$${margin.toFixed(2)}` : 'unset → qty=1 fallback';
     const laneBtn = `<button onclick="setMicroCapitalLaneEnabled(${!cfg.laneEnabled})" style="background:${cfg.laneEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${cfg.laneEnabled?'var(--bull)':'var(--border)'};color:${cfg.laneEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${cfg.laneEnabled?'🟢 LANE ON':'⚪ LANE OFF'}</button>`;
     const armBtn = `<button onclick="setMicroCapitalArmed(${!cfg.armed})" ${cfg.laneEnabled?'':'disabled'} style="background:${cfg.armed?'rgba(224,93,93,0.20)':'rgba(101,101,109,0.15)'};border:1px solid ${cfg.armed?'var(--bear)':'var(--border)'};color:${cfg.armed?'var(--bear)':cfg.laneEnabled?'var(--text)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:${cfg.laneEnabled?'pointer':'not-allowed'};opacity:${cfg.laneEnabled?1:0.5};font-family:'JetBrains Mono',monospace;">${cfg.armed?'🔴 ARMED · LIVE':'🛡 ARM LIVE'}</button>`;
+    // One-tap margin preset row — the value most users set wrong. Quick presets
+    // cover the $50 trial range; the input lets advanced users override.
+    const presetBtn = (n) => {
+      const active = margin != null && Math.abs(margin - n) < 1e-6;
+      return `<button onclick="setTargetMarginUsdt(${n})" style="background:${active?'rgba(201,169,97,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${active?'var(--gold)':'var(--border)'};color:${active?'var(--gold)':'var(--text)'};padding:5px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">$${n.toFixed(2)}</button>`;
+    };
     return `
       <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">MEXC micro-capital lane · \$${wallet.toFixed(4)}</div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
         ${laneBtn}
         ${armBtn}
         <span style="font-size:11px;color:var(--text-mute);">${cfg.armed?'⚠ Live orders gated by caps below':cfg.laneEnabled?'Lane on · still dry-run until armed':'Disabled · gate is a pass-through'}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+        <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;">Margin/fire:</span>
+        ${presetBtn(0.20)}
+        ${presetBtn(0.50)}
+        ${presetBtn(1.00)}
+        ${presetBtn(2.00)}
+        <button onclick="setTargetMarginUsdt('')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:5px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">clear</button>
+        <span style="font-size:10px;color:${margin!=null?'var(--bull)':'var(--bear)'};font-family:'JetBrains Mono',monospace;">${marginStr}</span>
       </div>
       <div style="font-size:10px;color:var(--text-mute);margin-bottom:14px;line-height:1.6;font-family:'JetBrains Mono',monospace;">
         Caps: risk/trade ≤ \$${maxRiskUsd.toFixed(4)} (${cfg.maxRiskPctPerTrade}%) · daily loss ≤ \$${dailyCapUsd.toFixed(4)} · max ${cfg.maxTradesPerDay} trades/day · 1 open position · ${Math.round(cfg.perSymbolCooldownMs/60000)}-min per-symbol cooldown.<br/>
