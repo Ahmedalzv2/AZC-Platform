@@ -2723,6 +2723,7 @@
       requestAnimationFrame(() => {
         try { renderMarketRead(); } catch(e) {}
         try { checkArmedAlerts(gstForAlert); } catch(e) {}
+        try { _maybeFireDailyUs100Brief(gstForAlert); } catch(e) {}
         try { checkSpotZones(gstForAlert); } catch(e) {}
         try { renderAnalysis(); } catch(e) {}
         if (typeof updateTVAnalysis === 'function' && typeof tvCurrentSymbol !== 'undefined') {
@@ -7962,6 +7963,112 @@
   // card walks all three so the user can read off the right size without
   // doing math on their phone.
   const FP_US100_USD_PER_POINT_PER_LOT = 1;
+
+  // Scan ECON_EVENTS + the live ForexFactory cache for high/critical impact
+  // USD events between now and now+hoursAhead. Returns sorted ascending with a
+  // pre-formatted GST label so the brief composer can drop them in directly.
+  function _us100UpcomingNews(hoursAhead, nowMs) {
+    const now = nowMs || Date.now();
+    const cutoff = now + hoursAhead * 60 * 60 * 1000;
+    const sources = [];
+    if (typeof ECON_EVENTS !== 'undefined' && Array.isArray(ECON_EVENTS)) sources.push(...ECON_EVENTS);
+    if (typeof _forexFactoryCache !== 'undefined' && Array.isArray(_forexFactoryCache)) sources.push(..._forexFactoryCache);
+    const out = [];
+    const seen = new Set();
+    for (const ev of sources) {
+      if (ev.impact !== 'high' && ev.impact !== 'critical') continue;
+      if (!ev.date || !ev.time) continue;
+      const ms = Date.parse(`${ev.date}T${ev.time}:00Z`);
+      if (!isFinite(ms) || ms < now || ms > cutoff) continue;
+      const key = `${ev.date}T${ev.time}|${ev.event}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const d = new Date(ms);
+      const gstStr = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Dubai' });
+      out.push({ ms, label: `${gstStr} GST · ${ev.event} (${ev.impact})` });
+    }
+    out.sort((a, b) => a.ms - b.ms);
+    return out;
+  }
+
+  // Once-per-weekday Telegram brief at 12:30 GST — 30 min before NY AM KZ.
+  // Composes bias (1D + 4H), current plan levels, distance to entry, upcoming
+  // high-impact USD news, and FP capital status. Pure function: returns the
+  // string; caller decides whether to send/dedupe.
+  function _buildUs100DailyBrief(gst, opts) {
+    const asset = (opts && opts.asset) || (typeof ASSETS !== 'undefined' ? ASSETS.find(a => a.symbol === 'US100') : null);
+    if (!asset) return null;
+    const nowMs = (opts && opts.nowMs) || Date.now();
+    const date = gst ? gst.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }) : '';
+    const fp = (typeof _userCapital !== 'undefined') ? (Number(_userCapital.fpMarketsUs100) || 0) : 0;
+    const fmtPx = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    const lines = [`📅 US100 DAILY BRIEF · ${date}`, ``];
+
+    const tfes = asset.tfEntries;
+    const d1 = tfes && !tfes.closed ? tfes['1d'] : null;
+    const h4 = tfes && !tfes.closed ? tfes['4h'] : null;
+    const biasLine = (a, label) => {
+      if (!a || a.error) return `${label}: — (pending HTF sync)`;
+      const arrow = a.dir === 'bull' ? '🟢 BULL' : a.dir === 'bear' ? '🔴 BEAR' : '⚪ NEUTRAL';
+      return `${label}: ${arrow}${a.score != null ? ` · q${a.score}` : ''}`;
+    };
+    lines.push(`Bias`);
+    lines.push(`• ${biasLine(d1, '1D')}`);
+    lines.push(`• ${biasLine(h4, '4H')}`);
+    lines.push('');
+
+    if (asset.price > 0) lines.push(`Price: ${fmtPx(asset.price)}`);
+    if (asset.entry > 0 && asset.sl > 0) {
+      const distPts = Math.round(Math.abs(asset.price - asset.entry));
+      const tp = asset.tp1 || asset.tp || 0;
+      lines.push(`Plan`);
+      lines.push(`• Entry ${fmtPx(asset.entry)} (${distPts} pts away)`);
+      lines.push(`• SL    ${fmtPx(asset.sl)}`);
+      if (tp > 0) lines.push(`• TP    ${fmtPx(tp)}`);
+    } else {
+      lines.push(`Plan: no active levels — manual ICT setup pending`);
+    }
+    lines.push('');
+
+    const news = _us100UpcomingNews(12, nowMs);
+    if (news.length > 0) {
+      lines.push(`📰 High-impact USD news next 12h:`);
+      for (const ev of news.slice(0, 5)) lines.push(`• ${ev.label}`);
+    } else {
+      lines.push(`📰 No high-impact USD news in next 12h`);
+    }
+    lines.push('');
+
+    lines.push(`KZs: London 08–10 · NY AM 13–15 · Macro 18:50 · SB 22:50 (GST)`);
+    lines.push(fp > 0
+      ? `FP: $${fp.toFixed(0)} · alerts active`
+      : `⚠ FP=$0 — alerts gated until you set the balance`);
+
+    return lines.join('\n');
+  }
+
+  // Tick-driven gate: fires the daily brief once per weekday in the 12:30–
+  // 12:35 GST window. Dedupe key in localStorage so multiple ticks inside
+  // the window only push once. Skips weekends and weeks when FP=$0.
+  // Returns true if it actually sent (mostly useful for tests).
+  function _maybeFireDailyUs100Brief(gst) {
+    if (!gst) return false;
+    const dow = gst.getDay();
+    if (dow === 0 || dow === 6) return false;
+    const hm = gst.getHours() * 60 + gst.getMinutes();
+    const WIN_START = 12 * 60 + 30, WIN_END = 12 * 60 + 35;
+    if (hm < WIN_START || hm >= WIN_END) return false;
+    const fp = (typeof _userCapital !== 'undefined') ? (Number(_userCapital.fpMarketsUs100) || 0) : 0;
+    if (fp <= 0) return false;
+    const key = `ict_us100_brief_${gst.getFullYear()}${String(gst.getMonth()+1).padStart(2,'0')}${String(gst.getDate()).padStart(2,'0')}`;
+    try { if (localStorage.getItem(key)) return false; } catch (e) {}
+    const text = _buildUs100DailyBrief(gst);
+    if (!text) return false;
+    try { _sendTelegramAlert(text); } catch (e) {}
+    try { localStorage.setItem(key, String(Date.now())); } catch (e) {}
+    return true;
+  }
 
   // Build a trade-ready Telegram card for US100 signals. Includes direction,
   // entry/SL/TP, R:R, and a sizing table referenced against current FP
