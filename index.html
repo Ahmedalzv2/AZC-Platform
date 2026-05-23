@@ -102,6 +102,11 @@
 
     <main>
 
+      <!-- ═══ BUY PICKS BANNER — surfaces actionable spot assets at the top
+           of every tab so the user doesn't have to hunt for them.
+           Renders content from renderBuyPicksBanner() inside tick(). ═══ -->
+      <div id="buyPicksBanner" style="display:none;"></div>
+
       <!-- ═══ AUTOPILOT TAB ═══ -->
       <div id="autopilot" class="tab-content active">
         <div class="page-header">
@@ -1131,6 +1136,45 @@
         && typeof updateTVAnalysis === 'function') {
       try { updateTVAnalysis(tvCurrentSymbol); } catch (e) {}
     }
+    try { renderBuyPicksBanner(); } catch (e) {}
+  }
+
+  // Sticky top-of-dashboard "what to buy right now" banner. Sits above the
+  // tab content (rendered into #buyPicksBanner). Quiet when nothing is
+  // actionable; lights up the moment a spot asset enters AT BUY / NEAR BUY.
+  // Tap a chip → switches to that asset's Live Chart.
+  function renderBuyPicksBanner() {
+    const host = document.getElementById('buyPicksBanner');
+    if (!host || typeof getSpotZone !== 'function') return;
+    const picks = ASSETS
+      .filter(a => a.tradeMode === 'spot' && a.price > 0)
+      .map(a => ({ asset: a, zone: getSpotZone(a) }))
+      .filter(p => p.zone.state === 'buy_at' || p.zone.state === 'buy_near')
+      .sort((a, b) => {
+        if (a.zone.state === 'buy_at' && b.zone.state !== 'buy_at') return -1;
+        if (b.zone.state === 'buy_at' && a.zone.state !== 'buy_at') return 1;
+        const da = Math.abs(a.zone.distancePct == null ? 99 : a.zone.distancePct);
+        const db = Math.abs(b.zone.distancePct == null ? 99 : b.zone.distancePct);
+        return da - db;
+      });
+    if (!picks.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
+    const chips = picks.map(p => {
+      const z = p.zone;
+      const isAt = z.state === 'buy_at';
+      const distLabel = z.distancePct == null ? '' : ` ${z.distancePct >= 0 ? '+' : ''}${z.distancePct.toFixed(1)}%`;
+      const stateLabel = isAt ? 'AT BUY' : `NEAR BUY${distLabel}`;
+      const tgt = z.levels?.sellWide ? ` → $${z.levels.sellWide.toLocaleString(undefined,{maximumFractionDigits:4})}` : '';
+      const cls = isAt ? 'pick-at' : 'pick-near';
+      return `<button class="picks-chip ${cls}" onclick="onSideAssetClick('${p.asset.symbol}')" title="${stateLabel}${tgt} — tap to open ${p.asset.symbol}">
+        <strong>${p.asset.symbol}</strong> · ${stateLabel} · $${p.asset.price.toLocaleString(undefined,{maximumFractionDigits:4})}
+      </button>`;
+    }).join('');
+    host.style.display = '';
+    host.innerHTML = `
+      <div class="picks-bar">
+        <span class="picks-title">📈 ${picks.length} pick${picks.length>1?'s':''} now</span>
+        <span class="picks-chips">${chips}</span>
+      </div>`;
   }
 
   // Re-renders the entire Live Trading modal in place so its diagnostic
@@ -7398,9 +7442,24 @@
       try { showToast(p === 'granted' ? '🔔 Notifications enabled' : 'Notifications blocked', p === 'granted' ? 'ok' : 'warn'); } catch (e) {}
     }).catch(() => {});
   }
+  // VPS relay endpoint — same host that serves price/bars also forwards
+  // Telegram alerts via the user's `happy` bot. Token stays server-side so
+  // it isn't exposed in this github.io JS bundle.
+  const TG_RELAY_URL = 'https://tv-relay.srv1688368.hstgr.cloud/notify';
+  function _sendTelegramAlert(text) {
+    try {
+      fetch(TG_RELAY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: String(text).slice(0, 1500) }),
+        cache: 'no-store',
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
   function _maybeNotifyZone(asset, state) {
-    if (typeof Notification === 'undefined') return;
-    if (Notification.permission !== 'granted') return;
+    // Dedupe per (symbol, state, day) so a flapping zone doesn't spam.
+    // Applies to BOTH the local browser Notification and the Telegram push.
     if (!_shouldNotify(asset.symbol, state)) return;
     const isHeld = getOpenPositionsFor(asset.symbol).length > 0;
     let title = null, body = null;
@@ -7412,11 +7471,18 @@
       body  = `$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})} — you're holding this. Consider taking partials.`;
     }
     if (!title) return;
-    try {
-      const n = new Notification(title, { body, tag: asset.symbol + '_' + state });
-      n.onclick = () => { try { window.focus(); n.close(); } catch (e) {} };
-      _markNotified(asset.symbol, state);
-    } catch (e) {}
+    // 1) Browser Notification (works only while the tab/PWA is alive)
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(title, { body, tag: asset.symbol + '_' + state });
+        n.onclick = () => { try { window.focus(); n.close(); } catch (e) {} };
+      } catch (e) {}
+    }
+    // 2) Telegram via VPS relay — survives the browser being closed because
+    // it's a server-side fire-and-forget. Same `happy` bot that's wired to
+    // Hermes; user sees it on the lock screen.
+    try { _sendTelegramAlert(title + '\n' + body); } catch (e) {}
+    _markNotified(asset.symbol, state);
   }
 
   function loadJournal() {

@@ -1372,3 +1372,59 @@
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
   }
+
+/* ── Buy Picks banner — sticky top-of-dashboard "what to buy now" surface */
+#buyPicksBanner {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: linear-gradient(180deg, rgba(92,184,138,0.16) 0%, rgba(92,184,138,0.06) 100%);
+  border-bottom: 1px solid rgba(92,184,138,0.35);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 8px 16px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.picks-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.picks-title {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--bull);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.picks-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.picks-chip {
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.picks-chip:hover {
+  background: rgba(0,0,0,0.5);
+  transform: translateY(-1px);
+}
+.picks-chip.pick-at {
+  border-color: var(--bull);
+  background: rgba(92,184,138,0.22);
+  color: var(--bull);
+}
+.picks-chip.pick-near {
+  border-color: rgba(92,184,138,0.5);
+  color: var(--bull);
+}
