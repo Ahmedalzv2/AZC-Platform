@@ -11193,6 +11193,72 @@
   }
 
   // ═══════════════════════════════════════
+  // TRADINGVIEW DATA WEBSOCKET — direct browser → data.tradingview.com
+  // Same socket the embedded chart widget uses. Streams the exact lp the
+  // chart displays for FPMARKETS:US100, no worker hop, no polling.
+  // If TV rejects this origin's WS handshake, the existing polling
+  // (fetchNonBinancePrices → worker /us100 → tv-ws scrape server-side)
+  // keeps the badge populated.
+  // ═══════════════════════════════════════
+  let _tvLiveWs = null;
+  let _tvLiveWsRetry = 0;
+  function initUS100LiveStream() {
+    const SYMBOL = 'FPMARKETS:US100';
+    const url = 'wss://data.tradingview.com/socket.io/websocket';
+    let heartbeats = 0;
+    let firstQuote = false;
+    try {
+      _tvLiveWs = new WebSocket(url);
+    } catch (e) {
+      console.warn('US100 live WS: ctor failed', e);
+      return;
+    }
+    const send = (m) => {
+      const s = JSON.stringify(m);
+      try { _tvLiveWs.send(`~m~${s.length}~m~${s}`); } catch(e) {}
+    };
+    _tvLiveWs.addEventListener('open', () => {
+      _tvLiveWsRetry = 0;
+      send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+      send({ m: 'quote_create_session', p: ['qs_dash'] });
+      send({ m: 'quote_set_fields', p: ['qs_dash', 'lp'] });
+      send({ m: 'quote_add_symbols', p: ['qs_dash', SYMBOL] });
+    });
+    _tvLiveWs.addEventListener('message', (ev) => {
+      const text = typeof ev.data === 'string' ? ev.data : '';
+      // Echo heartbeats or TV drops the connection.
+      if (text.includes('~h~')) { try { _tvLiveWs.send(text); } catch(e) {} heartbeats++; return; }
+      // Match every lp update for our symbol in any frame.
+      const re = /"n":"FPMARKETS:US100"[^}]*"lp":([0-9.]+)/g;
+      let m, last = null;
+      while ((m = re.exec(text)) !== null) last = Number(m[1]);
+      if (last && last > 0) {
+        if (!firstQuote) { firstQuote = true; console.log('%c📡 US100 live WS streaming: $' + last.toFixed(2), 'color:#5cb88a;font-family:monospace'); }
+        const us100 = ASSETS.find(a => a.symbol === 'US100');
+        if (us100) {
+          us100.price = last;
+          if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === 'US100') {
+            if (typeof updateChartPriceBadge === 'function') updateChartPriceBadge(last);
+            if (typeof updateTVAnalysis === 'function') updateTVAnalysis('US100');
+          }
+          if (typeof autoUpdateChecks === 'function') autoUpdateChecks(us100);
+          if (typeof detectScenario === 'function') detectScenario(last);
+        }
+      }
+    });
+    _tvLiveWs.addEventListener('close', () => {
+      // Backoff reconnect, max 30s. Polling fallback covers the gap.
+      const delay = Math.min(30000, 1000 * Math.pow(2, _tvLiveWsRetry++));
+      console.warn('US100 live WS closed (heartbeats=' + heartbeats + '); reconnect in ' + delay + 'ms');
+      setTimeout(initUS100LiveStream, delay);
+    });
+    _tvLiveWs.addEventListener('error', () => {
+      // Most likely cause from github.io: TV rejected this origin. Fallback
+      // polling still runs every 2s so the badge stays usable.
+    });
+  }
+
+  // ═══════════════════════════════════════
   // TRADINGVIEW POSTMESSAGE LISTENER
   // ═══════════════════════════════════════
   function initTVPriceListener() {
@@ -11286,6 +11352,7 @@
     _try('initBinanceWebSocket', initBinanceWebSocket);
     _try('initMexcWebSocket', initMexcWebSocket);
     _try('initTVPriceListener', initTVPriceListener);
+    _try('initUS100LiveStream', initUS100LiveStream);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
     // Fast-refresh: pull fresh 1m klines for futures assets every
