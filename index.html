@@ -3379,11 +3379,152 @@
     }
   }
 
+  // ── MEXC micro-capital safety gate ─────────────────────────────
+  // Guards the $50 trial lane. Every MEXC order funnel calls this before
+  // either dry-run journaling or live submit. Returns { allow, reason, audit }
+  // — caller MUST honour `allow=false` and journal the skip reason. Defaults
+  // are conservative: 0.5% risk/trade, $1 OR 2% daily-loss cap (whichever is
+  // smaller), 3 trades/day max, one open position, 15-min per-symbol cooldown.
+  // Override via localStorage 'ict_mexc_micro_v1'. US100 never reaches here
+  // because _mexcContractSymbol('US100') returns null and the order funnel
+  // rejects upstream.
+  const MICRO_CAPITAL_DEFAULTS = Object.freeze({
+    laneEnabled: false,          // opt-in exchange-lane selector — OFF by default
+    balanceUsd: 50,
+    maxRiskPctPerTrade: 0.5,     // tiny fixed risk ceiling
+    dailyLossCapUsdAbs: 1,       // absolute floor — the smaller of this …
+    dailyLossCapPct: 2,          // … and this percentage cap is enforced
+    maxTradesPerDay: 3,
+    maxOpenPositions: 1,
+    perSymbolCooldownMs: 15 * 60 * 1000,
+    armed: false,                // explicit live-mode arming gate
+  });
+  function _microCapitalConfig() {
+    try {
+      const raw = JSON.parse(localStorage.getItem('ict_mexc_micro_v1') || '{}');
+      return { ...MICRO_CAPITAL_DEFAULTS, ...raw };
+    } catch (e) { return { ...MICRO_CAPITAL_DEFAULTS }; }
+  }
+  function setMicroCapitalConfig(patch) {
+    const next = { ...(_microCapitalConfig()), ...(patch || {}) };
+    try { localStorage.setItem('ict_mexc_micro_v1', JSON.stringify(next)); } catch (e) {}
+    return next;
+  }
+  // Pure: tally today's MEXC fires + realised loss + last-fire-per-symbol
+  // from a journal array. Tests pass a fixture; runtime uses the global.
+  function _summarizeMicroCapitalDay(opts) {
+    const o = opts || {};
+    const src = Array.isArray(o.journal) ? o.journal
+              : (typeof journal !== 'undefined' && Array.isArray(journal)) ? journal : [];
+    const nowMs = Number.isFinite(o.nowMs) ? o.nowMs : Date.now();
+    const dayStart = new Date(nowMs); dayStart.setHours(0, 0, 0, 0);
+    const dayMs = dayStart.getTime();
+    let trades = 0, lossUsd = 0;
+    const lastBySymbol = {};
+    for (const e of src) {
+      if (!e || (e.timestamp || 0) < dayMs) continue;
+      if (!(e.live === true || e.dryRun === true)) continue;
+      if (e.skipReason) continue; // skip-audit entries don't count as fires
+      trades++;
+      if (e.symbol) lastBySymbol[e.symbol] = Math.max(lastBySymbol[e.symbol] || 0, e.timestamp || 0);
+      const real = Number(e.realizedUsd);
+      if (Number.isFinite(real) && real < 0) lossUsd += Math.abs(real);
+    }
+    return { trades, lossUsd, lastBySymbol, dayMs };
+  }
+  function checkMicroCapitalGate(opts) {
+    const o = opts || {};
+    const cfg = _microCapitalConfig();
+    const dryRun = !!o.dryRun;
+    const sym = String(o.symbol || '');
+    const riskUsd = Number(o.riskUsd) || 0;
+    const balance = Number(o.balanceUsd != null ? o.balanceUsd : cfg.balanceUsd) || 0;
+    const sum = _summarizeMicroCapitalDay({ journal: o.journal, nowMs: o.nowMs });
+    const openCount = Number.isFinite(o.openPositionCount) ? o.openPositionCount : 0;
+    const audit = {
+      ts: Number.isFinite(o.nowMs) ? o.nowMs : Date.now(),
+      symbol: sym, dryRun, riskUsd, balance,
+      tradesToday: sum.trades, lossUsdToday: sum.lossUsd,
+      openCount, lane: 'mexc-micro-capital',
+    };
+    // Lane-opt-in: when the user hasn't selected the micro-capital lane the
+    // gate is a pass-through. Keeps the existing dry-run research / manual
+    // force-fire surface untouched until the lane is explicitly selected.
+    if (!cfg.laneEnabled) {
+      return { allow: true, reason: null, audit: { ...audit, laneEnabled: false } };
+    }
+    // Dry-run is the research lane: gate still computes + audits, but allow.
+    // Live still respects every cap.
+    if (!dryRun && !cfg.armed) {
+      return { allow: false, reason: 'not-armed', audit };
+    }
+    if (balance <= 0) return { allow: false, reason: 'no-balance', audit };
+    if (openCount >= (cfg.maxOpenPositions || 1)) {
+      return { allow: false, reason: 'open-position-cap', audit };
+    }
+    const maxRiskUsd = balance * (cfg.maxRiskPctPerTrade / 100);
+    if (riskUsd > 0 && riskUsd > maxRiskUsd + 1e-6) {
+      return { allow: false, reason: 'risk-per-trade-cap', audit: { ...audit, maxRiskUsd } };
+    }
+    const dailyCapUsd = Math.min(
+      Number(cfg.dailyLossCapUsdAbs) || 0,
+      balance * (Number(cfg.dailyLossCapPct) || 0) / 100,
+    );
+    if (sum.lossUsd >= dailyCapUsd && dailyCapUsd > 0) {
+      return { allow: false, reason: 'daily-loss-cap', audit: { ...audit, dailyCapUsd } };
+    }
+    if (sum.trades >= (cfg.maxTradesPerDay || 0)) {
+      return { allow: false, reason: 'max-trades-cap', audit };
+    }
+    const lastSym = sum.lastBySymbol[sym] || 0;
+    const cooldownMs = Number(cfg.perSymbolCooldownMs) || 0;
+    if (lastSym > 0 && (audit.ts - lastSym) < cooldownMs) {
+      return { allow: false, reason: 'symbol-cooldown', audit: { ...audit, lastSymTs: lastSym, cooldownMs } };
+    }
+    return { allow: true, reason: null, audit };
+  }
+  // Records a structured skip into the journal so the audit trail captures
+  // every blocked attempt (signal, symbol, reason, full guardrail snapshot).
+  function _recordMicroCapitalSkip(asset, side, gate) {
+    try {
+      if (typeof journal === 'undefined' || !Array.isArray(journal)) return;
+      const e = {
+        id: Date.now() + Math.random(), timestamp: Date.now(),
+        symbol: asset?.symbol || '', signal: 'skip',
+        priceAtCall: asset?.price, entry: null, sl: null, tp: null,
+        grade: asset?.grade, bias: asset?.bias,
+        session: 'mexc-micro-capital-guardrail',
+        analysis: `[SKIP] ${side} ${asset?.symbol} blocked: ${gate.reason}`,
+        outcome: null, outcomeChecks: {},
+        skipReason: gate.reason, microCapitalAudit: gate.audit,
+      };
+      journal.unshift(e);
+      if (typeof saveJournal === 'function') saveJournal();
+    } catch (err) {}
+  }
+
   async function placeMexcFuturesOrder(asset, side, entry, sl, tp, qty, leverage, opts) {
     opts = opts || {};
     if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
     const mexcSymbol = _mexcContractSymbol(asset);
     if (!mexcSymbol) return { sent: false, reason: 'unsupported-symbol' };
+
+    const _slDist = Math.abs(Number(entry) - Number(sl));
+    const _riskUsd = (_slDist > 0 && Number.isFinite(_slDist) && Number.isFinite(Number(qty)))
+      ? _slDist * Number(qty) : 0;
+    const _openCount = (typeof _openPositions === 'object' && _openPositions)
+      ? Object.values(_openPositions).reduce((n, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0)
+      : 0;
+    const _gate = checkMicroCapitalGate({
+      symbol: asset?.symbol, dryRun: !!_liveTradingDryRun,
+      riskUsd: _riskUsd,
+      balanceUsd: (typeof _userCapital !== 'undefined') ? Number(_userCapital.mexcMicroCapital) : undefined,
+      openPositionCount: _openCount,
+    });
+    if (!_gate.allow) {
+      _recordMicroCapitalSkip(asset, String(side || '').toUpperCase(), _gate);
+      return { sent: false, reason: 'micro-capital-guardrail', skip: _gate.reason, audit: _gate.audit };
+    }
 
     const sideUp = String(side || '').toUpperCase();
     // 1 = open long, 3 = open short  (MEXC v1 contract API)
@@ -6735,13 +6876,16 @@
   // to-edit prompt on the sidebar widget. Live spot exposure is derived
   // from open spotPositions × current prices, so it updates automatically
   // and doesn't need user input.
-  let _userCapital = { bank: 0, fpMarketsUs100: 562, lastUpdated: 0 };
+  let _userCapital = { bank: 0, fpMarketsUs100: 562, mexcMicroCapital: 50, lastUpdated: 0 };
   function loadUserCapital() {
     try {
       const raw = JSON.parse(localStorage.getItem('ict_user_capital') || '{}');
       _userCapital = {
         bank: Number(raw.bank) || 0,
         fpMarketsUs100: raw.fpMarketsUs100 != null ? Number(raw.fpMarketsUs100) : 562,
+        // MEXC micro-capital lane. Default $50 matches the trial size the
+        // user agreed to seed. US100 is unaffected (CFD via FP Markets, not MEXC).
+        mexcMicroCapital: raw.mexcMicroCapital != null ? Number(raw.mexcMicroCapital) : 50,
         lastUpdated: Number(raw.lastUpdated) || 0,
       };
     } catch (e) {}

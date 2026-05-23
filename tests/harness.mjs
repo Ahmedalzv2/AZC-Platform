@@ -104,6 +104,9 @@ const EXPORTS = [
   '_summarizeUs100Day', '_buildUs100DailyRecap', '_maybeFireDailyUs100Recap',
   // US100 Telegram outcome commands (/win, /loss, /be)
   '_findPendingUs100JournalEntry', '_executeTelegramAction',
+  // MEXC micro-capital safety gate ($50 trial lane)
+  'MICRO_CAPITAL_DEFAULTS', '_microCapitalConfig', 'setMicroCapitalConfig',
+  '_summarizeMicroCapitalDay', 'checkMicroCapitalGate', '_recordMicroCapitalSkip',
 ];
 
 function extractScript(html) {
