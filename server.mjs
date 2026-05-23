@@ -20,12 +20,50 @@ const mime = {
   '.jpeg': 'image/jpeg',
 };
 
+// Live FPMARKETS:US100 quote via TradingView's public WebSocket — same number
+// the embedded chart displays. Scanner API doesn't index FPMARKETS and Yahoo
+// NQ=F is a different feed; the WS is the only way to keep the badge in sync
+// with the chart. Single-shot connect-subscribe-first-quote-close, ~500ms.
+async function us100PriceWS(symbol) {
+  const ws = new WebSocket('wss://data.tradingview.com/socket.io/websocket', {
+    headers: { 'Origin': 'https://www.tradingview.com' },
+  });
+  const send = (m) => {
+    const s = JSON.stringify(m);
+    ws.send(`~m~${s.length}~m~${s}`);
+  };
+  try {
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', reject, { once: true });
+    });
+    send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+    send({ m: 'quote_create_session', p: ['qs_n'] });
+    send({ m: 'quote_set_fields', p: ['qs_n', 'lp'] });
+    send({ m: 'quote_add_symbols', p: ['qs_n', symbol] });
+    const price = await new Promise((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error('ws-timeout')), 4000);
+      const re = new RegExp(`"n":"${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^}]*"lp":([0-9.]+)`);
+      ws.addEventListener('message', (ev) => {
+        const text = typeof ev.data === 'string' ? ev.data : ev.data.toString();
+        if (text.includes('~h~')) { try { ws.send(text); } catch {} return; }
+        const m = text.match(re);
+        if (m && Number(m[1]) > 0) { clearTimeout(to); resolve(Number(m[1])); }
+      });
+      ws.addEventListener('error', () => { clearTimeout(to); reject(new Error('ws-error')); });
+      ws.addEventListener('close', () => { clearTimeout(to); reject(new Error('ws-closed')); });
+    });
+    return { price, source: 'tv-ws:' + symbol, ts: Date.now() };
+  } finally {
+    try { ws.close(); } catch {}
+  }
+}
+
 async function us100Price() {
-  // Yahoo NQ=F is the same continuous E-mini contract as CME_MINI:NQ1! and
-  // its v8 `regularMarketPrice` updates intrasession. TV scanner's `lp` is
-  // null on the free tier for CME futures (delayed_streaming_600), so it
-  // falls through to `close` — yesterday's close, never moves. Yahoo first,
-  // TV `lp` as the only useful fallback. Never use ^NDX (cash, ~3k off).
+  // Priority: TV WS (FPMARKETS:US100 — matches the chart) → Yahoo NQ=F →
+  // TV scanner CME_MINI:NQ1! lp. WS is the only path that returns the
+  // exact number the chart displays.
+  const tryWS = () => us100PriceWS('FPMARKETS:US100');
   const tryYahoo = async () => {
     const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m', {
       headers: { 'User-Agent': 'Mozilla/5.0' },
@@ -49,8 +87,11 @@ async function us100Price() {
     if (!(p > 0)) throw new Error('TV scanner lp null');
     return { price: p, source: 'tv:CME_MINI:NQ1!', ts: Date.now() };
   };
-  try { return await tryYahoo(); }
-  catch (e) { return await tryTV(); }
+  try { return await tryWS(); }
+  catch (e1) {
+    try { return await tryYahoo(); }
+    catch (e2) { return await tryTV(); }
+  }
 }
 
 function sendJson(res, status, body) {
