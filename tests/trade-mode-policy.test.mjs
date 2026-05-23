@@ -101,6 +101,9 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     // symbol if you want to test futures-mode behavior without market-hours
     // confusion. SILVER is fine here once we re-flip it to futures.
     setupAtEntry(app, 'SILVER', 'futures');
+    // Non-US100 futures draw from the bank lane — seed funds so the capital
+    // gate in checkArmedAlerts doesn't suppress the alert.
+    app._userCapital = { bank: 1000, fpMarketsUs100: 562, lastUpdated: 0 };
     app.prevSignalMap = {};
     app.alertLog = [];
     app.checkArmedAlerts(gst);
@@ -134,6 +137,7 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     setupAtEntry(app, 'SILVER', 'futures');
     setupAtEntry(app, 'BTC',    'spot');
     setupAtEntry(app, 'BNB',    'spot');
+    app._userCapital = { bank: 1000, fpMarketsUs100: 562, lastUpdated: 0 };
     app.prevSignalMap = {};
     app.alertLog = [];
     app.checkArmedAlerts(gst);
@@ -141,6 +145,22 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     assert.ok(symbols.includes('SILVER'),  'SILVER (futures) should fire');
     assert.ok(!symbols.includes('BTC'),    'BTC (spot) must not fire');
     assert.ok(!symbols.includes('BNB'),    'BNB (spot) must not fire');
+  });
+
+  test('futures asset with $0 in the lane → checkArmedAlerts logs NO alert', () => {
+    const gst = new Date('2026-05-07T08:00:00Z');
+    const { app } = loadApp({ now: gst });
+    app.loadTradeModes();
+    setupAtEntry(app, 'SILVER', 'futures');
+    // Bank=0 → non-US100 futures gate must suppress the alert.
+    app._userCapital = { bank: 0, fpMarketsUs100: 0, lastUpdated: 0 };
+    app.prevSignalMap = {};
+    app.alertLog = [];
+    app.checkArmedAlerts(gst);
+    const fired = app.alertLog.filter(x => x.symbol === 'SILVER');
+    assert.equal(fired.length, 0, 'SILVER with bank=0 must not fire — no cash to deploy');
+    // prevSignalMap should still advance so we don't re-fire when funds appear.
+    assert.equal(app.prevSignalMap.SILVER, 'enter');
   });
 
   test('auto-fire disabled blocks live HTF order submission', async () => {
@@ -163,6 +183,7 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     app.setLiveTradingDryRun(false);
     fetchCalls = 0;
     setupAtEntry(app, 'SILVER', 'futures');
+    app._userCapital = { bank: 1000, fpMarketsUs100: 562, lastUpdated: 0 };
     app.prevSignalMap = {};
     app.alertLog = [];
     app.checkArmedAlerts(gst);
