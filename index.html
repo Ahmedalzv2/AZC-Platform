@@ -7991,6 +7991,19 @@
     return out;
   }
 
+  // Reference levels US100 day-traders watch: previous day high/low (from the
+  // 1D analysis), plus NDOG/NWOG ranges (already detected by _analyzeKlines).
+  // Returns null entries when the source TF hasn't synced yet.
+  function _us100KeyLevels(asset) {
+    const tfes = asset && asset.tfEntries;
+    const d1 = tfes && !tfes.closed ? tfes['1d'] : null;
+    const pdh = d1 && Number.isFinite(d1.prevBarHigh) ? d1.prevBarHigh : null;
+    const pdl = d1 && Number.isFinite(d1.prevBarLow)  ? d1.prevBarLow  : null;
+    const ndog = d1 && d1.ndog ? d1.ndog : null;
+    const nwog = d1 && d1.nwog ? d1.nwog : null;
+    return { pdh, pdl, ndog, nwog };
+  }
+
   // Once-per-weekday Telegram brief at 12:30 GST — 30 min before NY AM KZ.
   // Composes bias (1D + 4H), current plan levels, distance to entry, upcoming
   // high-impact USD news, and FP capital status. Pure function: returns the
@@ -8019,6 +8032,19 @@
     lines.push('');
 
     if (asset.price > 0) lines.push(`Price: ${fmtPx(asset.price)}`);
+    // Key reference levels: PDH/PDL + opening gaps. These are the lines
+    // ICT day-traders fade or break — surface them inline so the brief is
+    // actionable without opening the chart.
+    const lvls = _us100KeyLevels(asset);
+    const levelLines = [];
+    if (lvls.pdh != null) levelLines.push(`• PDH ${fmtPx(lvls.pdh)}`);
+    if (lvls.pdl != null) levelLines.push(`• PDL ${fmtPx(lvls.pdl)}`);
+    if (lvls.ndog) levelLines.push(`• NDOG ${fmtPx(Math.min(lvls.ndog.hi, lvls.ndog.lo))}–${fmtPx(Math.max(lvls.ndog.hi, lvls.ndog.lo))}`);
+    if (lvls.nwog) levelLines.push(`• NWOG ${fmtPx(Math.min(lvls.nwog.hi, lvls.nwog.lo))}–${fmtPx(Math.max(lvls.nwog.hi, lvls.nwog.lo))}`);
+    if (levelLines.length > 0) {
+      lines.push(`Levels to watch`);
+      for (const ll of levelLines) lines.push(ll);
+    }
     if (asset.entry > 0 && asset.sl > 0) {
       const distPts = Math.round(Math.abs(asset.price - asset.entry));
       const tp = asset.tp1 || asset.tp || 0;
@@ -9438,6 +9464,12 @@
     const recent = k.slice(-lookback);
     const swingHigh = Math.max(...recent.map(b => b.h));
     const swingLow  = Math.min(...recent.map(b => b.l));
+    // Last completed bar + the one before it. On 1D, prevBar* = Previous Day
+    // High/Low (the in-progress today bar sits at k.length-1; yesterday's is
+    // k.length-2). Other TFs use these as the most recent two completed bars
+    // for reference levels in the brief / chart overlays.
+    const lastBar = k[k.length - 1] || null;
+    const prevBar = k[k.length - 2] || null;
     return {
       bias: last.c > last.o ? 'bull' : 'bear',
       dir,
@@ -9451,6 +9483,10 @@
       entryReady: score >= 3 && dir !== null,
       price: last.c,
       swingHigh, swingLow, swingLookback: lookback,
+      lastBarHigh: lastBar ? lastBar.h : null,
+      lastBarLow:  lastBar ? lastBar.l : null,
+      prevBarHigh: prevBar ? prevBar.h : null,
+      prevBarLow:  prevBar ? prevBar.l : null,
     };
   }
 
