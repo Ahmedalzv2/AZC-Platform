@@ -1699,7 +1699,24 @@
     // pressure to tighten R:R, so the upside ladder runs further than
     // futures TP2.
     const sellStretch = sell + (sell - buy) * 0.5;
-    return { buy, sell, sellStretch, source, dir };
+    // Wider distribution target: the 1D swing high (last ~30 daily bars,
+    // ≈ 6 weeks). For a 1–3 week hold the nearest-FVG `sell` is just a
+    // first-partial milestone — the real exit is a major prior high.
+    // Fall back to 4H swing high if no daily structure; if neither beats
+    // sellStretch, keep sellStretch so we never propose a sell BELOW the
+    // existing TP.
+    let sellWide = null;
+    if (tfes && !tfes.closed) {
+      for (const tf of ['1d', '4h']) {
+        const a = tfes[tf];
+        if (a && Number.isFinite(a.swingHigh) && a.swingHigh > sellStretch) {
+          sellWide = a.swingHigh;
+          break;
+        }
+      }
+    }
+    if (!Number.isFinite(sellWide) || sellWide <= sellStretch) sellWide = sellStretch;
+    return { buy, sell, sellStretch, sellWide, source, dir };
   }
 
   // Classify where price sits relative to the spot buy/sell levels.
@@ -5900,24 +5917,36 @@
       const buy   = `$${(lv.buy||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
       const sell  = `$${(lv.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
       const stretch = `$${(lv.sellStretch||lv.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      // Wider distribution target — major prior swing high (last ~6 weeks on
+      // 1D bars). For 1–3 week holds this is the real exit; the narrow `sell`
+      // above is a take-partial milestone.
+      const hasWide = Number.isFinite(lv.sellWide) && lv.sellWide > (lv.sellStretch || 0);
+      const wide = hasWide ? `$${lv.sellWide.toLocaleString(undefined,{maximumFractionDigits:4})}` : null;
+      const sellLadder = hasWide
+        ? `Take 25% at ${sell}, 25% at ${stretch}, hold the rest for the 1-month high at ${wide}`
+        : `Take partials at ${sell}, trail toward ${stretch}`;
       const sourceTag = lv.source === 'manual' ? 'manual setup' : `${lv.source} HTF structure`;
-      const biasNote = `SPOT (no stop-out) · Buy ${buy} · Sell ${sell} (stretch ${stretch}) · Levels: ${sourceTag} · ${sessNote}`;
+      const biasNote = hasWide
+        ? `SPOT (no stop-out) · Buy ${buy} · Partial ${sell} / ${stretch} · Hold target ${wide} (1-month high) · Levels: ${sourceTag} · ${sessNote}`
+        : `SPOT (no stop-out) · Buy ${buy} · Sell ${sell} (stretch ${stretch}) · Levels: ${sourceTag} · ${sessNote}`;
 
       if (z.state === 'buy_at') {
-        return `🏦 ${asset.symbol} is AT BUY ZONE (${buy}). Price is in the accumulation pocket from ${sourceTag} — strong value for a 1–3 week hold. Scale in here in tranches; don't commit full size on one tick. Sell-high target: ${sell} (stretch ${stretch}). Confirmation, not prediction — a 1H close holding above ${buy} is your acceptance signal.\n${biasNote}`.trim();
+        return `🏦 ${asset.symbol} is AT BUY ZONE (${buy}). Price is in the accumulation pocket from ${sourceTag} — strong value for a 1–3 week hold. Scale in here in tranches; don't commit full size on one tick. Sell ladder: ${sellLadder}. Confirmation, not prediction — a 1H close holding above ${buy} is your acceptance signal.\n${biasNote}`.trim();
       }
       if (z.state === 'buy_near') {
         const dist = Math.abs(z.distancePct).toFixed(2);
         const aboveBelow = z.distancePct >= 0 ? 'above' : 'below';
-        return `🏦 ${asset.symbol} is ${dist}% ${aboveBelow} buy zone (${buy}). Approaching value — ladder a few small bids near ${buy} rather than chasing here. Sell-high target: ${sell}. Patience pays in spot accumulation — let price come to you.\n${biasNote}`.trim();
+        return `🏦 ${asset.symbol} is ${dist}% ${aboveBelow} buy zone (${buy}). Approaching value — ladder a few small bids near ${buy} rather than chasing here. Sell ladder when filled: ${sellLadder}. Patience pays in spot accumulation — let price come to you.\n${biasNote}`.trim();
       }
       if (z.state === 'sell_at') {
-        return `🎯 ${asset.symbol} is AT SELL ZONE (${sell}) — only relevant if you bought near ${buy}. Price has reached your distribution level from ${sourceTag}. If you have a position, take partials and trail toward stretch ${stretch}. If you don't, ignore this — chasing a sell signal without a position is selling air.\n${biasNote}`.trim();
+        const holdLine = hasWide ? ` Keep some size for the 1-month high at ${wide}.` : '';
+        return `🎯 ${asset.symbol} is AT SELL ZONE (${sell}) — only relevant if you bought near ${buy}. Price has reached your first-partial level from ${sourceTag}. If you have a position, take partials and trail toward stretch ${stretch}.${holdLine} If you don't, ignore — chasing a sell signal without a position is selling air.\n${biasNote}`.trim();
       }
       if (z.state === 'sell_near') {
         const dist = Math.abs(z.distancePct).toFixed(2);
         const aboveBelow = z.distancePct >= 0 ? 'above' : 'below';
-        return `🎯 ${asset.symbol} is ${dist}% ${aboveBelow} sell zone (${sell}) — relevant if you accumulated near ${buy}. Stage sell orders ladder-style toward ${sell} and ${stretch} so partials catch the wick. If no position, this is information only.\n${biasNote}`.trim();
+        const wideLine = hasWide ? ` and ${wide} (1-month high)` : '';
+        return `🎯 ${asset.symbol} is ${dist}% ${aboveBelow} sell zone (${sell}) — relevant if you accumulated near ${buy}. Stage sell orders ladder-style toward ${sell}, ${stretch}${wideLine} so partials catch the wick. If no position, this is information only.\n${biasNote}`.trim();
       }
       // mid: between bands — no action.
       const buyDist  = Math.abs(((asset.price - lv.buy)  / lv.buy)  * 100).toFixed(1);
@@ -8541,6 +8570,16 @@
     // checks downstream.
     const liqVoidAligned = !!(liqVoid && liqVoid.dir === dir);
     const phase = _classifyPhase(k);
+    // Multi-week distribution targets for spot watch: highest high / lowest
+    // low across the last ~30 bars on whatever TF this is. On 1D that's
+    // roughly a 6-week swing range, which is the right horizon for the
+    // "buy now, hold 1–3 weeks, sell into a major prior high" strategy.
+    // The existing tp from _suggestedEntryForTf gives the nearest opposing
+    // FVG/OB — fine for first-partial; this is the wider hold target.
+    const lookback = Math.min(30, k.length);
+    const recent = k.slice(-lookback);
+    const swingHigh = Math.max(...recent.map(b => b.h));
+    const swingLow  = Math.min(...recent.map(b => b.l));
     return {
       bias: last.c > last.o ? 'bull' : 'bear',
       dir,
@@ -8552,7 +8591,8 @@
       score,
       phase: phase.phase, phaseDir: phase.dir,
       entryReady: score >= 3 && dir !== null,
-      price: last.c
+      price: last.c,
+      swingHigh, swingLow, swingLookback: lookback,
     };
   }
 
