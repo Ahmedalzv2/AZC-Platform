@@ -9035,6 +9035,18 @@
           if (j?.price && j.price > 0) { price = j.price; sourceUsed = 'local-proxy:' + (j.source || 'NQ1!'); }
         }
       } catch(e) {}
+      // Default public relay (VPS-hosted server.mjs behind Traefik+TLS). Hit
+      // last so user-configured Cloudflare Workers and same-origin /api paths
+      // win first. This is the path that makes the badge live on github.io
+      // for users who haven't deployed their own Worker — TV's data WS rejects
+      // the github.io origin directly, so we have to relay server-side.
+      if (!(price > 0)) try {
+        const r = await fetch('https://tv-relay.srv1688368.hstgr.cloud/us100', {cache:'no-store', signal:sig()});
+        if (r.ok) {
+          const j = await r.json();
+          if (j?.price && j.price > 0) { price = j.price; sourceUsed = 'public-relay:' + (j.source || 'NQ1!'); }
+        }
+      } catch(e) {}
       if (price && price > 0) {
         us100Asset.price = price; updated = true;
         console.log('%c📡 US100 (' + sourceUsed + '): $' + price.toFixed(2), 'color:#5cb88a;font-family:monospace');

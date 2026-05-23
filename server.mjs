@@ -94,17 +94,38 @@ async function us100Price() {
   }
 }
 
-function sendJson(res, status, body) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+// CORS is open: this server's only public-facing endpoints (/api/us100-price,
+// /us100) return non-secret quotes that anyone could scrape from TV directly.
+// Worth keeping the dashboard on github.io able to fetch this VPS for users
+// who don't run their own Cloudflare Worker.
+const CORS_HEADERS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, OPTIONS',
+  'access-control-allow-headers': 'Content-Type',
+  'access-control-max-age': '86400',
+};
+
+function sendJson(res, status, body, extraHeaders = {}) {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    ...extraHeaders,
+  });
   res.end(JSON.stringify(body));
 }
 
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    if (url.pathname === '/api/us100-price') {
-      try { return sendJson(res, 200, await us100Price()); }
-      catch (error) { return sendJson(res, 502, { error: error.message }); }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, CORS_HEADERS); return res.end();
+    }
+    // Same payload exposed under two paths so a hardcoded fallback URL can
+    // point at either `/us100` (matches the Cloudflare Worker contract) or
+    // `/api/us100-price` (matches the legacy local-proxy path).
+    if (url.pathname === '/api/us100-price' || url.pathname === '/us100') {
+      try { return sendJson(res, 200, await us100Price(), CORS_HEADERS); }
+      catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
     }
 
     const requested = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
