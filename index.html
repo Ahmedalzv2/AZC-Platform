@@ -11294,6 +11294,60 @@
     _us100LiveBurstRender();
   }
 
+  // REST-polled fallback for the FPMARKETS bar stream. TV's chart WS rejects
+  // the github.io origin (verified: close code 1006), so the WS path above
+  // populates nothing on the deployed site. The VPS-hosted relay opens the
+  // WS server-side, returns historical bars per TF over HTTPS + CORS. We
+  // poll every 30s — much slower than live ticks but plenty for ICT analysis
+  // (the analyzer cares about completed bars, not intra-bar wiggle).
+  async function _us100PollBarsOnce() {
+    const tfs = _US100_TF_MAP.map(m => m.tf).join(',');
+    const workerUrl = (typeof getMexcWorkerUrl === 'function') ? getMexcWorkerUrl() : '';
+    const urls = [];
+    if (workerUrl) urls.push(workerUrl.replace(/\/$/, '') + '/us100/bars?tfs=' + encodeURIComponent(tfs) + '&limit=60');
+    urls.push('/us100/bars?tfs=' + encodeURIComponent(tfs) + '&limit=60');
+    urls.push('https://tv-relay.srv1688368.hstgr.cloud/us100/bars?tfs=' + encodeURIComponent(tfs) + '&limit=60');
+    let payload = null, sourceUsed = null;
+    for (const u of urls) {
+      try {
+        const r = await fetch(u, { cache: 'no-store' });
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (j && j.bars && typeof j.bars === 'object') { payload = j; sourceUsed = u; break; }
+      } catch (e) { /* try next */ }
+    }
+    if (!payload) return false;
+    const us100 = ASSETS.find(a => a.symbol === 'US100');
+    if (!us100) return false;
+    us100.tfEntries = us100.tfEntries || {};
+    for (const tf of Object.keys(payload.bars)) {
+      const bars = payload.bars[tf];
+      if (!Array.isArray(bars) || bars.length < 22) continue;
+      try { us100.tfEntries[tf] = _analyzeKlines(bars); }
+      catch (e) { /* skip one TF, others still populate */ }
+    }
+    _us100LiveBurstRender();
+    return true;
+  }
+  let _us100BarsPollInterval = null;
+  let _us100BarsLoggedFirst = false;
+  function initUS100BarsPoll() {
+    // First poll runs immediately so the readiness ladder fills as soon as
+    // the user lands on the page. Then every 30s — bars don't change faster
+    // than that meaningfully (1m bars complete every 60s anyway).
+    const tick = () => {
+      _us100PollBarsOnce().then(ok => {
+        if (ok && !_us100BarsLoggedFirst) {
+          _us100BarsLoggedFirst = true;
+          console.log('%c📊 US100 bars polling relay across ' + _US100_TF_MAP.map(x => x.tf).join('/'), 'color:#5cb88a;font-family:monospace');
+        }
+      }).catch(() => {});
+    };
+    tick();
+    if (_us100BarsPollInterval) clearInterval(_us100BarsPollInterval);
+    _us100BarsPollInterval = setInterval(tick, 30000);
+  }
+
   function initUS100LiveStream() {
     const SYMBOL = 'FPMARKETS:US100';
     const url = 'wss://data.tradingview.com/socket.io/websocket';
@@ -11506,6 +11560,7 @@
     _try('initMexcWebSocket', initMexcWebSocket);
     _try('initTVPriceListener', initTVPriceListener);
     _try('initUS100LiveStream', initUS100LiveStream);
+    _try('initUS100BarsPoll', initUS100BarsPoll);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
     // Fast-refresh: pull fresh 1m klines for futures assets every
