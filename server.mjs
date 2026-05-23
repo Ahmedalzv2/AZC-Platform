@@ -195,13 +195,32 @@ async function us100Price() {
   }
 }
 
+// Telegram relay — keeps the bot token server-side so it isn't exposed in
+// public github.io JS. The dashboard POSTs {text} to /notify; we forward
+// via the Bot API to the single configured chat. Token + chat are wired
+// from the `happy` bot the user already has set up for the Hermes agent
+// on this VPS (same bot, both lanes — that was the user's explicit ask).
+const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TG_CHAT  = process.env.TELEGRAM_CHAT_ID   || '';
+async function telegramSend(text) {
+  if (!TG_TOKEN || !TG_CHAT) throw new Error('telegram-not-configured');
+  const r = await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TG_CHAT, text: String(text).slice(0, 4000), disable_web_page_preview: true }),
+  });
+  const j = await r.json();
+  if (!j.ok) throw new Error('telegram-' + (j.description || r.status));
+  return { ok: true, message_id: j.result?.message_id, ts: Date.now() };
+}
+
 // CORS is open: this server's only public-facing endpoints (/api/us100-price,
 // /us100) return non-secret quotes that anyone could scrape from TV directly.
 // Worth keeping the dashboard on github.io able to fetch this VPS for users
 // who don't run their own Cloudflare Worker.
 const CORS_HEADERS = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, OPTIONS',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
   'access-control-allow-headers': 'Content-Type',
   'access-control-max-age': '86400',
 };
@@ -233,6 +252,23 @@ const server = http.createServer(async (req, res) => {
       const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '60', 10) || 60, 22), 300);
       try { return sendJson(res, 200, await us100Bars(tfsParam, limit), CORS_HEADERS); }
       catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
+    }
+    if (url.pathname === '/notify' && req.method === 'POST') {
+      // Read body, expect { text }. Cap at 2KB so a stuck client can't flood us.
+      let body = '';
+      try {
+        await new Promise((resolve, reject) => {
+          req.on('data', c => { body += c; if (body.length > 2048) { reject(new Error('body-too-large')); req.destroy(); } });
+          req.on('end', resolve);
+          req.on('error', reject);
+        });
+        const payload = JSON.parse(body || '{}');
+        const text = String(payload.text || '').trim();
+        if (!text) return sendJson(res, 400, { error: 'empty-text' }, CORS_HEADERS);
+        return sendJson(res, 200, await telegramSend(text), CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 502, { error: error.message }, CORS_HEADERS);
+      }
     }
 
     const requested = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
