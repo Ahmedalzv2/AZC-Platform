@@ -100,6 +100,8 @@ const EXPORTS = [
   // US100 daily brief
   '_buildUs100DailyBrief', '_maybeFireDailyUs100Brief', '_us100UpcomingNews',
   '_us100KeyLevels',
+  // US100 daily recap
+  '_summarizeUs100Day', '_buildUs100DailyRecap', '_maybeFireDailyUs100Recap',
 ];
 
 function extractScript(html) {

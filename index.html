@@ -2724,6 +2724,7 @@
         try { renderMarketRead(); } catch(e) {}
         try { checkArmedAlerts(gstForAlert); } catch(e) {}
         try { _maybeFireDailyUs100Brief(gstForAlert); } catch(e) {}
+        try { _maybeFireDailyUs100Recap(gstForAlert); } catch(e) {}
         try { checkSpotZones(gstForAlert); } catch(e) {}
         try { renderAnalysis(); } catch(e) {}
         if (typeof updateTVAnalysis === 'function' && typeof tvCurrentSymbol !== 'undefined') {
@@ -7989,6 +7990,88 @@
     }
     out.sort((a, b) => a.ms - b.ms);
     return out;
+  }
+
+  // Summarize today's US100 journal entries for the recap. Buckets by signal
+  // type, counts outcomes, and computes net R from resolved entries. Returns
+  // a structured object the recap composer formats — pure / unit-testable.
+  function _summarizeUs100Day(gst, opts) {
+    const dateStr = gst ? gst.toLocaleDateString('en-GB') : null;
+    const src = (opts && opts.journal) || (typeof journal !== 'undefined' ? journal : []);
+    const todays = src.filter(e =>
+      e.symbol === 'US100' && (!dateStr || e.date === dateStr)
+    );
+    const fires = todays.map(e => ({
+      time: e.time, signal: e.signal, bias: e.bias, session: e.session,
+      entry: e.entry, sl: e.sl, tp: e.tp, outcome: e.outcome,
+    }));
+    let wins = 0, losses = 0, be = 0, pending = 0, totalR = 0;
+    for (const e of todays) {
+      const r = (e.entry > 0 && e.sl > 0 && e.tp > 0)
+        ? Math.abs(e.tp - e.entry) / Math.abs(e.entry - e.sl)
+        : 0;
+      if (e.outcome === 'win') { wins++; totalR += r; }
+      else if (e.outcome === 'loss') { losses++; totalR -= 1; }
+      else if (e.outcome === 'be') be++;
+      else pending++;
+    }
+    return { fires, wins, losses, be, pending, totalR };
+  }
+
+  // End-of-day Telegram recap for US100. Mirrors the morning brief (#134):
+  // what fired today, outcome rollup, net R, and FP balance. Pure function —
+  // returns the string; caller decides whether to send/dedupe.
+  function _buildUs100DailyRecap(gst, opts) {
+    const date = gst ? gst.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }) : '';
+    const fp = (typeof _userCapital !== 'undefined') ? (Number(_userCapital.fpMarketsUs100) || 0) : 0;
+    const sum = _summarizeUs100Day(gst, opts);
+    const lines = [`📊 US100 DAILY RECAP · ${date}`, ``];
+    if (sum.fires.length === 0) {
+      lines.push(`No signals fired today.`);
+      lines.push(``);
+      lines.push(`FP balance: $${fp.toFixed(0)}`);
+      return lines.join('\n');
+    }
+    lines.push(`Signals today: ${sum.fires.length}`);
+    for (const f of sum.fires.slice(0, 8)) {
+      const sigLabel = f.signal === 'enter' ? '🔴 ENTER' : f.signal === 'armed' ? '🟡 ALMOST' : '👁 WATCH';
+      const biasLabel = String(f.bias || '').toUpperCase().includes('BEAR') ? 'SHORT' : 'LONG';
+      const out = f.outcome === 'win' ? ' → ✅' : f.outcome === 'loss' ? ' → ❌' : f.outcome === 'be' ? ' → ⚖' : ' → ⏳';
+      lines.push(`• ${f.time} · ${f.session || '—'} · ${sigLabel} ${biasLabel}${out}`);
+    }
+    lines.push(``);
+    lines.push(`Outcomes`);
+    lines.push(`✅ ${sum.wins} win · ❌ ${sum.losses} loss · ⚖ ${sum.be} BE · ⏳ ${sum.pending} pending`);
+    const rStr = sum.totalR >= 0 ? `+${sum.totalR.toFixed(2)}R` : `${sum.totalR.toFixed(2)}R`;
+    lines.push(`Net: ${rStr}`);
+    lines.push(``);
+    lines.push(`FP balance: $${fp.toFixed(0)}`);
+    if (sum.pending > 0) {
+      lines.push(``);
+      lines.push(`💡 ${sum.pending} pending — set outcome in dashboard journal to close the loop.`);
+    }
+    return lines.join('\n');
+  }
+
+  // Tick-driven gate: fires the daily recap once per weekday at 23:00–23:05
+  // GST (after Silver Bullet PM, before midnight). Dedupes via localStorage.
+  // Skips weekends and FP=$0. Returns true if it actually sent.
+  function _maybeFireDailyUs100Recap(gst) {
+    if (!gst) return false;
+    const dow = gst.getDay();
+    if (dow === 0 || dow === 6) return false;
+    const hm = gst.getHours() * 60 + gst.getMinutes();
+    const WIN_START = 23 * 60, WIN_END = 23 * 60 + 5;
+    if (hm < WIN_START || hm >= WIN_END) return false;
+    const fp = (typeof _userCapital !== 'undefined') ? (Number(_userCapital.fpMarketsUs100) || 0) : 0;
+    if (fp <= 0) return false;
+    const key = `ict_us100_recap_${gst.getFullYear()}${String(gst.getMonth()+1).padStart(2,'0')}${String(gst.getDate()).padStart(2,'0')}`;
+    try { if (localStorage.getItem(key)) return false; } catch (e) {}
+    const text = _buildUs100DailyRecap(gst);
+    if (!text) return false;
+    try { _sendTelegramAlert(text); } catch (e) {}
+    try { localStorage.setItem(key, String(Date.now())); } catch (e) {}
+    return true;
   }
 
   // Reference levels US100 day-traders watch: previous day high/low (from the
