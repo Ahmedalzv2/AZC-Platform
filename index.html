@@ -77,9 +77,6 @@
       <div class="brand">
         <div class="logo">Ahmad<br><em style="color:var(--gold-soft);font-size:15px;">AutoPilot</em></div>
         <div class="sub">ICT · v21</div>
-        <!-- Capital widget — bank, FP Markets, spot exposure, total.
-             Click any number to edit. Persisted in localStorage. -->
-        <div id="capitalCard" class="capital-card" onclick="if(event.target===this||event.target.classList.contains('cap-label'))_editCapital()"></div>
       </div>
       <div class="side-nav">
         <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Top Setup</button>
@@ -104,6 +101,12 @@
     </nav>
 
     <main>
+
+      <!-- ═══ CAPITAL STRIP — top of every tab, sticky. Shows bank,
+           FP Markets US100 balance, live spot exposure, total. When
+           total is zero, surfaces a "set balance to trade" prompt.
+           Click any field to edit. ═══ -->
+      <div id="capitalStrip" class="capital-strip"></div>
 
       <!-- ═══ BUY PICKS BANNER — surfaces actionable spot assets at the top
            of every tab so the user doesn't have to hunt for them.
@@ -6720,29 +6723,56 @@
     return { value, cost, pnl };
   }
   function _renderCapitalCard() {
-    const el = document.getElementById('capitalCard');
+    const el = document.getElementById('capitalStrip');
     if (!el) return;
     const exp = _computeSpotExposure();
-    const total = (_userCapital.bank || 0) + (_userCapital.fpMarketsUs100 || 0) + exp.value;
+    const bank = _userCapital.bank || 0;
+    const fp   = _userCapital.fpMarketsUs100 || 0;
+    const total = bank + fp + exp.value;
     const fmt = (n) => '$' + Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
     const pnlClass = exp.pnl >= 0 ? 'cap-pnl-up' : 'cap-pnl-down';
-    const pnlStr = exp.cost > 0 ? `(${exp.pnl >= 0 ? '+' : ''}${exp.pnl.toFixed(2)}%)` : '';
+    const pnlStr = exp.cost > 0 ? ` ${exp.pnl >= 0 ? '+' : ''}${exp.pnl.toFixed(2)}%` : '';
+    // US100 only trades CME hours (closed weekends). Surface that inline
+    // since the FP balance is dedicated to it.
+    const us100Closed = (typeof isMarketClosed === 'function')
+      ? (() => { const a = ASSETS.find(x => x.symbol === 'US100'); return a ? isMarketClosed(a) : false; })()
+      : false;
+    const fpNote = us100Closed && fp > 0
+      ? `<span class="cap-note">CME closed · reopens ${typeof nextMarketOpen==='function'?nextMarketOpen():'Sun 17:00 CT'}</span>`
+      : '';
+    // Zero-total state: clear "you can't trade — set a balance" prompt
+    if (total === 0 && exp.cost === 0) {
+      el.classList.add('cap-empty');
+      el.innerHTML = `
+        <div class="cap-empty-msg">
+          <span>💰 No capital set</span>
+          <button class="cap-edit-btn" onclick="_editCapital('bank')">Set Bank</button>
+          <button class="cap-edit-btn" onclick="_editCapital('fpMarketsUs100')">Set FP · US100</button>
+          <span class="cap-empty-note">Add balance to start tracking trades. Picks below are still visible — just informational until capital is set.</span>
+        </div>`;
+      return;
+    }
+    el.classList.remove('cap-empty');
+    // Compact horizontal strip — works on mobile because chips wrap.
     el.innerHTML = `
-      <div class="cap-row" onclick="event.stopPropagation();_editCapital('bank')">
-        <span class="cap-label">Bank</span>
-        <span class="cap-value">${fmt(_userCapital.bank)}</span>
-      </div>
-      <div class="cap-row" onclick="event.stopPropagation();_editCapital('fpMarketsUs100')">
-        <span class="cap-label">FP · US100</span>
-        <span class="cap-value">${fmt(_userCapital.fpMarketsUs100)}</span>
-      </div>
-      <div class="cap-row">
-        <span class="cap-label">Spot held</span>
-        <span class="cap-value">${fmt(exp.value)} <span class="${pnlClass}">${pnlStr}</span></span>
-      </div>
-      <div class="cap-row cap-total">
-        <span class="cap-label">Total</span>
-        <span class="cap-value">${fmt(total)}</span>
+      <div class="cap-strip-row">
+        <button class="cap-chip cap-chip-edit" onclick="_editCapital('bank')" title="Click to edit your bank balance">
+          <span class="cap-chip-label">Bank</span>
+          <span class="cap-chip-val">${fmt(bank)}</span>
+        </button>
+        <button class="cap-chip cap-chip-edit" onclick="_editCapital('fpMarketsUs100')" title="Click to edit FP Markets US100 balance">
+          <span class="cap-chip-label">FP · US100</span>
+          <span class="cap-chip-val">${fmt(fp)}</span>
+          ${fpNote}
+        </button>
+        <button class="cap-chip" onclick="if(typeof switchTab==='function'){switchTab('autopilot')}" title="Live spot value of your tracked positions">
+          <span class="cap-chip-label">Spot held</span>
+          <span class="cap-chip-val">${fmt(exp.value)}<span class="${pnlClass}">${pnlStr}</span></span>
+        </button>
+        <div class="cap-total-chip" title="Total tradeable capital across all lanes">
+          <span class="cap-chip-label">Total</span>
+          <span class="cap-total-val">${fmt(total)}</span>
+        </div>
       </div>
     `;
   }
