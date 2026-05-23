@@ -7509,6 +7509,7 @@
     }
   }
   function _executeTelegramAction(action) {
+    if (action.type === 'open') return _executeOpenAction(action);
     if (action.type !== 'close') return;
     const sym = String(action.symbol || '').toUpperCase();
     if (!sym) return;
@@ -7555,6 +7556,43 @@
     // immediately, not 60s later.
     try { _pushStateToRelay(); } catch (e) {}
   }
+  function _executeOpenAction(action) {
+    const sym = String(action.symbol || '').toUpperCase();
+    const size = Number(action.size);
+    if (!sym || !(size > 0)) return;
+    const asset = ASSETS.find(a => a.symbol === sym);
+    if (!asset || !(asset.price > 0)) {
+      _sendTelegramAlert(`⚠ /open ${sym}: no live price; nothing opened.`);
+      return;
+    }
+    if (asset.tradeMode !== 'spot') {
+      _sendTelegramAlert(`⚠ /open ${sym}: not a spot-watch asset (tradeMode='${asset.tradeMode}'). Positions tracker only supports spot.`);
+      return;
+    }
+    const lv = (typeof getSpotLevels === 'function') ? getSpotLevels(asset) : null;
+    const target = lv?.sellWide || lv?.sellStretch || null;
+    const pos = (typeof openSpotPosition === 'function') ? openSpotPosition(sym, asset.price, size, target) : null;
+    if (!pos) {
+      _sendTelegramAlert(`⚠ /open ${sym}: openSpotPosition failed.`);
+      return;
+    }
+    const z = (typeof getSpotZone === 'function') ? getSpotZone(asset) : null;
+    const zoneTag = z?.state === 'buy_at' ? '🏦 AT BUY'
+                  : z?.state === 'buy_near' ? `🏦 NEAR BUY ${z.distancePct?.toFixed(1)}%`
+                  : z?.state === 'sell_at' ? '⚠ AT SELL'
+                  : z?.state === 'sell_near' ? '⚠ NEAR SELL'
+                  : 'MID';
+    const tgtLine = target ? `\nHold target: $${target.toLocaleString(undefined,{maximumFractionDigits:4})} (1-month high)` : '';
+    _sendTelegramAlert(
+      `✅ Opened ${sym} · size ${size} @ $${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})} · ${zoneTag}` + tgtLine
+    );
+    try {
+      if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === sym
+          && typeof updateTVAnalysis === 'function') updateTVAnalysis(sym);
+    } catch (e) {}
+    try { _pushStateToRelay(); } catch (e) {}
+  }
+
   function initTelegramActionPoller() {
     // Drain every 5s. /actions is cheap and at-most-once delivery; if a
     // poll fails the next one picks up anything still queued — except

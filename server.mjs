@@ -289,6 +289,7 @@ function _handleHelp() {
     '🤖 Commands:',
     '/picks — assets currently at/near buy zone',
     '/positions — your open spot holdings + live P/L',
+    '/open SYMBOL SIZE — open a position at live price (e.g. /open BNB 100)',
     '/close SYMBOL — close all open positions for SYMBOL at live price',
     '/status — quick health snapshot',
     '/help — this message',
@@ -320,6 +321,32 @@ function _handleClose(args) {
   const total = open.reduce((s, p) => s + (p.size || 0), 0);
   return `⏳ Queued /close ${sym} (${open.length} position${open.length>1?'s':''}, size ${total})${note} — browser will execute at live price and confirm here.`;
 }
+function _handleOpen(args) {
+  const sym = (args[0] || '').toUpperCase().trim();
+  const size = parseFloat(args[1]);
+  if (!sym || !/^[A-Z0-9]{2,8}$/.test(sym)) {
+    return '❓ Usage: /open SYMBOL SIZE (e.g. /open BNB 100)';
+  }
+  if (!(size > 0) || !Number.isFinite(size)) {
+    return '❓ Size must be a positive number (e.g. /open BNB 100)';
+  }
+  // Sanity-check against cached zone snapshot — warn if the user is buying
+  // an asset that isn't in any buy zone right now. Still queue — user knows
+  // what they want; this is just a "are you sure" nudge.
+  const zone = (_dashState.zones || []).find(z => z.symbol === sym);
+  _queueAction({ type: 'open', symbol: sym, size });
+  const note = _staleNote();
+  if (!zone) {
+    return `⏳ Queued /open ${sym} size ${size}${note}. Note: ${sym} not in cached zone snapshot — verify it's a tracked spot asset.`;
+  }
+  const px = zone.price ? `$${zone.price.toLocaleString('en-US',{maximumFractionDigits:4})}` : 'live';
+  const where = zone.state === 'buy_at' ? '🏦 AT BUY ZONE'
+              : zone.state === 'buy_near' ? `🏦 NEAR BUY ${zone.distPct?.toFixed(1)}%`
+              : zone.state === 'sell_at' ? '⚠ AT SELL ZONE (counterintuitive entry)'
+              : zone.state === 'sell_near' ? '⚠ near sell — late entry'
+              : 'MID range';
+  return `⏳ Queued /open ${sym} size ${size} at ${px} · ${where}${note} — browser will record at live price and confirm here.`;
+}
 async function _processTgMessage(msg) {
   const chat_id = String(msg.chat?.id || '');
   if (!_tgAcceptedChats.has(chat_id)) return; // ignore strangers
@@ -332,6 +359,7 @@ async function _processTgMessage(msg) {
   if      (cmd === '/picks')     reply = _handlePicks();
   else if (cmd === '/positions') reply = _handlePositions();
   else if (cmd === '/close')     reply = _handleClose(args);
+  else if (cmd === '/open')      reply = _handleOpen(args);
   else if (cmd === '/status')    reply = _handleStatus();
   else if (cmd === '/help' || cmd === '/start') reply = _handleHelp();
   if (reply) {
