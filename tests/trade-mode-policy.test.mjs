@@ -3,50 +3,44 @@ import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
 describe('Trade-mode policy: futures vs spot', () => {
-  test('DEFAULT_TRADE_MODES: SILVER/US100/SOL/GOLD/ETH/XRP = futures; rest = spot', () => {
+  test('DEFAULT_TRADE_MODES policy v7: only US100 is futures, everything else is spot', () => {
     const { app } = loadApp();
-    // The harness doesn't run window.onload, so loadTradeModes never seeds
-    // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
     app.loadTradeModes();
     const modes = app.DEFAULT_TRADE_MODES;
-    assert.equal(modes.SILVER, 'futures');
-    assert.equal(modes.US100,  'futures');
-    assert.equal(modes.SOL,    'futures', 'v3: SOL for weekend coverage');
-    assert.equal(modes.GOLD,   'futures', 'v4: GOLD joins the trio (XAUT_USDT on MEXC)');
-    assert.equal(modes.ETH,    'futures', 'v5: ETH validated by SW walk-forward (SW-O)');
-    assert.equal(modes.XRP,    'futures', 'v5: XRP validated by SW walk-forward (SW-OO)');
+    assert.equal(modes.US100,  'futures', 'US100 is the only ICT cockpit asset');
+    assert.equal(modes.SILVER, 'spot', 'v7: SILVER drops out of ICT futures');
+    assert.equal(modes.GOLD,   'spot', 'v7: GOLD drops out of ICT futures');
+    assert.equal(modes.SOL,    'spot', 'v7: SOL flipped to spot watch');
+    assert.equal(modes.ETH,    'spot', 'v7: ETH flipped to spot watch');
+    assert.equal(modes.XRP,    'spot', 'v7: XRP flipped to spot watch');
     assert.equal(modes.BTC,    'spot');
-    assert.equal(modes.BNB,    'spot', 'v5: BNB fails walk-forward (33% OOS+)');
+    assert.equal(modes.BNB,    'spot');
     assert.equal(modes.SUI,    'spot');
     assert.equal(modes.ASTR,   'spot');
   });
 
-  test('loadTradeModes seeds every ASSET with the right policy mode', () => {
+  test('loadTradeModes seeds every ASSET with the v7 policy mode', () => {
     const { app } = loadApp();
-    // The harness doesn't run window.onload, so loadTradeModes never seeds
-    // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
     app.loadTradeModes();
     const seedFor = (sym) => app.ASSETS.find(a => a.symbol === sym)?.tradeMode;
-    assert.equal(seedFor('SILVER'), 'futures');
     assert.equal(seedFor('US100'),  'futures');
-    assert.equal(seedFor('SOL'),    'futures', 'SOL gets weekend coverage in v3');
+    assert.equal(seedFor('SILVER'), 'spot');
+    assert.equal(seedFor('GOLD'),   'spot');
+    assert.equal(seedFor('SOL'),    'spot');
     assert.equal(seedFor('BTC'),    'spot');
-    assert.equal(seedFor('GOLD'),   'futures', 'v6: GOLD remains a default futures candidate');
   });
 
-  test('_isFuturesAsset returns true only for futures-mode assets', () => {
+  test('_isFuturesAsset returns true only for US100 under v7 policy', () => {
     const { app } = loadApp();
-    // The harness doesn't run window.onload, so loadTradeModes never seeds
-    // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
     app.loadTradeModes();
-    const silver = app.ASSETS.find(a => a.symbol === 'SILVER');
     const us100  = app.ASSETS.find(a => a.symbol === 'US100');
-    const btc    = app.ASSETS.find(a => a.symbol === 'BTC');
+    const silver = app.ASSETS.find(a => a.symbol === 'SILVER');
     const gold   = app.ASSETS.find(a => a.symbol === 'GOLD');
+    const btc    = app.ASSETS.find(a => a.symbol === 'BTC');
 
-    assert.equal(app._isFuturesAsset(silver), true);
     assert.equal(app._isFuturesAsset(us100),  true);
-    assert.equal(app._isFuturesAsset(gold),   true,  'GOLD = futures in v6 manual policy');
+    assert.equal(app._isFuturesAsset(silver), false, 'v7: SILVER is spot');
+    assert.equal(app._isFuturesAsset(gold),   false, 'v7: GOLD is spot');
     assert.equal(app._isFuturesAsset(btc),    false);
   });
 
@@ -102,16 +96,16 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     // to America/Chicago) sees an open market regardless of when the test runs.
     const gst = new Date('2026-05-07T08:00:00Z');
     const { app } = loadApp({ now: gst });
-    // The harness doesn't run window.onload, so loadTradeModes never seeds
-    // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
     app.loadTradeModes();
+    // US100 is the only futures asset in v7 — explicitly flip a different
+    // symbol if you want to test futures-mode behavior without market-hours
+    // confusion. SILVER is fine here once we re-flip it to futures.
     setupAtEntry(app, 'SILVER', 'futures');
-    // Reset prevSignalMap so the escalation check fires
     app.prevSignalMap = {};
     app.alertLog = [];
     app.checkArmedAlerts(gst);
     const fired = app.alertLog.filter(x => x.symbol === 'SILVER');
-    assert.ok(fired.length >= 1, 'SILVER should have fired an alert');
+    assert.ok(fired.length >= 1, 'SILVER should have fired an alert when flipped to futures');
     assert.equal(fired[0].signal, 'enter');
   });
 
@@ -133,9 +127,10 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     // Pin to Thursday 08:00 UTC (market open in Chicago time).
     const gst = new Date('2026-05-07T08:00:00Z');
     const { app } = loadApp({ now: gst });
-    // The harness doesn't run window.onload, so loadTradeModes never seeds
-    // tradeMode onto the ASSETS. Call it explicitly so policy is in effect.
     app.loadTradeModes();
+    // SILVER is spot by default in v7 — flip it back to futures for this
+    // mixed-mode test so we have a futures asset that's NOT US100 (US100 has
+    // its own market-hours gating that complicates the assertion).
     setupAtEntry(app, 'SILVER', 'futures');
     setupAtEntry(app, 'BTC',    'spot');
     setupAtEntry(app, 'BNB',    'spot');

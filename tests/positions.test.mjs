@@ -226,6 +226,9 @@ describe('getFireStatus — IN POSITION state', () => {
   test('Low-lev: other asset in position blocks SILVER with WAITING ON {sym}', () => {
     const { app } = loadApp();
     app.loadTradeModes();
+    // v7 makes SILVER spot by default; flip to futures so the cross-asset
+    // position gate engages.
+    app.ASSETS.find(a => a.symbol === 'SILVER').tradeMode = 'futures';
     app.setAssetLeverage('SILVER', 10);  // low-lev → cross-asset gate applies
     app.setLiveTradingEnabled(true);
     const silver = app.ASSETS.find(a => a.symbol === 'SILVER');

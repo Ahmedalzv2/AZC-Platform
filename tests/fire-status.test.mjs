@@ -2,46 +2,48 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
-describe('Policy v6 — manual futures candidates remain selectable', () => {
-  test('DEFAULT_TRADE_MODES has GOLD = futures', () => {
+describe('Policy v7 — only US100 is futures, every MEXC-eligible asset is spot watch', () => {
+  test('DEFAULT_TRADE_MODES: GOLD/SOL/SILVER are spot (v7)', () => {
     const { app } = loadApp();
-    assert.equal(app.DEFAULT_TRADE_MODES.GOLD, 'futures');
-    assert.equal(app.DEFAULT_TRADE_MODES.SOL,    'futures');
-    assert.equal(app.DEFAULT_TRADE_MODES.SILVER, 'futures');
+    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'spot');
+    assert.equal(app.DEFAULT_TRADE_MODES.SOL,    'spot');
+    assert.equal(app.DEFAULT_TRADE_MODES.SILVER, 'spot');
+    assert.equal(app.DEFAULT_TRADE_MODES.US100,  'futures', 'US100 is the only ICT lane');
   });
 
-  test('loadTradeModes promotes GOLD to futures', () => {
+  test('loadTradeModes sets GOLD to spot', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const gold = app.ASSETS.find(a => a.symbol === 'GOLD');
-    assert.equal(gold.tradeMode, 'futures');
-    assert.equal(app._isFuturesAsset(gold), true);
+    assert.equal(gold.tradeMode, 'spot');
+    assert.equal(app._isFuturesAsset(gold), false);
   });
 
-  test('GOLD has a valid MEXC contract (XAUT_USDT)', () => {
+  test('GOLD still has a valid MEXC contract (XAUT_USDT) — usable if flipped manually', () => {
     const { app } = loadApp();
     assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), 'XAUT_USDT');
   });
 
-  test('Default futures candidates = {SOL, SILVER, GOLD}', () => {
+  test('Default futures-eligible set is empty under v7 (only US100, which is CFD-only)', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const eligible = app.ASSETS
       .filter(a => app._isFuturesAsset(a) && app._mexcContractSymbol(a))
       .map(a => a.symbol);
-    assert.ok(eligible.includes('SOL'),    'SOL eligible');
-    assert.ok(eligible.includes('SILVER'), 'SILVER eligible');
-    assert.ok(eligible.includes('GOLD'),   'GOLD eligible');
-    // US100 stays futures-mode but has no MEXC contract (CFD-only).
-    assert.ok(!eligible.includes('US100'), 'US100 still excluded');
+    assert.equal(eligible.length, 0, `v7: no default futures candidates have a MEXC contract (got ${eligible.join(',')})`);
+    assert.ok(!eligible.includes('US100'), 'US100 is futures but CFD-only — no MEXC contract');
   });
 });
 
 describe('getFireStatus — at-a-glance trigger state', () => {
+  // Under v7 SOL defaults to spot. The fire-status flow only kicks in for
+  // futures-mode assets, so flip SOL back to futures explicitly for these
+  // fixtures — the test is about getFireStatus behavior, not policy.
   function bootLive(app) {
     app.loadTradeModes();
     app.setLiveTradingEnabled(true);
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
+    sol.tradeMode = 'futures';
     sol.price = 100;
     return sol;
   }
@@ -74,8 +76,10 @@ describe('getFireStatus — at-a-glance trigger state', () => {
   test('master switch off → blocked LIVE OFF', () => {
     const { app } = loadApp();
     app.loadTradeModes();
-    // Master OFF (default in harness)
+    // Master OFF (default in harness). Flip SOL to futures so fire-status
+    // engages the live-trading gate rather than the spot manual path.
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
+    sol.tradeMode = 'futures';
     sol.price = 100;
     const s = app.getFireStatus(sol);
     assert.equal(s.state, 'blocked');

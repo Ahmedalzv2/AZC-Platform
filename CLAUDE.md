@@ -14,37 +14,36 @@
 5. **Skip Monitor polling when CI is short.** A single `get_check_runs`
    call after ~10s is fine; reserve Monitor for genuinely long waits.
 
-## Trade-mode policy (v6 — post-90d-OOS research)
+## Trade-mode policy (v7 — US100-only ICT, everything else spot)
 
-The 200× ICT auto-scalp loop is **closed**. 90d Binance/MEXC OOS
-backtests across SOL/BTC/ETH/SILVER at 200×/100×/50×/25×/10× found
-**zero** positive-EV configs on >100 fills. Forward-bias diagnostic
-confirmed crypto ICT signals are statistically indistinguishable from
-random (delta-mean −0.018% to +0.009%). SILVER had a real signal
-(+0.11–0.16% at 1–4h horizons) but trade machinery friction ate it.
-The artifacts live at `tests/backtest-scalp.mjs` + `tests/forward-bias.mjs`
-— don't re-litigate without re-running them.
+User decision 2026-05-23: simplify to **only US100 on the ICT/futures
+lane; everything else (GOLD, SILVER, BTC, ETH, SOL, BNB, XRP, SUI,
+ASTR) is Spot Watch — buy low, sell high, 1–3 week hold.** No SWING /
+SCALP entry alerts on spot assets; the autoAnalyzeAsset path returns
+early when `tradeMode === 'spot'`.
+
+The v6 backtest evidence (200× ICT auto-scalp loop closed, GOLD/SILVER
+"manual ICT lane") is still recorded in `tests/backtest-scalp.mjs` +
+`tests/forward-bias.mjs` — don't re-litigate without re-running them.
+The simplification was a UX call by the user, not a backtest reversal.
 
 Resulting policy:
 
-- **US100**: ICT manual trade-call (already wired). Session-driven, this
-  is where ICT was designed to work. Unchanged.
-- **GOLD + SILVER**: ICT manual trade-call. 10–25× when fired (no auto-
-  fire). Treat like US100 — session-driven, eyes on the setup.
-- **SOL + BTC + ETH + BNB + XRP + SUI + ASTR**: Spot Watch only. HTF
-  buy/sell zones, accumulate low, distribute high. No leverage, no
-  scalp. ICT doesn't apply to 24/7 assets with no session structure.
+- **US100**: ICT manual trade-call (already wired). Session-driven,
+  this is where ICT was designed to work. Live FPMARKETS feed via the
+  VPS-hosted TV-WS relay (`tv-relay.srv1688368.hstgr.cloud/us100` and
+  `/us100/bars`). The auto TF readiness ladder, decision center, and
+  the FIRE STATUS badge are populated from the relay; manual
+  entry/SL/TP is required for any execution.
+- **Every other asset (GOLD, SILVER, BTC, ETH, SOL, BNB, XRP, SUI,
+  ASTR)**: Spot Watch only. HTF buy/sell zones, accumulate low,
+  distribute high. No leverage, no scalp, no SWING/SCALP alerts.
 - **Auto-fire**: globally disabled. `_scalpAutoFireEnabled = false`.
-  Signal generation, FIRE STATUS badges, force-fire button, and the
-  kill-switch UI all stay live (useful as manual-eyes inputs). Tests
-  opt in via `setScalpAutoFire(true)`.
-- **Leverage**: production cap is 25× for MEXC futures. Default per-asset
-  is 10×. The UI ladder allows smaller manual values too
-  (`[1, 2, 3, 5, 7, 10, 15, 20, 25]`). Legacy high-leverage survival /
-  trailing-TP / hold-time-kill helpers still exist for regression tests
-  and forced harness scenarios, but are unreachable from normal UI policy.
-- One-at-a-time gate + 60s per-asset cooldown remain on the force-fire
-  path so the user can't accidentally double-fire by mashing buttons.
+  Manual Force Fire / Force Plan flows still exist for futures-flipped
+  edge cases, but the default UI is spot watch + US100 ICT.
+- **Leverage spec / IN-POSITION gates / per-asset cooldowns** remain
+  in code for users who manually flip an asset to futures mode via
+  `setTradeMode(symbol, 'futures')`; nothing fires by default.
 
 ## Communication style
 

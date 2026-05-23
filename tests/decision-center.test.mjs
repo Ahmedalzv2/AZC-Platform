@@ -8,6 +8,10 @@ describe('Live Chart Decision Center', () => {
     app.setLiveTradingEnabled(true);
     app.setLiveTradingDryRun(true);
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
+    // Under v7 SOL defaults to spot. Flip to futures so the decision center
+    // engages its READY futures branch (the test is about that branch,
+    // not the policy).
+    sol.tradeMode = 'futures';
     sol.price = 100;
     sol.entry = 100;
     sol.sl = 99;
@@ -56,6 +60,8 @@ describe('Live Chart Decision Center', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
+    // Flip SOL to futures so the LIVE OFF gate kicks in (spot bypasses it).
+    sol.tradeMode = 'futures';
     sol.price = 100;
     const d = app._buildLiveChartDecision(sol);
 
