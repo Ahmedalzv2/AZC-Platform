@@ -7445,7 +7445,50 @@
   // VPS relay endpoint — same host that serves price/bars also forwards
   // Telegram alerts via the user's `happy` bot. Token stays server-side so
   // it isn't exposed in this github.io JS bundle.
-  const TG_RELAY_URL = 'https://tv-relay.srv1688368.hstgr.cloud/notify';
+  const TG_RELAY_BASE = 'https://tv-relay.srv1688368.hstgr.cloud';
+  const TG_RELAY_URL = TG_RELAY_BASE + '/notify';
+  const TG_STATE_URL = TG_RELAY_BASE + '/state';
+
+  // Push current dashboard state to the relay so the Telegram command poller
+  // there can answer /picks /positions /status without round-tripping to
+  // this browser. Browser is the source of truth (positions live in
+  // localStorage, zones are derived from live prices); the relay just
+  // caches the latest snapshot for instant Telegram replies.
+  function _pushStateToRelay() {
+    if (typeof ASSETS === 'undefined' || !ASSETS.length) return;
+    try {
+      const zones = [];
+      for (const a of ASSETS) {
+        if (a.tradeMode !== 'spot' || !(a.price > 0)) continue;
+        const z = (typeof getSpotZone === 'function') ? getSpotZone(a) : null;
+        if (!z) continue;
+        zones.push({
+          symbol: a.symbol,
+          price: a.price,
+          state: z.state,
+          distPct: z.distancePct,
+          sellWide: z.levels?.sellWide || null,
+          sell: z.levels?.sell || null,
+          buy: z.levels?.buy || null,
+        });
+      }
+      const positions = (typeof spotPositions !== 'undefined' && Array.isArray(spotPositions))
+        ? spotPositions.map(p => ({ id: p.id, symbol: p.symbol, entry: p.entry, size: p.size, ts: p.ts, target: p.target, closedAt: p.closedAt || null }))
+        : [];
+      fetch(TG_STATE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zones, positions }),
+        cache: 'no-store',
+      }).catch(() => {});
+    } catch (e) {}
+  }
+  function initRelayStatePush() {
+    // First push after a short delay so prices have time to populate, then
+    // every 60s. Cheap (<2KB payload) — relay caches in memory.
+    setTimeout(_pushStateToRelay, 15000);
+    setInterval(_pushStateToRelay, 60000);
+  }
   function _sendTelegramAlert(text) {
     try {
       fetch(TG_RELAY_URL, {
@@ -11858,6 +11901,7 @@
     _try('initTVPriceListener', initTVPriceListener);
     _try('initUS100LiveStream', initUS100LiveStream);
     _try('initUS100BarsPoll', initUS100BarsPoll);
+    _try('initRelayStatePush', initRelayStatePush);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
     // Fast-refresh: pull fresh 1m klines for futures assets every
