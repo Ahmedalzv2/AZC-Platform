@@ -1139,13 +1139,17 @@
     try { renderBuyPicksBanner(); } catch (e) {}
   }
 
-  // Sticky top-of-dashboard "what to buy right now" banner. Sits above the
-  // tab content (rendered into #buyPicksBanner). Quiet when nothing is
-  // actionable; lights up the moment a spot asset enters AT BUY / NEAR BUY.
-  // Tap a chip → switches to that asset's Live Chart.
+  // Sticky top-of-dashboard banner. Two rows:
+  //   1. Buy picks — assets currently at/near buy zone (what to enter).
+  //   2. Holdings — open spot positions with live P/L (what you can sell
+  //      / manage right now).
+  // Either row hides if it's empty. Banner stays visible if EITHER row
+  // has content. Tap any chip → switches to that asset's Live Chart.
   function renderBuyPicksBanner() {
     const host = document.getElementById('buyPicksBanner');
     if (!host || typeof getSpotZone !== 'function') return;
+
+    // --- Row 1: Buy picks ---
     const picks = ASSETS
       .filter(a => a.tradeMode === 'spot' && a.price > 0)
       .map(a => ({ asset: a, zone: getSpotZone(a) }))
@@ -1157,8 +1161,7 @@
         const db = Math.abs(b.zone.distancePct == null ? 99 : b.zone.distancePct);
         return da - db;
       });
-    if (!picks.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
-    const chips = picks.map(p => {
+    const pickChips = picks.map(p => {
       const z = p.zone;
       const isAt = z.state === 'buy_at';
       const distLabel = z.distancePct == null ? '' : ` ${z.distancePct >= 0 ? '+' : ''}${z.distancePct.toFixed(1)}%`;
@@ -1169,12 +1172,59 @@
         <strong>${p.asset.symbol}</strong> · ${stateLabel} · $${p.asset.price.toLocaleString(undefined,{maximumFractionDigits:4})}
       </button>`;
     }).join('');
+
+    // --- Row 2: Holdings ---
+    // Group multiple positions per symbol — user might have laddered in.
+    // Show blended entry + total size + P/L vs blend, plus zone state so
+    // they can see at a glance whether they should be considering /close.
+    const open = (typeof spotPositions !== 'undefined') ? spotPositions.filter(p => !p.closedAt) : [];
+    const bySym = {};
+    for (const p of open) {
+      const s = bySym[p.symbol] || (bySym[p.symbol] = { positions: [], totalSize: 0, weightedEntry: 0 });
+      s.positions.push(p);
+      s.totalSize += p.size || 0;
+      s.weightedEntry += (p.entry || 0) * (p.size || 0);
+    }
+    const holdChips = Object.keys(bySym).map(sym => {
+      const s = bySym[sym];
+      const asset = ASSETS.find(a => a.symbol === sym);
+      const px = asset?.price;
+      const avgEntry = s.totalSize > 0 ? s.weightedEntry / s.totalSize : 0;
+      const pnl = (px && avgEntry > 0) ? ((px - avgEntry) / avgEntry) * 100 : null;
+      const z = asset ? getSpotZone(asset) : null;
+      const tag =
+        z?.state === 'sell_at'  ? ' · 🎯 AT SELL'
+      : z?.state === 'sell_near' ? ' · 🎯 NEAR SELL'
+      : z?.state === 'buy_at'   ? ' · 🏦 still AT BUY'
+      : '';
+      const pnlStr = pnl == null ? '' : ` · ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%`;
+      const cls = pnl == null ? 'hold-flat' : pnl >= 0 ? 'hold-up' : 'hold-down';
+      const sellTouch = (z?.state === 'sell_at' || z?.state === 'sell_near') ? ' hold-sell' : '';
+      const tip = `${s.positions.length} entr${s.positions.length>1?'ies':'y'} · avg $${avgEntry.toFixed(4)} · size ${s.totalSize}${tag} — tap to open ${sym}`;
+      return `<button class="picks-chip ${cls}${sellTouch}" onclick="onSideAssetClick('${sym}')" title="${tip}">
+        <strong>${sym}</strong> · ${s.totalSize} @ $${avgEntry.toFixed(4)}${pnlStr}${tag}
+      </button>`;
+    }).join('');
+
+    if (!pickChips && !holdChips) {
+      host.style.display = 'none'; host.innerHTML = ''; return;
+    }
+    const rows = [];
+    if (pickChips) {
+      rows.push(`<div class="picks-bar">
+        <span class="picks-title">📈 ${picks.length} pick${picks.length>1?'s':''}</span>
+        <span class="picks-chips">${pickChips}</span>
+      </div>`);
+    }
+    if (holdChips) {
+      const n = Object.keys(bySym).length;
+      rows.push(`<div class="picks-bar holds-bar">
+        <span class="picks-title holds-title">📌 ${n} holding${n>1?'s':''}</span>
+        <span class="picks-chips">${holdChips}</span>
+      </div>`);
+    }
     host.style.display = '';
-    host.innerHTML = `
-      <div class="picks-bar">
-        <span class="picks-title">📈 ${picks.length} pick${picks.length>1?'s':''} now</span>
-        <span class="picks-chips">${chips}</span>
-      </div>`;
+    host.innerHTML = rows.join('');
   }
 
   // Re-renders the entire Live Trading modal in place so its diagnostic
