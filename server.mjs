@@ -289,19 +289,49 @@ function _handleHelp() {
     '🤖 Commands:',
     '/picks — assets currently at/near buy zone',
     '/positions — your open spot holdings + live P/L',
+    '/close SYMBOL — close all open positions for SYMBOL at live price',
     '/status — quick health snapshot',
     '/help — this message',
   ].join('\n');
+}
+
+// Pending action queue — the relay can't touch localStorage directly, so
+// /close hands off to the browser ticker via /actions polling. Browser
+// executes, then POSTs confirmation back to /notify (existing path).
+let _pendingActions = [];
+let _actionId = 1;
+function _queueAction(action) {
+  const id = _actionId++;
+  _pendingActions.push({ id, ts: Date.now(), ...action });
+  return id;
+}
+function _handleClose(args) {
+  const sym = (args[0] || '').toUpperCase().trim();
+  if (!sym || !/^[A-Z0-9]{2,8}$/.test(sym)) {
+    return '❓ Usage: /close SYMBOL (e.g. /close BNB)';
+  }
+  // Confirm there's something to close from cached state. We still queue
+  // even if cache shows zero — browser is the source of truth — but warn
+  // the user so they know what we saw.
+  const open = (_dashState.positions || []).filter(p => p.symbol === sym && !p.closedAt);
+  _queueAction({ type: 'close', symbol: sym });
+  const note = _staleNote();
+  if (open.length === 0) return `⚠ Queued /close ${sym}, but no open ${sym} positions in last snapshot${note}. Browser will check and reply.`;
+  const total = open.reduce((s, p) => s + (p.size || 0), 0);
+  return `⏳ Queued /close ${sym} (${open.length} position${open.length>1?'s':''}, size ${total})${note} — browser will execute at live price and confirm here.`;
 }
 async function _processTgMessage(msg) {
   const chat_id = String(msg.chat?.id || '');
   if (!_tgAcceptedChats.has(chat_id)) return; // ignore strangers
   const text = String(msg.text || '').trim();
   if (!text.startsWith('/')) return;
-  const cmd = text.split(/\s+/)[0].toLowerCase().replace(/@.+$/, '');
+  const parts = text.split(/\s+/);
+  const cmd = parts[0].toLowerCase().replace(/@.+$/, '');
+  const args = parts.slice(1);
   let reply = null;
   if      (cmd === '/picks')     reply = _handlePicks();
   else if (cmd === '/positions') reply = _handlePositions();
+  else if (cmd === '/close')     reply = _handleClose(args);
   else if (cmd === '/status')    reply = _handleStatus();
   else if (cmd === '/help' || cmd === '/start') reply = _handleHelp();
   if (reply) {
@@ -375,6 +405,15 @@ const server = http.createServer(async (req, res) => {
       const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '60', 10) || 60, 22), 300);
       try { return sendJson(res, 200, await us100Bars(tfsParam, limit), CORS_HEADERS); }
       catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
+    }
+    if (url.pathname === '/actions' && req.method === 'GET') {
+      // Browser ticker polls this every few seconds. Returning empties the
+      // queue — pending actions are at-most-once delivered. Acceptable for
+      // /close because the user can simply re-send the command if their
+      // browser crashed mid-flight.
+      const out = _pendingActions;
+      _pendingActions = [];
+      return sendJson(res, 200, { actions: out }, CORS_HEADERS);
     }
     if (url.pathname === '/state' && req.method === 'POST') {
       // Browser ticker pushes its current state here every minute so the

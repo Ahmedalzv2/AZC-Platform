@@ -7489,6 +7489,79 @@
     setTimeout(_pushStateToRelay, 15000);
     setInterval(_pushStateToRelay, 60000);
   }
+
+  // Pull pending Telegram actions (currently: /close SYMBOL) from the relay
+  // and execute them against the browser's localStorage. The relay queues
+  // them on receipt; we drain the queue every 5s, act, then push a
+  // confirmation back via /notify so the user gets a Telegram reply.
+  const TG_ACTIONS_URL = TG_RELAY_BASE + '/actions';
+  async function _drainTelegramActions() {
+    if (typeof spotPositions === 'undefined') return;
+    let payload = null;
+    try {
+      const r = await fetch(TG_ACTIONS_URL, { cache: 'no-store' });
+      if (!r.ok) return;
+      payload = await r.json();
+    } catch (e) { return; }
+    const actions = Array.isArray(payload?.actions) ? payload.actions : [];
+    for (const action of actions) {
+      try { _executeTelegramAction(action); } catch (e) { console.warn('[tg-action] failed', e); }
+    }
+  }
+  function _executeTelegramAction(action) {
+    if (action.type !== 'close') return;
+    const sym = String(action.symbol || '').toUpperCase();
+    if (!sym) return;
+    const asset = ASSETS.find(a => a.symbol === sym);
+    if (!asset || !(asset.price > 0)) {
+      _sendTelegramAlert(`⚠ /close ${sym}: no live price; nothing closed.`);
+      return;
+    }
+    const open = (typeof getOpenPositionsFor === 'function') ? getOpenPositionsFor(sym) : [];
+    if (!open.length) {
+      _sendTelegramAlert(`⚠ /close ${sym}: no open positions; nothing closed.`);
+      return;
+    }
+    const px = asset.price;
+    const lines = [];
+    let totalSize = 0, weightedEntry = 0;
+    for (const p of open) {
+      const ok = (typeof closeSpotPosition === 'function') ? closeSpotPosition(p.id, px) : false;
+      if (!ok) continue;
+      const pnl = ((px - p.entry) / p.entry) * 100;
+      const days = Math.max(0, Math.floor((Date.now() - p.ts) / 86400000));
+      lines.push(`• ${p.size} @ $${p.entry.toFixed(4)} · ${days}d · ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%`);
+      totalSize += p.size;
+      weightedEntry += p.entry * p.size;
+    }
+    if (!lines.length) {
+      _sendTelegramAlert(`⚠ /close ${sym}: failed to close any positions.`);
+      return;
+    }
+    const avgEntry = totalSize > 0 ? weightedEntry / totalSize : 0;
+    const blendedPnl = avgEntry > 0 ? ((px - avgEntry) / avgEntry) * 100 : 0;
+    const msg = [
+      `✅ Closed ${lines.length} ${sym} position${lines.length > 1 ? 's' : ''} @ $${px.toLocaleString(undefined,{maximumFractionDigits:4})}`,
+      ...lines,
+      `Blended P/L: ${blendedPnl >= 0 ? '+' : ''}${blendedPnl.toFixed(2)}% (avg entry $${avgEntry.toFixed(4)}, total size ${totalSize})`,
+    ].join('\n');
+    _sendTelegramAlert(msg);
+    // Refresh the analysis panel so the closed position falls out of the UI.
+    try {
+      if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === sym
+          && typeof updateTVAnalysis === 'function') updateTVAnalysis(sym);
+    } catch (e) {}
+    // Push fresh state to the relay so /positions reflects the close
+    // immediately, not 60s later.
+    try { _pushStateToRelay(); } catch (e) {}
+  }
+  function initTelegramActionPoller() {
+    // Drain every 5s. /actions is cheap and at-most-once delivery; if a
+    // poll fails the next one picks up anything still queued — except
+    // there shouldn't be (server clears on GET). Acceptable: user can
+    // re-send the command.
+    setInterval(_drainTelegramActions, 5000);
+  }
   function _sendTelegramAlert(text) {
     try {
       fetch(TG_RELAY_URL, {
@@ -11902,6 +11975,7 @@
     _try('initUS100LiveStream', initUS100LiveStream);
     _try('initUS100BarsPoll', initUS100BarsPoll);
     _try('initRelayStatePush', initRelayStatePush);
+    _try('initTelegramActionPoller', initTelegramActionPoller);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
     // Fast-refresh: pull fresh 1m klines for futures assets every
