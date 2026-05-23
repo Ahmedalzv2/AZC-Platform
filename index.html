@@ -10305,20 +10305,34 @@
     _renderWhaleList();
   }
 
+  // Why Blockscout for ETH:
+  //   - api.etherscan.io v1 is deprecated (HTTP 200 with NOTOK body), v2
+  //     requires an API key on every chain.
+  //   - eth.blockscout.com keeps the Etherscan-compatible response shape
+  //     (status / result / tokentx fields) and serves with CORS '*', so the
+  //     browser can call it directly with no key, no proxy.
+  // BSC: no free no-key endpoint exists today. We return a typed null so
+  // the UI can surface "needs key" instead of silently empty.
   async function _fetchWhaleTxs(addr, chain) {
-    const host = chain === 'bsc' ? 'api.bscscan.com' : 'api.etherscan.io';
+    if (chain === 'bsc') {
+      console.info('[whale] BSC needs a BSCScan/Etherscan-v2 API key — not wired by default. Skipping ' + addr);
+      return { needsKey: true, chain };
+    }
+    const host = 'eth.blockscout.com';
     try {
       const tokenUrl = `https://${host}/api?module=account&action=tokentx&address=${addr}&sort=desc&page=1&offset=15`;
-      const opts = {};
-      opts.signal = _t(10000);
+      const opts = { signal: _t(10000) };
       const r = await fetch(tokenUrl, opts);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
-      if (j.status !== '1' || !Array.isArray(j.result)) return [];
+      // Blockscout returns message:"OK" + result[] on success.
+      if (!Array.isArray(j.result)) return [];
       return j.result.slice(0, 10).map(tx => {
         const decimals = parseInt(tx.tokenDecimal || '18', 10);
-        const amount = Number(BigInt(tx.value)) / Math.pow(10, decimals);
-        const isOut = tx.from.toLowerCase() === addr.toLowerCase();
+        let amount = 0;
+        try { amount = Number(BigInt(tx.value)) / Math.pow(10, decimals); }
+        catch (e) { amount = Number(tx.value) / Math.pow(10, decimals); }
+        const isOut = (tx.from || '').toLowerCase() === addr.toLowerCase();
         return {
           hash: tx.hash,
           ts: parseInt(tx.timeStamp, 10),
@@ -10330,7 +10344,7 @@
           chain
         };
       });
-    } catch(e) { console.warn('[whale] fetch failed', addr, e.message); return null; }
+    } catch (e) { console.warn('[whale] fetch failed', addr, e.message); return null; }
   }
 
   function _estimateUsdValue(tx) {
@@ -10355,6 +10369,9 @@
   async function _refreshWhaleTxs(addr, chain) {
     const txs = await _fetchWhaleTxs(addr, chain);
     if (txs == null) return;
+    // _fetchWhaleTxs can return { needsKey:true } when the chain has no
+    // free no-key indexer. Skip — UI shows a hint via _renderWhaleList.
+    if (!Array.isArray(txs)) return;
     const key = `${chain}:${addr.toLowerCase()}`;
     const prevHashes = new Set((_whaleTxCache[key] || []).map(t => t.hash));
     _whaleTxCache[key] = txs;
