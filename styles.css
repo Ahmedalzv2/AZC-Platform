@@ -1428,3 +1428,36 @@
   border-color: rgba(92,184,138,0.5);
   color: var(--bull);
 }
+/* Holdings row — slightly different palette so it doesn't read as "another pick" */
+.holds-bar {
+  border-top: 1px dashed rgba(255,255,255,0.06);
+  padding-top: 6px;
+  margin-top: 4px;
+}
+.holds-title {
+  color: var(--gold) !important;
+}
+.picks-chip.hold-up {
+  border-color: var(--bull);
+  background: rgba(92,184,138,0.12);
+  color: var(--bull);
+}
+.picks-chip.hold-down {
+  border-color: var(--bear);
+  background: rgba(224,93,93,0.10);
+  color: var(--bear);
+}
+.picks-chip.hold-flat {
+  border-color: var(--text-mute);
+  color: var(--text-dim);
+}
+/* Held asset has hit / is approaching its sell zone — most actionable case;
+   gold ring overrides P/L color emphasis so the user notices */
+.picks-chip.hold-sell {
+  box-shadow: 0 0 0 2px rgba(201,169,97,0.65);
+  animation: hold-sell-pulse 1.6s ease-in-out infinite;
+}
+@keyframes hold-sell-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(201,169,97,0.65); }
+  50%      { box-shadow: 0 0 0 4px rgba(201,169,97,0.35); }
+}
