@@ -14,36 +14,20 @@
 5. **Skip Monitor polling when CI is short.** A single `get_check_runs`
    call after ~10s is fine; reserve Monitor for genuinely long waits.
 
-## Trade-mode policy (v7 — US100-only ICT, everything else spot)
+## Trade-mode policy (v8 — US100 manual, MEXC micro-capital separate)
 
-User decision 2026-05-23: simplify to **only US100 on the ICT/futures
-lane; everything else (GOLD, SILVER, BTC, ETH, SOL, BNB, XRP, SUI,
-ASTR) is Spot Watch — buy low, sell high, 1–3 week hold.** No SWING /
-SCALP entry alerts on spot assets; the autoAnalyzeAsset path returns
-early when `tradeMode === 'spot'`.
+User correction 2026-05-23: **US100/NASDAQ is manual-trigger ICT decision support.** Do not build autonomous US100 execution unless explicitly asked later.
 
-The v6 backtest evidence (200× ICT auto-scalp loop closed, GOLD/SILVER
-"manual ICT lane") is still recorded in `tests/backtest-scalp.mjs` +
-`tests/forward-bias.mjs` — don't re-litigate without re-running them.
-The simplification was a UX call by the user, not a backtest reversal.
+A separate **~$50 MEXC micro-capital lane** is allowed for crypto/asset experimentation because MEXC zero-fee trading can be an edge. Keep this separate from US100.
 
 Resulting policy:
 
-- **US100**: ICT manual trade-call (already wired). Session-driven,
-  this is where ICT was designed to work. Live FPMARKETS feed via the
-  VPS-hosted TV-WS relay (`tv-relay.srv1688368.hstgr.cloud/us100` and
-  `/us100/bars`). The auto TF readiness ladder, decision center, and
-  the FIRE STATUS badge are populated from the relay; manual
-  entry/SL/TP is required for any execution.
-- **Every other asset (GOLD, SILVER, BTC, ETH, SOL, BNB, XRP, SUI,
-  ASTR)**: Spot Watch only. HTF buy/sell zones, accumulate low,
-  distribute high. No leverage, no scalp, no SWING/SCALP alerts.
-- **Auto-fire**: globally disabled. `_scalpAutoFireEnabled = false`.
-  Manual Force Fire / Force Plan flows still exist for futures-flipped
-  edge cases, but the default UI is spot watch + US100 ICT.
-- **Leverage spec / IN-POSITION gates / per-asset cooldowns** remain
-  in code for users who manually flip an asset to futures mode via
-  `setTradeMode(symbol, 'futures')`; nothing fires by default.
+- **US100**: manual ICT/futures prompts only. Session-driven, decision-support, Telegram/card/outcome flow. No autonomous execution.
+- **MEXC crypto/assets**: guarded micro-capital experimentation only. Start dry-run, then paper/shadow, then live only behind hard safety gates.
+- **Safety gates before live MEXC**: server-side secrets only, dry-run default ON, explicit live-mode arming, hard daily loss cap, max trades/day, one open position max, tiny fixed risk, no martingale, no revenge trading, no re-entry spam, visible kill switch, full audit journal.
+- **Everything not explicitly in the MEXC test lane**: Spot Watch only. HTF buy/sell zones, accumulate low, distribute high. No leverage/scalp alerts by default.
+- **Auto-fire**: globally disabled by default. Any live MEXC execution must be deliberately armed and protected by the safety gates above.
+- **Leverage spec / IN-POSITION gates / per-asset cooldowns** remain in code for users who manually flip an asset to futures mode via `setTradeMode(symbol, 'futures')`; nothing fires by default.
 
 ## Communication style
 
