@@ -48,28 +48,45 @@ const FORWARD_HEADERS = new Set([
 // us instead of trying to call scanner.tradingview.com directly — that one
 // rejects browser-origin POSTs from github.io with a CORS failure.
 async function us100Price(cors) {
-  try {
+  // Yahoo NQ=F is the same continuous E-mini contract as CME_MINI:NQ1!, and
+  // its v8 chart `regularMarketPrice` actually moves during the session.
+  // TV scanner's `lp` is null on the free tier for CME futures
+  // (delayed_streaming_600), so it would otherwise fall through to `close` —
+  // yesterday's close, a constant. Yahoo first, TV second as a final guard.
+  const tryYahoo = async () => {
+    const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m', {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      cf: { cacheTtl: 1, cacheEverything: false },
+    });
+    if (!r.ok) throw new Error('yahoo-http ' + r.status);
+    const j = await r.json();
+    const meta = j?.chart?.result?.[0]?.meta;
+    const p = Number(meta?.regularMarketPrice);
+    if (!(p > 0)) throw new Error('yahoo-no-price');
+    return { price: p, source: 'yahoo:NQ=F', ts: Date.now() };
+  };
+  const tryTV = async () => {
     const r = await fetch('https://scanner.tradingview.com/global/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbols: { tickers: ['CME_MINI:NQ1!'] }, columns: ['lp', 'close'] }),
       cf: { cacheTtl: 1, cacheEverything: false },
     });
-    if (!r.ok) {
-      return new Response(JSON.stringify({ error: 'scanner-http', status: r.status }),
-        { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
-    }
+    if (!r.ok) throw new Error('tv-http ' + r.status);
     const j = await r.json();
     const row = j?.data?.[0];
-    const price = (row?.d?.[0] || row?.d?.[1]) || 0;
-    if (!(price > 0)) {
-      return new Response(JSON.stringify({ error: 'no-price', raw: j }),
-        { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
-    }
-    return new Response(JSON.stringify({ price, source: 'CME_MINI:NQ1!', ts: Date.now() }),
+    const p = Number(row?.d?.[0]);
+    if (!(p > 0)) throw new Error('tv-lp-null');
+    return { price: p, source: 'tv:CME_MINI:NQ1!', ts: Date.now() };
+  };
+  try {
+    let out;
+    try { out = await tryYahoo(); }
+    catch (e) { out = await tryTV(); }
+    return new Response(JSON.stringify(out),
       { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
   } catch (e) {
-    return new Response(JSON.stringify({ error: 'upstream-failed', message: String((e && e.message) || e) }),
+    return new Response(JSON.stringify({ error: 'all-sources-failed', message: String((e && e.message) || e) }),
       { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
   }
 }

@@ -21,19 +21,36 @@ const mime = {
 };
 
 async function us100Price() {
-  // CME E-mini Nasdaq-100 Futures — same instrument FPMARKETS:US100 tracks.
-  // Don't fall back to Yahoo ^NDX (cash index, ~3k off the futures scale).
-  const res = await fetch('https://scanner.tradingview.com/global/scan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbols: { tickers: ['CME_MINI:NQ1!'] }, columns: ['lp', 'close'] }),
-  });
-  if (!res.ok) throw new Error(`TV scanner HTTP ${res.status}`);
-  const j = await res.json();
-  const row = j?.data?.[0];
-  const price = (row?.d?.[0] || row?.d?.[1]) || 0;
-  if (!(price > 0)) throw new Error('TV scanner returned no price');
-  return { price, source: 'CME_MINI:NQ1!', ts: Date.now() };
+  // Yahoo NQ=F is the same continuous E-mini contract as CME_MINI:NQ1! and
+  // its v8 `regularMarketPrice` updates intrasession. TV scanner's `lp` is
+  // null on the free tier for CME futures (delayed_streaming_600), so it
+  // falls through to `close` — yesterday's close, never moves. Yahoo first,
+  // TV `lp` as the only useful fallback. Never use ^NDX (cash, ~3k off).
+  const tryYahoo = async () => {
+    const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m', {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    if (!r.ok) throw new Error('yahoo HTTP ' + r.status);
+    const j = await r.json();
+    const meta = j?.chart?.result?.[0]?.meta;
+    const p = Number(meta?.regularMarketPrice);
+    if (!(p > 0)) throw new Error('yahoo no price');
+    return { price: p, source: 'yahoo:NQ=F', ts: Date.now() };
+  };
+  const tryTV = async () => {
+    const r = await fetch('https://scanner.tradingview.com/global/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols: { tickers: ['CME_MINI:NQ1!'] }, columns: ['lp'] }),
+    });
+    if (!r.ok) throw new Error('TV scanner HTTP ' + r.status);
+    const j = await r.json();
+    const p = Number(j?.data?.[0]?.d?.[0]);
+    if (!(p > 0)) throw new Error('TV scanner lp null');
+    return { price: p, source: 'tv:CME_MINI:NQ1!', ts: Date.now() };
+  };
+  try { return await tryYahoo(); }
+  catch (e) { return await tryTV(); }
 }
 
 function sendJson(res, status, body) {
