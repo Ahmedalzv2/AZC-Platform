@@ -59,6 +59,107 @@ async function us100PriceWS(symbol) {
   }
 }
 
+// Pull historical bars for FPMARKETS:US100 across the dashboard's TFs in a
+// single WS connection. TV's chart WS rejects browser-origin handshakes from
+// github.io, so the analysis ladder can't open these directly; relaying
+// through this VPS unblocks it. Returns a map { '1m': [{t,o,h,l,c,v}, …], … }
+// where t is ms (matches the Binance/MEXC kline shape _analyzeKlines expects).
+const TF_RESOLUTION = {
+  '1m':  '1',
+  '5m':  '5',
+  '15m': '15',
+  '1h':  '60',
+  '4h':  '240',
+  '1d':  '1D',
+};
+async function us100Bars(tfs, limit = 60) {
+  const ws = new WebSocket('wss://data.tradingview.com/socket.io/websocket', {
+    headers: { 'Origin': 'https://www.tradingview.com' },
+  });
+  const send = (m) => {
+    const s = JSON.stringify(m);
+    ws.send(`~m~${s.length}~m~${s}`);
+  };
+  // Length-prefixed frame splitter — TV uses `~m~N~m~payload` framing.
+  function* parseFrames(buf) {
+    let i = 0;
+    while (i + 3 <= buf.length) {
+      if (buf.substr(i, 3) !== '~m~') return;
+      const end = buf.indexOf('~m~', i + 3);
+      if (end === -1) return;
+      const n = parseInt(buf.substring(i + 3, end), 10);
+      if (!Number.isFinite(n)) return;
+      const start = end + 3;
+      if (start + n > buf.length) return;
+      yield buf.substring(start, start + n);
+      i = start + n;
+    }
+  }
+
+  const sessions = {}; // csid → tf
+  const out = {};      // tf → bars[]
+  const pending = new Set();
+  for (const tf of tfs) {
+    if (!TF_RESOLUTION[tf]) continue;
+    const csid = 'cs_' + tf + '_' + Math.random().toString(36).slice(2, 8);
+    sessions[csid] = tf;
+    pending.add(tf);
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', reject, { once: true });
+    });
+    send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+    for (const [csid, tf] of Object.entries(sessions)) {
+      send({ m: 'chart_create_session', p: [csid, ''] });
+      send({ m: 'resolve_symbol', p: [csid, 'sym', '={"adjustment":"splits","symbol":"FPMARKETS:US100"}'] });
+      send({ m: 'create_series', p: [csid, 'ser', 's1', 'sym', TF_RESOLUTION[tf], limit, ''] });
+    }
+
+    let buffer = '';
+    await new Promise((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error('bars-timeout')), 8000);
+      ws.addEventListener('message', (ev) => {
+        const text = typeof ev.data === 'string' ? ev.data : ev.data.toString();
+        buffer += text;
+        // Echo heartbeat or TV drops the connection.
+        if (text.includes('~h~')) { try { ws.send(text); } catch {} }
+        // Walk only the COMPLETE frames currently in `buffer`; advance `buffer`
+        // past the last complete frame so the next chunk continues cleanly.
+        let consumed = 0;
+        for (const frame of parseFrames(buffer)) {
+          consumed += `~m~${frame.length}~m~${frame}`.length;
+          if (!frame || frame[0] !== '{') continue;
+          let msg; try { msg = JSON.parse(frame); } catch { continue; }
+          if (msg.m !== 'timescale_update') continue;
+          const csid = msg.p && msg.p[0];
+          const sds  = msg.p && msg.p[1];
+          const tf = sessions[csid];
+          if (!tf || !sds) continue;
+          let bars = null;
+          for (const k of Object.keys(sds)) {
+            if (sds[k] && Array.isArray(sds[k].s)) { bars = sds[k].s; break; }
+          }
+          if (!bars) continue;
+          out[tf] = bars
+            .map(b => ({ t: Math.round((+b.v[0]) * 1000), o: +b.v[1], h: +b.v[2], l: +b.v[3], c: +b.v[4], v: +b.v[5] }))
+            .filter(k => Number.isFinite(k.c));
+          pending.delete(tf);
+          if (pending.size === 0) { clearTimeout(to); resolve(); }
+        }
+        buffer = buffer.substring(consumed);
+      });
+      ws.addEventListener('error', () => { clearTimeout(to); reject(new Error('ws-error')); });
+      ws.addEventListener('close', () => { clearTimeout(to); reject(new Error('ws-closed')); });
+    });
+    return { bars: out, ts: Date.now(), source: 'tv-ws:FPMARKETS:US100' };
+  } finally {
+    try { ws.close(); } catch {}
+  }
+}
+
 async function us100Price() {
   // Priority: TV WS (FPMARKETS:US100 — matches the chart) → Yahoo NQ=F →
   // TV scanner CME_MINI:NQ1! lp. WS is the only path that returns the
@@ -125,6 +226,12 @@ const server = http.createServer(async (req, res) => {
     // `/api/us100-price` (matches the legacy local-proxy path).
     if (url.pathname === '/api/us100-price' || url.pathname === '/us100') {
       try { return sendJson(res, 200, await us100Price(), CORS_HEADERS); }
+      catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
+    }
+    if (url.pathname === '/us100/bars') {
+      const tfsParam = (url.searchParams.get('tfs') || '1m,5m,15m,1h,4h,1d').split(',').map(s => s.trim()).filter(Boolean);
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '60', 10) || 60, 22), 300);
+      try { return sendJson(res, 200, await us100Bars(tfsParam, limit), CORS_HEADERS); }
       catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
     }
 
