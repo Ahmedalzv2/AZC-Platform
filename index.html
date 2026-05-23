@@ -3183,8 +3183,17 @@
   // SOL/BTC/ETH/SILVER across the tested leverage ladder. Gate stays OFF in production — signal
   // generation, FIRE STATUS badges, force-fire and the kill-switch UI remain
   // live. Tests opt in via setScalpAutoFire(true).
-  let _scalpAutoFireEnabled = false;
-  function setScalpAutoFire(on) { _scalpAutoFireEnabled = !!on; return _scalpAutoFireEnabled; }
+  // Persist across page reload — earlier in-memory-only state meant every
+  // refresh silently flipped auto-fire back to OFF, so a user who "armed"
+  // before sleep would wake to a system that wasn't actually firing.
+  let _scalpAutoFireEnabled = (() => {
+    try { return localStorage.getItem('ict_scalp_autofire') === '1'; } catch (e) { return false; }
+  })();
+  function setScalpAutoFire(on) {
+    _scalpAutoFireEnabled = !!on;
+    try { localStorage.setItem('ict_scalp_autofire', _scalpAutoFireEnabled ? '1' : '0'); } catch (e) {}
+    return _scalpAutoFireEnabled;
+  }
   function getScalpAutoFire() { return _scalpAutoFireEnabled; }
 
   // SW (swing) methodology — validated by tests/walk-forward-accurate.mjs
@@ -3207,8 +3216,14 @@
     ETH: { dir: null,    scoreMin: null, phaseGate: true, slPct: 1.5, tpPct: 3.0, holdH: 24 },
     XRP: { dir: 'bear',  scoreMin: 2,    phaseGate: true, slPct: 2.0, tpPct: 3.0, holdH: 48 },
   };
-  let _swAutoFireEnabled = false;
-  function setSwAutoFire(on) { _swAutoFireEnabled = !!on; return _swAutoFireEnabled; }
+  let _swAutoFireEnabled = (() => {
+    try { return localStorage.getItem('ict_sw_autofire') === '1'; } catch (e) { return false; }
+  })();
+  function setSwAutoFire(on) {
+    _swAutoFireEnabled = !!on;
+    try { localStorage.setItem('ict_sw_autofire', _swAutoFireEnabled ? '1' : '0'); } catch (e) {}
+    return _swAutoFireEnabled;
+  }
   function getSwAutoFire() { return _swAutoFireEnabled; }
   // Per-asset open-position tracker: { [sym]: { openTs, holdH, orderId } }.
   // Populated when _swingMonitorTick fires; consumed by _swHoldKillTick which
@@ -3314,11 +3329,13 @@
         : (isFinite(lev) && lev >= LEVERAGE_HIGH_THRESHOLD ? 0.20 : _laneDefaultMargin);
       if (targetMargin != null && isFinite(lev) && lev > 0 && Number(entry) > 0) {
         const units = (targetMargin * lev) / Number(entry);
-        // MEXC SILVER_USDT (and most contract pairs) accept 0.01 lot
-        // increments — flooring to whole units forced the position 2-3×
-        // too large. Round to 2 decimals; reject if math underflows.
-        const rounded = Math.round(units * 100) / 100;
-        return rounded >= 0.01 ? rounded : null;
+        // Round to 6 decimals so high-price assets (ETH ~$4.5k, BTC ~$95k)
+        // don't underflow to zero — earlier 2dp rounding killed ETH because
+        // (0.20 × 10) / 4500 = 0.000444 → 0.00 → null. The per-contract
+        // volScale rounding in placeMexcFuturesOrder still snaps to the
+        // exchange's tick; this just preserves the actual qty here.
+        const rounded = Math.round(units * 1e6) / 1e6;
+        return rounded > 0 ? rounded : null;
       }
       const account = parseFloat(localStorage.getItem('ict_calc_account'));
       const riskPct = parseFloat(localStorage.getItem('ict_calc_risk'));
@@ -3512,6 +3529,46 @@
     } catch (err) {}
   }
 
+  // One-tap arm-everything: flips every gate needed for unattended SW auto-
+  // fire in a single button. Includes master ON, dry-run OFF (real orders),
+  // lane ON, armed, SW auto-fire ON, margin = $0.20. Re-tap to disarm to a
+  // fully safe state (dry-run on, master off). Designed so the user doesn't
+  // have to remember the 5-flip dance every session.
+  function isAutoFireFullyArmed() {
+    try {
+      const cfg = _microCapitalConfig();
+      return _liveTradingEnabled === true
+          && _liveTradingDryRun === false
+          && cfg.laneEnabled === true
+          && cfg.armed === true
+          && getSwAutoFire() === true;
+    } catch (e) { return false; }
+  }
+  function setAllAutoFireArmed(on) {
+    if (on) {
+      // Need keys to be saved or live orders can't go anywhere.
+      if (!getMexcApiKey() || !getMexcApiSecret()) {
+        try { showToast('⚠ Save MEXC keys first', 'err'); } catch (e) {}
+        return false;
+      }
+      setLiveTradingEnabled(true);
+      setLiveTradingDryRun(false);
+      setMicroCapitalConfig({ laneEnabled: true, armed: true });
+      setSwAutoFire(true);
+      if (getTargetMarginUsdt() == null) setTargetMarginUsdt(0.20);
+      try { showToast('🔴 AUTO-FIRE ARMED · live · $0.20/fire', 'ok'); } catch (e) {}
+    } else {
+      // Disarm to the safest state — preserves keys but stops everything.
+      setSwAutoFire(false);
+      setMicroCapitalConfig({ laneEnabled: false, armed: false });
+      setLiveTradingDryRun(true);
+      setLiveTradingEnabled(false);
+      try { showToast('🛡 DISARMED · all safe', 'ok'); } catch (e) {}
+    }
+    try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
+    return true;
+  }
+
   // Toggle handlers for the micro-capital lane controls — separate from the
   // master switch so the user can stage: pick lane → review caps → arm live.
   function setMicroCapitalLaneEnabled(on) {
@@ -3555,6 +3612,11 @@
     );
     const margin = getTargetMarginUsdt();
     const marginStr = margin != null ? `$${margin.toFixed(2)}` : 'unset → qty=1 fallback';
+    // The one-tap. Loud + obvious. Two-state (arm/disarm) — no confirm dialog
+    // because the floating 🛑 STOP LIVE button is the always-available undo.
+    const armed = isAutoFireFullyArmed();
+    const oneTapBtn = `<button onclick="setAllAutoFireArmed(${!armed})" style="width:100%;background:${armed?'linear-gradient(180deg,#e05d5d 0%,#b03030 100%)':'linear-gradient(180deg,#5cb88a 0%,#3a9468 100%)'};border:none;color:#fff;padding:14px 18px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;box-shadow:0 2px 8px ${armed?'rgba(224,93,93,0.4)':'rgba(92,184,138,0.3)'};margin-bottom:10px;">${armed?'🔴 AUTO-FIRING · TAP TO DISARM':'🚀 ONE-TAP ARM AUTO-FIRE'}</button>`;
+    const oneTapNote = `<div style="font-size:10px;color:var(--text-mute);margin-bottom:10px;line-height:1.5;font-family:'JetBrains Mono',monospace;">${armed?'Master ON · dry-run OFF · lane armed · SW auto-fire ON · \$0.20/fire. Floating 🛑 button kills everything in one tap.':'One tap arms: master ON, dry-run OFF, lane+armed, SW auto-fire ON, \$0.20/fire. Requires MEXC keys saved.'}</div>`;
     const laneBtn = `<button onclick="setMicroCapitalLaneEnabled(${!cfg.laneEnabled})" style="background:${cfg.laneEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${cfg.laneEnabled?'var(--bull)':'var(--border)'};color:${cfg.laneEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${cfg.laneEnabled?'🟢 LANE ON':'⚪ LANE OFF'}</button>`;
     const armBtn = `<button onclick="setMicroCapitalArmed(${!cfg.armed})" ${cfg.laneEnabled?'':'disabled'} style="background:${cfg.armed?'rgba(224,93,93,0.20)':'rgba(101,101,109,0.15)'};border:1px solid ${cfg.armed?'var(--bear)':'var(--border)'};color:${cfg.armed?'var(--bear)':cfg.laneEnabled?'var(--text)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:${cfg.laneEnabled?'pointer':'not-allowed'};opacity:${cfg.laneEnabled?1:0.5};font-family:'JetBrains Mono',monospace;">${cfg.armed?'🔴 ARMED · LIVE':'🛡 ARM LIVE'}</button>`;
     // One-tap margin preset row — the value most users set wrong. Quick presets
@@ -3565,6 +3627,8 @@
     };
     return `
       <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">MEXC micro-capital lane · \$${wallet.toFixed(4)}</div>
+      ${oneTapBtn}
+      ${oneTapNote}
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
         ${laneBtn}
         ${armBtn}
