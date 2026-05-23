@@ -7858,6 +7858,7 @@
   }
   function _executeTelegramAction(action) {
     if (action.type === 'open') return _executeOpenAction(action);
+    if (action.type === 'outcome') return _executeOutcomeAction(action);
     if (action.type !== 'close') return;
     const sym = String(action.symbol || '').toUpperCase();
     if (!sym) return;
@@ -7938,6 +7939,50 @@
       if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === sym
           && typeof updateTVAnalysis === 'function') updateTVAnalysis(sym);
     } catch (e) {}
+    try { _pushStateToRelay(); } catch (e) {}
+  }
+
+  // Pick the US100 journal entry a Telegram /win|/loss|/be command targets.
+  // Default: latest still-pending US100 fire from today. If `timeTag` (HH:MM)
+  // is supplied, narrow to entries whose `time` label starts with it — lets
+  // the user resolve a specific older fire when several pendings stacked up.
+  function _findPendingUs100JournalEntry(timeTag) {
+    if (typeof journal === 'undefined' || !Array.isArray(journal)) return null;
+    const today = new Date().toLocaleDateString('en-GB');
+    let pool = journal.filter(e =>
+      e && e.symbol === 'US100' && !e.outcome && e.date === today
+    );
+    if (timeTag) {
+      const norm = String(timeTag).trim();
+      pool = pool.filter(e => String(e.time || '').startsWith(norm));
+    }
+    if (!pool.length) return null;
+    pool.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    return pool[0];
+  }
+  function _executeOutcomeAction(action) {
+    const outcome = String(action.outcome || '').toLowerCase();
+    if (!['win', 'loss', 'be'].includes(outcome)) return;
+    const timeTag = action.timeTag || null;
+    const je = _findPendingUs100JournalEntry(timeTag);
+    if (!je) {
+      const which = timeTag ? `@ ${timeTag}` : '';
+      _sendTelegramAlert(`⚠ /${outcome} ${which}: no pending US100 fire found today.`);
+      return;
+    }
+    try { setManualOutcome(je.id, outcome); }
+    catch (e) { _sendTelegramAlert(`⚠ /${outcome}: failed to mark — ${e?.message || e}`); return; }
+    const icon = outcome === 'win' ? '✅' : outcome === 'loss' ? '❌' : '⚖';
+    const bias = String(je.bias || '').toUpperCase().includes('BEAR') ? 'SHORT' : 'LONG';
+    const sig  = je.signal === 'enter' ? 'ENTER' : je.signal === 'armed' ? 'ALMOST' : 'WATCH';
+    const r = (je.entry > 0 && je.sl > 0 && je.tp > 0)
+      ? Math.abs(je.tp - je.entry) / Math.abs(je.entry - je.sl) : 0;
+    const rStr = outcome === 'win'  ? (r > 0 ? ` · +${r.toFixed(2)}R` : '')
+              : outcome === 'loss' ? ' · -1.00R'
+              : ' · 0R';
+    _sendTelegramAlert(
+      `${icon} US100 ${je.time || ''} ${sig} ${bias} → ${outcome.toUpperCase()}${rStr}`
+    );
     try { _pushStateToRelay(); } catch (e) {}
   }
 

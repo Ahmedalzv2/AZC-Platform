@@ -291,9 +291,28 @@ function _handleHelp() {
     '/positions — your open spot holdings + live P/L',
     '/open SYMBOL SIZE — open a position at live price (e.g. /open BNB 100)',
     '/close SYMBOL — close all open positions for SYMBOL at live price',
+    '/win [HH:MM] — mark latest US100 pending fire as WIN (or a specific time)',
+    '/loss [HH:MM] — mark latest US100 pending fire as LOSS',
+    '/be [HH:MM] — mark latest US100 pending fire as BREAKEVEN',
     '/status — quick health snapshot',
     '/help — this message',
   ].join('\n');
+}
+
+// Mark a pending US100 journal entry from Telegram. With no arg we target the
+// most recent pending fire today; with `HH:MM` we match by the journal time
+// label (e.g. "14:30 GST"). Browser ticker drains the queued action, calls
+// setManualOutcome, then confirms via /notify so the user sees ✅.
+function _handleOutcome(args, outcome) {
+  const arg = (args[0] || '').trim();
+  const timeTag = arg && /^\d{1,2}:\d{2}$/.test(arg) ? arg : null;
+  if (arg && !timeTag) {
+    return `❓ Usage: /${outcome} [HH:MM]  (e.g. /${outcome} 14:30, or just /${outcome} for the latest pending)`;
+  }
+  _queueAction({ type: 'outcome', outcome, timeTag });
+  const target = timeTag ? `@ ${timeTag}` : '(latest pending)';
+  const note = _staleNote();
+  return `⏳ Queued /${outcome} ${target}${note} — browser will mark the US100 fire and confirm here.`;
 }
 
 // Pending action queue — the relay can't touch localStorage directly, so
@@ -360,6 +379,9 @@ async function _processTgMessage(msg) {
   else if (cmd === '/positions') reply = _handlePositions();
   else if (cmd === '/close')     reply = _handleClose(args);
   else if (cmd === '/open')      reply = _handleOpen(args);
+  else if (cmd === '/win')       reply = _handleOutcome(args, 'win');
+  else if (cmd === '/loss')      reply = _handleOutcome(args, 'loss');
+  else if (cmd === '/be')        reply = _handleOutcome(args, 'be');
   else if (cmd === '/status')    reply = _handleStatus();
   else if (cmd === '/help' || cmd === '/start') reply = _handleHelp();
   if (reply) {
