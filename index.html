@@ -5650,6 +5650,22 @@
                         (sig === 'armed' && prev !== 'armed' && prev !== 'enter') ||
                         (sig === 'watch' && prev !== 'watch' && prev !== 'armed' && prev !== 'enter');
 
+      // Capital-gate: don't fire loud trade calls if the lane has no funds.
+      // US100 trades from the FP Markets balance; other futures (manual flip)
+      // draw from bank. Advance prevSignalMap so we don't re-fire when funds
+      // appear, and drop a quiet toast so the user sees what we suppressed.
+      if (escalated && (sig === 'enter' || sig === 'armed')) {
+        const lane = asset.symbol === 'US100' ? 'fpMarketsUs100' : 'bank';
+        const have = (typeof _userCapital !== 'undefined') ? (Number(_userCapital[lane]) || 0) : 0;
+        if (have <= 0) {
+          prevSignalMap[asset.symbol] = sig;
+          const laneLabel = lane === 'fpMarketsUs100' ? 'FP · US100' : 'bank';
+          const label = sig === 'enter' ? 'ENTER NOW' : 'ALMOST ENTRY POINT';
+          try { showToast(`🔇 ${asset.symbol} ${label} — set ${laneLabel} balance to enable alerts`, 'warn'); } catch (e) {}
+          return;
+        }
+      }
+
       if (escalated) {
         const analysis = analyzeAsset(asset, gst);
         const pct = Math.abs((asset.price - asset.entry) / asset.entry * 100).toFixed(2);

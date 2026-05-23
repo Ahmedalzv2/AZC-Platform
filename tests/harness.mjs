@@ -265,6 +265,8 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set chochCache(v) { chochCache = v; },
   get sentimentEnabled() { return typeof sentimentEnabled === 'undefined' ? undefined : sentimentEnabled; },
   set sentimentEnabled(v) { sentimentEnabled = v; },
+  get _userCapital() { return typeof _userCapital === 'undefined' ? undefined : _userCapital; },
+  set _userCapital(v) { _userCapital = v; },
 });
 `;
 
