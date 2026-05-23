@@ -5748,6 +5748,18 @@
 
           if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
         }
+
+        // Trade-ready Telegram push for US100: rich card with sized lots.
+        // Survives the browser being closed (server-side relay), so the user
+        // can act from the phone without the dashboard open. Only fires on
+        // ENTER NOW / ALMOST ENTRY POINT — 'watch' stays in-app to reduce
+        // phone noise.
+        if (asset.symbol === 'US100' && (sig === 'enter' || sig === 'armed')) {
+          try {
+            const card = _buildUs100TradeCard(asset, sig);
+            if (card) _sendTelegramAlert(card);
+          } catch (e) {}
+        }
       }
 
       prevSignalMap[asset.symbol] = sig;
@@ -7943,6 +7955,59 @@
         cache: 'no-store',
       }).catch(() => {});
     } catch (e) {}
+  }
+
+  // FP Markets NAS100 spec: $1 USD per index point at 1.00 standard lot.
+  // Most retail FP accounts also allow 0.10 and 0.01 lot fractions, so the
+  // card walks all three so the user can read off the right size without
+  // doing math on their phone.
+  const FP_US100_USD_PER_POINT_PER_LOT = 1;
+
+  // Build a trade-ready Telegram card for US100 signals. Includes direction,
+  // entry/SL/TP, R:R, and a sizing table referenced against current FP
+  // balance so the user can act from the phone without opening the dashboard.
+  // Returns null when required levels are missing (caller skips the push).
+  function _buildUs100TradeCard(asset, sig) {
+    if (!asset || asset.symbol !== 'US100') return null;
+    const entry = +asset.entry, sl = +asset.sl;
+    const tp = +(asset.tp1 || asset.tp || 0);
+    if (!(entry > 0) || !(sl > 0) || entry === sl) return null;
+    const dir = String(asset.bias || '').toUpperCase().includes('BEAR') ? 'SHORT' : 'LONG';
+    const slPts  = Math.abs(entry - sl);
+    const tpPts  = tp > 0 ? Math.abs(tp - entry) : 0;
+    const rr     = tpPts > 0 ? (tpPts / slPts) : 0;
+    const fp     = (typeof _userCapital !== 'undefined') ? (Number(_userCapital.fpMarketsUs100) || 0) : 0;
+    const fmtPx  = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtPts = (n) => Math.round(n).toLocaleString('en-US');
+    const head   = sig === 'enter' ? '🔴 US100 ENTER NOW' : '🟡 US100 ALMOST ENTRY';
+    const lines  = [
+      `${head} — ${dir}`,
+      ``,
+      `Entry: ${fmtPx(entry)}`,
+      `SL:    ${fmtPx(sl)}  (${dir === 'LONG' ? '-' : '+'}${fmtPts(slPts)} pts)`,
+    ];
+    if (tp > 0) lines.push(`TP:    ${fmtPx(tp)}  (${dir === 'LONG' ? '+' : '-'}${fmtPts(tpPts)} pts)`);
+    if (rr > 0) lines.push(`R:R:   1:${rr.toFixed(1)}`);
+    lines.push('');
+    if (fp > 0 && slPts > 0) {
+      lines.push(`Sizing (FP $${fp.toFixed(0)} · $${FP_US100_USD_PER_POINT_PER_LOT}/pt per 1.0 lot):`);
+      const recLots = Math.max(0, (fp * 0.01) / (slPts * FP_US100_USD_PER_POINT_PER_LOT));
+      const recLotsRounded = Math.floor(recLots * 100) / 100;
+      for (const lot of [0.01, 0.10, 1.00]) {
+        const risk = slPts * FP_US100_USD_PER_POINT_PER_LOT * lot;
+        const pct  = (risk / fp) * 100;
+        const flag = pct > 5 ? ' ⚠️' : pct > 2 ? ' ⚠' : ' ✓';
+        lines.push(`• ${lot.toFixed(2)} lot → $${risk.toFixed(2)} risk (${pct.toFixed(1)}% FP)${flag}`);
+      }
+      if (recLotsRounded >= 0.01) {
+        lines.push(`→ 1% risk target ≈ ${recLotsRounded.toFixed(2)} lot`);
+      } else {
+        lines.push(`→ 1% risk target < 0.01 lot — account too small for this SL distance`);
+      }
+    } else if (fp <= 0) {
+      lines.push(`(set FP balance to see lot sizing)`);
+    }
+    return lines.join('\n');
   }
 
   function _maybeNotifyZone(asset, state) {
