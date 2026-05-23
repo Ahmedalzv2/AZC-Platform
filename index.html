@@ -7408,6 +7408,96 @@
     try { showToast(`✓ Tracking ${symbol} @ $${asset.price.toFixed(4)} · size ${size}${target ? ` · target $${target.toFixed(4)}` : ''}`, 'ok'); } catch (e) {}
     try { if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === symbol) updateTVAnalysis(symbol); } catch (e) {}
   }
+  // ─────────────────────────────────────────────────────────────────────
+  // 📈 POSITION MILESTONES — fill the gap between /open and /close
+  // ─────────────────────────────────────────────────────────────────────
+  // Once a position is open, the user used to only hear from the dashboard
+  // when AT SELL ZONE fired. That leaves a long gap with no nudges. These
+  // intermediate milestones fire once each, deduped per (positionId,
+  // milestone) in localStorage:
+  //   P/L hits:    +5% / +10% / +20% / +50%
+  //   Target:      within 2% of position.target (the 1-month-high we set)
+  //   Hold time:   7d / 14d / 30d (consider whether to keep holding)
+  // Each milestone fires a browser notification (if tab alive + granted),
+  // a toast, AND a Telegram push via the relay. All three are deduped
+  // through the same persisted hits map so a reload doesn't re-fire.
+  let _milestoneHits = {};
+  function _loadMilestoneHits() {
+    try { _milestoneHits = JSON.parse(localStorage.getItem('ict_milestone_hits') || '{}'); }
+    catch (e) { _milestoneHits = {}; }
+  }
+  function _saveMilestoneHits() {
+    try { localStorage.setItem('ict_milestone_hits', JSON.stringify(_milestoneHits)); }
+    catch (e) {}
+  }
+  function _fireMilestone(pos, asset, title, body) {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(title, { body, tag: 'milestone_' + pos.id });
+        n.onclick = () => { try { window.focus(); n.close(); } catch (e) {} };
+      } catch (e) {}
+    }
+    try { showToast(title + ' — ' + body.split('.')[0], 'ok'); } catch (e) {}
+    try { _sendTelegramAlert(title + '\n' + body); } catch (e) {}
+  }
+  const _PNL_MILESTONES = [
+    { key: 'p5',  pct: 5,  label: '+5%' },
+    { key: 'p10', pct: 10, label: '+10%' },
+    { key: 'p20', pct: 20, label: '+20%' },
+    { key: 'p50', pct: 50, label: '+50%' },
+  ];
+  const _DAY_MILESTONES = [{ key: 'd7', d: 7 }, { key: 'd14', d: 14 }, { key: 'd30', d: 30 }];
+  function _checkPositionMilestones() {
+    if (typeof spotPositions === 'undefined') return;
+    let dirty = false;
+    for (const p of spotPositions) {
+      if (p.closedAt) continue;
+      const asset = ASSETS.find(a => a.symbol === p.symbol);
+      if (!asset || !(asset.price > 0)) continue;
+      const hits = _milestoneHits[p.id] || (_milestoneHits[p.id] = {});
+      const pnl = ((asset.price - p.entry) / p.entry) * 100;
+      const days = Math.max(0, Math.floor((Date.now() - p.ts) / 86400000));
+      const px = `$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      const entry = `$${p.entry.toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      // P/L hits
+      for (const m of _PNL_MILESTONES) {
+        if (pnl >= m.pct && !hits[m.key]) {
+          hits[m.key] = true; dirty = true;
+          _fireMilestone(p, asset,
+            `📈 ${p.symbol} hit ${m.label}`,
+            `Size ${p.size} @ ${entry} → ${px} (${days}d). Consider taking partials.`);
+        }
+      }
+      // Approaching target (within 2% below)
+      if (p.target && !hits.near_target) {
+        const distPct = ((p.target - asset.price) / asset.price) * 100;
+        if (distPct > 0 && distPct < 2) {
+          hits.near_target = true; dirty = true;
+          _fireMilestone(p, asset,
+            `🎯 ${p.symbol} approaching target`,
+            `${px} → target $${p.target.toLocaleString(undefined,{maximumFractionDigits:4})} (${distPct.toFixed(2)}% away). Stage sell orders.`);
+        }
+      }
+      // Hold duration
+      for (const m of _DAY_MILESTONES) {
+        if (days >= m.d && !hits[m.key]) {
+          hits[m.key] = true; dirty = true;
+          const pnlStr = pnl >= 0 ? `+${pnl.toFixed(2)}%` : `${pnl.toFixed(2)}%`;
+          _fireMilestone(p, asset,
+            `⏰ ${p.symbol} held ${m.d}d`,
+            `Size ${p.size} @ ${entry} · now ${px} (${pnlStr}). Review whether to keep holding or take partials.`);
+        }
+      }
+    }
+    if (dirty) _saveMilestoneHits();
+  }
+  function initPositionMilestones() {
+    _loadMilestoneHits();
+    // Every 8s: fast enough to catch a fresh +5% breach within a few ticks,
+    // slow enough that we're not hammering ASSETS.find() each second.
+    setInterval(_checkPositionMilestones, 8000);
+  }
+
   function _closeOpenPosition(id) {
     const p = spotPositions.find(x => x.id === id && !x.closedAt);
     if (!p) return;
@@ -12014,6 +12104,7 @@
     _try('initUS100BarsPoll', initUS100BarsPoll);
     _try('initRelayStatePush', initRelayStatePush);
     _try('initTelegramActionPoller', initTelegramActionPoller);
+    _try('initPositionMilestones', initPositionMilestones);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
     // Fast-refresh: pull fresh 1m klines for futures assets every
