@@ -47,12 +47,62 @@ const FORWARD_HEADERS = new Set([
 // Workers don't have CORS headaches calling upstream, so the dashboard hits
 // us instead of trying to call scanner.tradingview.com directly — that one
 // rejects browser-origin POSTs from github.io with a CORS failure.
+// Live FPMARKETS:US100 quote via TradingView's public WebSocket. This is the
+// SAME price the embedded chart displays — TV scanner doesn't index FPMARKETS,
+// and Yahoo NQ=F is a different feed with its own bid-ask. The chart
+// disagreeing with the badge is exactly what the user has been complaining
+// about; this matches them.
+//
+// The WS protocol is undocumented but stable: connect, set unauthorized auth,
+// open a quote session, add the symbol, take the first `qsd` message with a
+// numeric `lp`. ~500ms cold-start. Returns to fall back if the WS path fails
+// (rate-limit / TV protocol change / outage).
+async function us100PriceWS(symbol) {
+  const resp = await fetch('https://data.tradingview.com/socket.io/websocket', {
+    headers: { 'Upgrade': 'websocket', 'Origin': 'https://www.tradingview.com' },
+  });
+  const ws = resp.webSocket;
+  if (!ws) throw new Error('ws-no-socket');
+  ws.accept();
+  const send = (m) => {
+    const s = JSON.stringify(m);
+    ws.send(`~m~${s.length}~m~${s}`);
+  };
+  send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+  send({ m: 'quote_create_session', p: ['qs_w'] });
+  send({ m: 'quote_set_fields', p: ['qs_w', 'lp'] });
+  send({ m: 'quote_add_symbols', p: ['qs_w', symbol] });
+  const got = await new Promise((resolve, reject) => {
+    const to = setTimeout(() => { try { ws.close(); } catch {} reject(new Error('ws-timeout')); }, 4000);
+    ws.addEventListener('message', (ev) => {
+      const text = typeof ev.data === 'string' ? ev.data : '';
+      // Heartbeat frames must be echoed back or TV drops us.
+      if (text.includes('~h~')) {
+        try { ws.send(text); } catch {}
+        return;
+      }
+      // Hunt for "lp":NUMBER in any qsd frame for our symbol.
+      const m = text.match(new RegExp(`"n":"${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^}]*"lp":([0-9.]+)`));
+      if (m) {
+        const p = Number(m[1]);
+        if (p > 0) {
+          clearTimeout(to);
+          try { ws.close(); } catch {}
+          resolve(p);
+        }
+      }
+    });
+    ws.addEventListener('close', () => { clearTimeout(to); reject(new Error('ws-closed')); });
+    ws.addEventListener('error', () => { clearTimeout(to); reject(new Error('ws-error')); });
+  });
+  return { price: got, source: 'tv-ws:' + symbol, ts: Date.now() };
+}
+
 async function us100Price(cors) {
-  // Yahoo NQ=F is the same continuous E-mini contract as CME_MINI:NQ1!, and
-  // its v8 chart `regularMarketPrice` actually moves during the session.
-  // TV scanner's `lp` is null on the free tier for CME futures
-  // (delayed_streaming_600), so it would otherwise fall through to `close` —
-  // yesterday's close, a constant. Yahoo first, TV second as a final guard.
+  // Priority: TV WebSocket (FPMARKETS:US100 — the chart symbol, live) →
+  // Yahoo NQ=F → TV scanner CME_MINI:NQ1! lp. The WS gives the exact number
+  // the embedded chart shows; everything else is best-effort fallback.
+  const tryWS = async () => us100PriceWS('FPMARKETS:US100');
   const tryYahoo = async () => {
     const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m', {
       headers: { 'User-Agent': 'Mozilla/5.0' },
@@ -81,8 +131,11 @@ async function us100Price(cors) {
   };
   try {
     let out;
-    try { out = await tryYahoo(); }
-    catch (e) { out = await tryTV(); }
+    try { out = await tryWS(); }
+    catch (e1) {
+      try { out = await tryYahoo(); }
+      catch (e2) { out = await tryTV(); }
+    }
     return new Response(JSON.stringify(out),
       { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
   } catch (e) {
