@@ -1775,6 +1775,9 @@
           const buy = (lv.buy || 0).toLocaleString(undefined,{maximumFractionDigits:4});
           showToast(`🎯 ${asset.symbol} · AT SELL ZONE · distribute (bought at $${buy})`, 'ok');
         }
+        // Browser push notification — fires even if the tab is in the
+        // background. Internally deduped per (symbol, state, day).
+        try { _maybeNotifyZone(asset, zone.state); } catch (e) {}
       }
       prevSpotZoneMap[asset.symbol] = zone.state;
     });
@@ -5917,6 +5920,19 @@
       const buy   = `$${(lv.buy||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
       const sell  = `$${(lv.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
       const stretch = `$${(lv.sellStretch||lv.sell||0).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      // Open-position summary (line). Empty string if not holding — the
+      // narrative below stays unchanged for untracked assets.
+      const positions = (typeof getOpenPositionsFor === 'function') ? getOpenPositionsFor(asset.symbol) : [];
+      let positionLine = '';
+      if (positions.length) {
+        const parts = positions.map(p => {
+          const pnl = ((asset.price - p.entry) / p.entry) * 100;
+          const days = Math.max(0, Math.floor((Date.now() - p.ts) / 86400000));
+          const sign = pnl >= 0 ? '+' : '';
+          return `${p.size} @ $${p.entry.toFixed(4)} · ${sign}${pnl.toFixed(2)}% · ${days}d`;
+        });
+        positionLine = `\n📌 Holding: ${parts.join(' | ')}`;
+      }
       // Wider distribution target — major prior swing high (last ~6 weeks on
       // 1D bars). For 1–3 week holds this is the real exit; the narrow `sell`
       // above is a take-partial milestone.
@@ -5931,27 +5947,27 @@
         : `SPOT (no stop-out) · Buy ${buy} · Sell ${sell} (stretch ${stretch}) · Levels: ${sourceTag} · ${sessNote}`;
 
       if (z.state === 'buy_at') {
-        return `🏦 ${asset.symbol} is AT BUY ZONE (${buy}). Price is in the accumulation pocket from ${sourceTag} — strong value for a 1–3 week hold. Scale in here in tranches; don't commit full size on one tick. Sell ladder: ${sellLadder}. Confirmation, not prediction — a 1H close holding above ${buy} is your acceptance signal.\n${biasNote}`.trim();
+        return `🏦 ${asset.symbol} is AT BUY ZONE (${buy}). Price is in the accumulation pocket from ${sourceTag} — strong value for a 1–3 week hold. Scale in here in tranches; don't commit full size on one tick. Sell ladder: ${sellLadder}. Confirmation, not prediction — a 1H close holding above ${buy} is your acceptance signal.\n${biasNote}${positionLine}`.trim();
       }
       if (z.state === 'buy_near') {
         const dist = Math.abs(z.distancePct).toFixed(2);
         const aboveBelow = z.distancePct >= 0 ? 'above' : 'below';
-        return `🏦 ${asset.symbol} is ${dist}% ${aboveBelow} buy zone (${buy}). Approaching value — ladder a few small bids near ${buy} rather than chasing here. Sell ladder when filled: ${sellLadder}. Patience pays in spot accumulation — let price come to you.\n${biasNote}`.trim();
+        return `🏦 ${asset.symbol} is ${dist}% ${aboveBelow} buy zone (${buy}). Approaching value — ladder a few small bids near ${buy} rather than chasing here. Sell ladder when filled: ${sellLadder}. Patience pays in spot accumulation — let price come to you.\n${biasNote}${positionLine}`.trim();
       }
       if (z.state === 'sell_at') {
         const holdLine = hasWide ? ` Keep some size for the 1-month high at ${wide}.` : '';
-        return `🎯 ${asset.symbol} is AT SELL ZONE (${sell}) — only relevant if you bought near ${buy}. Price has reached your first-partial level from ${sourceTag}. If you have a position, take partials and trail toward stretch ${stretch}.${holdLine} If you don't, ignore — chasing a sell signal without a position is selling air.\n${biasNote}`.trim();
+        return `🎯 ${asset.symbol} is AT SELL ZONE (${sell}) — only relevant if you bought near ${buy}. Price has reached your first-partial level from ${sourceTag}. If you have a position, take partials and trail toward stretch ${stretch}.${holdLine} If you don't, ignore — chasing a sell signal without a position is selling air.\n${biasNote}${positionLine}`.trim();
       }
       if (z.state === 'sell_near') {
         const dist = Math.abs(z.distancePct).toFixed(2);
         const aboveBelow = z.distancePct >= 0 ? 'above' : 'below';
         const wideLine = hasWide ? ` and ${wide} (1-month high)` : '';
-        return `🎯 ${asset.symbol} is ${dist}% ${aboveBelow} sell zone (${sell}) — relevant if you accumulated near ${buy}. Stage sell orders ladder-style toward ${sell}, ${stretch}${wideLine} so partials catch the wick. If no position, this is information only.\n${biasNote}`.trim();
+        return `🎯 ${asset.symbol} is ${dist}% ${aboveBelow} sell zone (${sell}) — relevant if you accumulated near ${buy}. Stage sell orders ladder-style toward ${sell}, ${stretch}${wideLine} so partials catch the wick. If no position, this is information only.\n${biasNote}${positionLine}`.trim();
       }
       // mid: between bands — no action.
       const buyDist  = Math.abs(((asset.price - lv.buy)  / lv.buy)  * 100).toFixed(1);
       const sellDist = Math.abs(((asset.price - lv.sell) / lv.sell) * 100).toFixed(1);
-      return `${asset.symbol} is between zones — ${buyDist}% from buy (${buy}) and ${sellDist}% from sell (${sell}). No action; stand down and wait for either band. Spot rewards patience; chasing mid-range is how you bleed.\n${biasNote}`.trim();
+      return `${asset.symbol} is between zones — ${buyDist}% from buy (${buy}) and ${sellDist}% from sell (${sell}). No action; stand down and wait for either band. Spot rewards patience; chasing mid-range is how you bleed.\n${biasNote}${positionLine}`.trim();
     }
 
     // Main analysis paragraph (ICT language — confirmation not prediction)
@@ -7286,6 +7302,122 @@
   // ═══════════════════════════════════════════════════════
   let journal = [];
   const OUTCOME_CHECKS = [30, 60, 240, 480]; // minutes after call to check
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 🏦 SPOT POSITIONS — open holdings the user actually bought
+  // ─────────────────────────────────────────────────────────────────────
+  // Distinct from `journal` (a log of past signal calls). spotPositions
+  // tracks currently-held spot accumulation positions so the dashboard can
+  // (1) show "you're holding BNB since X days ago, +Y%", (2) notify on
+  // sell-zone hits for HELD assets only.
+  // Shape: { id, symbol, entry, size, ts, target, notes,
+  //          closedAt?, closedPrice?, closedPnlPct? }
+  let spotPositions = [];
+
+  function loadSpotPositions() {
+    try { spotPositions = JSON.parse(localStorage.getItem('ict_spot_positions') || '[]'); }
+    catch (e) { spotPositions = []; }
+  }
+  function saveSpotPositions() {
+    try { localStorage.setItem('ict_spot_positions', JSON.stringify(spotPositions.slice(0, 200))); }
+    catch (e) {}
+  }
+  function openSpotPosition(symbol, entry, size, target) {
+    if (!symbol || !(entry > 0) || !(size > 0)) return null;
+    const pos = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      symbol, entry: +entry, size: +size, ts: Date.now(),
+      target: Number.isFinite(target) ? +target : null,
+    };
+    spotPositions.unshift(pos);
+    saveSpotPositions();
+    return pos;
+  }
+  function closeSpotPosition(id, exitPrice) {
+    const i = spotPositions.findIndex(p => p.id === id && !p.closedAt);
+    if (i < 0 || !(exitPrice > 0)) return false;
+    const p = spotPositions[i];
+    p.closedAt = Date.now();
+    p.closedPrice = +exitPrice;
+    p.closedPnlPct = ((exitPrice - p.entry) / p.entry) * 100;
+    saveSpotPositions();
+    try { showToast(`✓ Closed ${p.symbol} @ $${exitPrice.toLocaleString()} · ${p.closedPnlPct >= 0 ? '+' : ''}${p.closedPnlPct.toFixed(2)}%`, p.closedPnlPct >= 0 ? 'ok' : 'warn'); } catch (e) {}
+    return true;
+  }
+  function getOpenPositionsFor(symbol) {
+    return spotPositions.filter(p => p.symbol === symbol && !p.closedAt);
+  }
+  function _trackEntryFromBuyZone(symbol) {
+    // Quick-track: prompt for size, use current price as entry, use the
+    // dashboard's wide sell target as the hold target. Simpler than the
+    // futures Setup modal — spot has no SL.
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    if (!asset || !(asset.price > 0)) { try { showToast('No live price yet', 'warn'); } catch (e) {} return; }
+    const sizeStr = prompt(`Size for ${symbol} entry at $${asset.price.toFixed(4)}\n(in USD or asset units — your choice, just be consistent across positions)`, '100');
+    if (!sizeStr) return;
+    const size = parseFloat(sizeStr);
+    if (!(size > 0)) { try { showToast('Invalid size', 'err'); } catch (e) {} return; }
+    const lv = (typeof getSpotLevels === 'function') ? getSpotLevels(asset) : null;
+    const target = lv?.sellWide || lv?.sellStretch || null;
+    const pos = openSpotPosition(symbol, asset.price, size, target);
+    if (!pos) return;
+    try { showToast(`✓ Tracking ${symbol} @ $${asset.price.toFixed(4)} · size ${size}${target ? ` · target $${target.toFixed(4)}` : ''}`, 'ok'); } catch (e) {}
+    try { if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === symbol) updateTVAnalysis(symbol); } catch (e) {}
+  }
+  function _closeOpenPosition(id) {
+    const p = spotPositions.find(x => x.id === id && !x.closedAt);
+    if (!p) return;
+    const asset = ASSETS.find(a => a.symbol === p.symbol);
+    if (!asset || !(asset.price > 0)) { try { showToast('No live price', 'warn'); } catch (e) {} return; }
+    if (!confirm(`Close ${p.symbol} @ $${asset.price.toFixed(4)}? (entered $${p.entry.toFixed(4)} · ${((asset.price - p.entry) / p.entry * 100).toFixed(2)}%)`)) return;
+    closeSpotPosition(id, asset.price);
+    try { if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === p.symbol) updateTVAnalysis(p.symbol); } catch (e) {}
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 🔔 BROWSER PUSH NOTIFICATIONS — survive tab closure
+  // ─────────────────────────────────────────────────────────────────────
+  // Tied to the spot-zone transitions already detected in renderSidebarAssets'
+  // toast logic. Untracked-asset BUY ZONE = "consider entering"; tracked-
+  // asset SELL ZONE = "consider distributing your held position". Deduped
+  // per symbol+state+day so a flapping zone doesn't spam.
+  function _notifKey(symbol, state) {
+    const d = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    return `notif_${symbol}_${state}_${d}`;
+  }
+  function _shouldNotify(symbol, state) {
+    try { return !localStorage.getItem(_notifKey(symbol, state)); } catch (e) { return false; }
+  }
+  function _markNotified(symbol, state) {
+    try { localStorage.setItem(_notifKey(symbol, state), '1'); } catch (e) {}
+  }
+  function requestSpotNotificationPermission() {
+    if (typeof Notification === 'undefined') { try { showToast('This browser does not support notifications', 'err'); } catch (e) {} return; }
+    if (Notification.permission === 'granted') { try { showToast('✓ Notifications already enabled', 'ok'); } catch (e) {} return; }
+    Notification.requestPermission().then(p => {
+      try { showToast(p === 'granted' ? '🔔 Notifications enabled' : 'Notifications blocked', p === 'granted' ? 'ok' : 'warn'); } catch (e) {}
+    }).catch(() => {});
+  }
+  function _maybeNotifyZone(asset, state) {
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'granted') return;
+    if (!_shouldNotify(asset.symbol, state)) return;
+    const isHeld = getOpenPositionsFor(asset.symbol).length > 0;
+    let title = null, body = null;
+    if (state === 'buy_at' && !isHeld) {
+      title = `🏦 ${asset.symbol} AT BUY ZONE`;
+      body  = `$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})} — accumulation pocket. Consider laddering in.`;
+    } else if (state === 'sell_at' && isHeld) {
+      title = `🎯 ${asset.symbol} AT SELL ZONE`;
+      body  = `$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})} — you're holding this. Consider taking partials.`;
+    }
+    if (!title) return;
+    try {
+      const n = new Notification(title, { body, tag: asset.symbol + '_' + state });
+      n.onclick = () => { try { window.focus(); n.close(); } catch (e) {} };
+      _markNotified(asset.symbol, state);
+    } catch (e) {}
+  }
 
   function loadJournal() {
     try { journal = JSON.parse(localStorage.getItem('ict_autopilot_journal') || '[]'); } catch(e) { journal = []; }
@@ -9887,9 +10019,43 @@
         </div>
       </div>
       ${summaryCards}
+      ${(typeof _renderSpotPositionsCard === 'function') ? _renderSpotPositionsCard(asset) : ''}
       ${_renderLiveChartTFLevels(asset)}
       ${_renderTradeOpinions(asset)}
     `;
+  }
+
+  // Track / Close UI for the spot Live Chart panel. Shows each open position
+  // with live P/L and a Close button; if no positions, just an Enter +
+  // Enable Notifications row.
+  function _renderSpotPositionsCard(asset) {
+    if (!asset || asset.tradeMode !== 'spot') return '';
+    const open = (typeof getOpenPositionsFor === 'function') ? getOpenPositionsFor(asset.symbol) : [];
+    const rows = open.map(p => {
+      const pnl = ((asset.price - p.entry) / p.entry) * 100;
+      const days = Math.max(0, Math.floor((Date.now() - p.ts) / 86400000));
+      const pnlColor = pnl >= 0 ? 'var(--bull)' : 'var(--bear)';
+      const sign = pnl >= 0 ? '+' : '';
+      const tgt = p.target ? `<span style="color:var(--text-mute);">→ $${p.target.toLocaleString(undefined,{maximumFractionDigits:4})}</span>` : '';
+      return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:11px;font-family:'JetBrains Mono',monospace;">
+        <div style="flex:1;">Size <strong>${p.size}</strong> @ $${p.entry.toLocaleString(undefined,{maximumFractionDigits:4})} · ${days}d · <span style="color:${pnlColor};font-weight:700;">${sign}${pnl.toFixed(2)}%</span> ${tgt}</div>
+        <button onclick="_closeOpenPosition(${p.id})" style="background:rgba(224,93,93,0.16);border:1px solid var(--bear);color:var(--bear);padding:4px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">Close @ live</button>
+      </div>`;
+    }).join('');
+    const notifAllowed = (typeof Notification !== 'undefined' && Notification.permission === 'granted');
+    return `
+      <div class="ap-card full" style="margin-top:14px;">
+        <div class="ap-card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+          <span>📌 My ${asset.symbol} positions</span>
+          <div style="display:flex;gap:6px;">
+            <button onclick="_trackEntryFromBuyZone('${asset.symbol}')" title="Record an entry at the live price — for spot accumulation tracking" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">+ Track Entry @ live</button>
+            ${notifAllowed
+              ? `<span title="Notifications enabled — you'll get pinged on AT BUY/SELL transitions even if this tab is in the background" style="background:rgba(92,184,138,0.16);border:1px solid var(--bull);color:var(--bull);padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">🔔 Alerts on</span>`
+              : `<button onclick="requestSpotNotificationPermission()" title="Permission needed once. After granted, AT BUY / AT SELL zone hits ping you even if the tab is in the background." style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔔 Enable alerts</button>`}
+          </div>
+        </div>
+        ${rows || `<div style="font-size:11px;color:var(--text-mute);padding:6px 0;font-family:'JetBrains Mono',monospace;">No open ${asset.symbol} positions tracked. Tap <strong>+ Track Entry @ live</strong> when you buy in.</div>`}
+      </div>`;
   }
 
   // ═══════════════════════════════════════════════════════
@@ -11586,6 +11752,7 @@
     })();
     _try('loadLiveTradingState', loadLiveTradingState);
     _try('loadJournal', loadJournal);
+    _try('loadSpotPositions', loadSpotPositions);
     _try('checkPendingOutcomes', checkPendingOutcomes);
     _try('renderAssets', renderAssets);
     _try('renderMethods', renderMethods);
