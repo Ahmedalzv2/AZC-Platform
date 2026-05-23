@@ -102,6 +102,8 @@ const EXPORTS = [
   '_us100KeyLevels',
   // US100 daily recap
   '_summarizeUs100Day', '_buildUs100DailyRecap', '_maybeFireDailyUs100Recap',
+  // US100 Telegram outcome commands (/win, /loss, /be)
+  '_findPendingUs100JournalEntry', '_executeTelegramAction',
 ];
 
 function extractScript(html) {
