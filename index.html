@@ -8575,6 +8575,11 @@
   }
 
   async function autoAnalyzeAsset(asset) {
+    // US100 is handled by the dedicated TV WS bars stream + /us100/bars REST
+    // poll (initUS100BarsPoll → _us100PollBarsOnce). Skip it here so this
+    // function doesn't clobber the freshly-fetched FPMARKETS bars with a
+    // {closed:true} marker during weekend halts.
+    if (asset.symbol === 'US100') return;
     // Skip closed markets — don't burn API calls and don't fire stale signals
     if (isMarketClosed(asset)) {
       asset.tfEntries = { closed: true, reopens: nextMarketOpen() };
