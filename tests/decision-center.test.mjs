@@ -113,17 +113,22 @@ describe('Live Chart Decision Center', () => {
     assert.doesNotMatch(html, /_onClickForceFire\('US100'\)/);
   });
 
-  test('US100 live chart panel hides auto-TF spinners (manual ICT, no kline source)', () => {
+  test('US100 live chart panel shows analyzing-state spinners until TV WS bars arrive', () => {
+    // We now stream FPMARKETS:US100 bars over TV WS into asset.tfEntries,
+    // so US100 should behave like every other asset: while tfEntries is
+    // still null (WS handshake not complete yet), show the same "analyzing"
+    // placeholders other assets get; once bars stream in, the real ladder
+    // populates.
     const { app } = loadApp();
     app.loadTradeModes();
     const us100 = app.ASSETS.find(a => a.symbol === 'US100');
     us100.price = 26983;
     us100.tfEntries = null;
 
-    assert.equal(app._renderSelectedTFCard(us100, '5'), '');
-    assert.equal(app._renderTfReadinessHTML(us100), '');
-    assert.equal(app._renderLiveChartTFLevels(us100), '');
-    assert.equal(app._renderTradeOpinions(us100), '');
+    assert.match(app._renderSelectedTFCard(us100, '5'), /analyzing this timeframe/);
+    assert.match(app._renderTfReadinessHTML(us100), /analyzing TFs/);
+    assert.match(app._renderLiveChartTFLevels(us100), /analyzing per-TF levels/);
+    assert.match(app._renderTradeOpinions(us100), /Computing spot vs futures/);
   });
 
   test('Non-US100 assets still show the auto-TF spinners while tfEntries is loading', () => {

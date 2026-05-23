@@ -1855,10 +1855,10 @@
   }
 
   function _renderTfReadinessHTML(asset) {
-    // US100 is manual ICT (CFD-only — no MEXC/Binance kline source). The
-    // auto per-TF readiness ladder never populates, so don't render the
-    // forever-spinning placeholder.
-    if (typeof _isUs100IctAsset === 'function' && _isUs100IctAsset(asset)) return '';
+    // US100 used to be skipped here because there was no kline source for the
+    // CFD. We now stream FPMARKETS:US100 bars over TV WS (see
+    // initUS100LiveStream), so the ladder populates the same way other
+    // assets do.
     const data = _computeTfReadiness(asset);
     if (!data) return '<div style="font-size:10px;color:var(--text-mute);margin:6px 0;font-family:\'JetBrains Mono\',monospace;">⟳ analyzing TFs…</div>';
     const actionable = data.filter(d => d.dist != null && d.score >= 1);
@@ -9375,7 +9375,7 @@
   // has selected on the chart (driven by tvCurrentTimeframe). When they click
   // 1m / 5m / 15m / 1H / 4H / Daily, this card flips to that TF's data.
   function _renderSelectedTFCard(asset, currentTimeframe) {
-    if (_isUs100IctAsset(asset)) return '';
+    // US100 now has TV-WS bars feeding tfEntries — same path as other assets.
     if (!asset.tfEntries) return '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;">⟳ analyzing this timeframe…</div>';
     if (asset.tfEntries.closed) return '';
     const tf = TV_TF_TO_INTERNAL[currentTimeframe] || '5m';
@@ -9447,7 +9447,7 @@
 
   // Per-TF entry/SL/TP rows for the Live Chart analysis panel
   function _renderLiveChartTFLevels(asset) {
-    if (_isUs100IctAsset(asset)) return '';
+    // US100 now has TV-WS bars feeding tfEntries — same path as other assets.
     if (!asset.tfEntries) return '<div style="margin-top:14px;font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;padding:10px;">⟳ analyzing per-TF levels…</div>';
     if (asset.tfEntries.closed) return `<div style="margin-top:14px;font-size:11px;color:var(--liq);font-family:'JetBrains Mono',monospace;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">🔒 Market closed for the weekend · reopens ${asset.tfEntries.reopens||'Sunday 22:00 GST'}</div>`;
     const rows = TF_LIST.map(tf => {
@@ -9564,10 +9564,9 @@
   // Designed to surface bigger setups (1H/4H/Daily) instead of 1m scalps —
   // the user explicitly asked for "bigger size entries" with wider stops/TPs.
   function _renderTradeOpinions(asset) {
-    // US100 runs as manual ICT (no kline source for the CFD), so the
-    // auto spot-vs-futures opinion card has nothing to compute. The
-    // manual decision center and the analysis text above already cover it.
-    if (_isUs100IctAsset(asset)) return '';
+    // US100 now has TV-WS bars feeding tfEntries, so the auto opinion card
+    // can compute against the same FVG/BPR/iFVG zones the analyzer derives
+    // for every other asset.
     if (!asset || !asset.tfEntries || asset.tfEntries.closed) {
       return `<div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">⟳ Computing spot vs futures opinion — waiting for market data to populate (runs every 60s).</div>`;
     }
@@ -11229,11 +11228,66 @@
       try { if (typeof refreshOpenModal === 'function') refreshOpenModal(); } catch(e) {}
     }, wait);
   }
+  // TF → TV resolution string + dashboard tfEntries key.
+  // _analyzeKlines (used for every other asset) expects {t,o,h,l,c,v}; TV
+  // streams bars as v=[time_sec, open, high, low, close, volume] in
+  // timescale_update frames — direct mapping.
+  const _US100_TF_MAP = [
+    { tf: '1m',  res: '1',   csid: 'cs_us100_1m' },
+    { tf: '5m',  res: '5',   csid: 'cs_us100_5m' },
+    { tf: '15m', res: '15',  csid: 'cs_us100_15m' },
+    { tf: '1h',  res: '60',  csid: 'cs_us100_1h' },
+    { tf: '4h',  res: '240', csid: 'cs_us100_4h' },
+    { tf: '1d',  res: '1D',  csid: 'cs_us100_1d' },
+  ];
+  // session_id → { tf, klines[] }
+  const _US100_SESSIONS = {};
+  for (const m of _US100_TF_MAP) _US100_SESSIONS[m.csid] = { tf: m.tf, klines: [] };
+
+  // Length-prefixed frame splitter for TV's `~m~N~m~payload` protocol.
+  function _tvFrames(buf) {
+    const out = [];
+    let i = 0;
+    while (i + 3 <= buf.length) {
+      if (buf.substr(i, 3) !== '~m~') break;
+      const end = buf.indexOf('~m~', i + 3);
+      if (end === -1) break;
+      const n = parseInt(buf.substring(i + 3, end), 10);
+      if (!Number.isFinite(n)) break;
+      const start = end + 3;
+      if (start + n > buf.length) break;
+      out.push(buf.substring(start, start + n));
+      i = start + n;
+    }
+    return out;
+  }
+
+  // Convert one TV bar `v` array to the analyzer's kline shape.
+  function _tvBarToKline(v) {
+    return { t: Math.round((+v[0]) * 1000), o: +v[1], h: +v[2], l: +v[3], c: +v[4], v: +v[5] };
+  }
+
+  // Whenever a session's bars change, re-run the FVG/BPR/iFVG/sweep analyzer
+  // and stick the result into asset.tfEntries[tf] — same key Binance/MEXC
+  // assets use, so every downstream consumer (TF readiness ladder, signal
+  // cards, entry-alert queue) picks US100 up without a special case.
+  function _us100PublishKlines(csid) {
+    const sess = _US100_SESSIONS[csid];
+    if (!sess || sess.klines.length < 22) return;
+    const us100 = ASSETS.find(a => a.symbol === 'US100');
+    if (!us100) return;
+    us100.tfEntries = us100.tfEntries || {};
+    try { us100.tfEntries[sess.tf] = _analyzeKlines(sess.klines); }
+    catch(e) { console.warn('US100 _analyzeKlines failed for ' + sess.tf, e); }
+    _us100LiveBurstRender();
+  }
+
   function initUS100LiveStream() {
     const SYMBOL = 'FPMARKETS:US100';
     const url = 'wss://data.tradingview.com/socket.io/websocket';
     let heartbeats = 0;
     let firstQuote = false;
+    let firstBars = false;
     try {
       _tvLiveWs = new WebSocket(url);
     } catch (e) {
@@ -11247,33 +11301,89 @@
     _tvLiveWs.addEventListener('open', () => {
       _tvLiveWsRetry = 0;
       send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+      // Quote session — drives the live badge + _us100LiveBurstRender.
       send({ m: 'quote_create_session', p: ['qs_dash'] });
       send({ m: 'quote_set_fields', p: ['qs_dash', 'lp'] });
       send({ m: 'quote_add_symbols', p: ['qs_dash', SYMBOL] });
+      // Chart sessions — one per TF. Each pulls the last 60 bars then streams
+      // bar-by-bar updates. Populates asset.tfEntries[tf] so US100 gets the
+      // same FVG/BPR/iFVG/sweep treatment as Binance assets.
+      for (const m of _US100_TF_MAP) {
+        const symid = 'sym_' + m.tf;
+        const serid = 'ser_' + m.tf;
+        send({ m: 'chart_create_session', p: [m.csid, ''] });
+        send({ m: 'resolve_symbol', p: [m.csid, symid, '={"adjustment":"splits","symbol":"' + SYMBOL + '"}'] });
+        send({ m: 'create_series', p: [m.csid, serid, 's1', symid, m.res, 60, ''] });
+      }
     });
     _tvLiveWs.addEventListener('message', (ev) => {
       const text = typeof ev.data === 'string' ? ev.data : '';
       // Echo heartbeats or TV drops the connection.
       if (text.includes('~h~')) { try { _tvLiveWs.send(text); } catch(e) {} heartbeats++; return; }
-      // Match every lp update for our symbol in any frame.
-      const re = /"n":"FPMARKETS:US100"[^}]*"lp":([0-9.]+)/g;
-      let m, last = null;
-      while ((m = re.exec(text)) !== null) last = Number(m[1]);
-      if (last && last > 0) {
-        if (!firstQuote) { firstQuote = true; console.log('%c📡 US100 live WS streaming: $' + last.toFixed(2), 'color:#5cb88a;font-family:monospace'); }
+      // Quote price: cheap regex over the whole buffer — works because the
+      // qsd frames are small and don't nest deeply.
+      const qre = /"n":"FPMARKETS:US100"[^}]*"lp":([0-9.]+)/g;
+      let qm, lastPrice = null;
+      while ((qm = qre.exec(text)) !== null) lastPrice = Number(qm[1]);
+      if (lastPrice && lastPrice > 0) {
+        if (!firstQuote) { firstQuote = true; console.log('%c📡 US100 live WS streaming: $' + lastPrice.toFixed(2), 'color:#5cb88a;font-family:monospace'); }
         const us100 = ASSETS.find(a => a.symbol === 'US100');
         if (us100) {
-          us100.price = last;
-          // Fast path: badge always updates on every tick — it's just one
-          // DOM textContent write, cheap.
+          us100.price = lastPrice;
           if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === 'US100'
               && typeof updateChartPriceBadge === 'function') {
-            updateChartPriceBadge(last);
+            updateChartPriceBadge(lastPrice);
           }
-          // Slow path: full re-render (signals, assets, analysis, market-read,
-          // TV cockpit, open modal) — same set fetchNonBinancePrices runs.
-          // Throttled to 1 Hz so WS bursts don't thrash the DOM.
           _us100LiveBurstRender();
+        }
+      }
+      // Bar frames: parse the WS protocol properly so we can dispatch by
+      // chart session id. timescale_update = initial snapshot; du = single-bar
+      // update (current bar's price moving, or new bar finalized).
+      const frames = _tvFrames(text);
+      for (const f of frames) {
+        if (!f || f[0] !== '{') continue;
+        let msg;
+        try { msg = JSON.parse(f); } catch(e) { continue; }
+        if (!msg || !msg.m) continue;
+        if (msg.m === 'timescale_update') {
+          const csid = msg.p && msg.p[0];
+          const sds  = msg.p && msg.p[1];
+          const sess = _US100_SESSIONS[csid];
+          if (!sess || !sds) continue;
+          // sds is keyed by series id ('sds_1' etc) — grab whichever series
+          // contains an `s` array.
+          let bars = null;
+          for (const k of Object.keys(sds)) {
+            if (sds[k] && Array.isArray(sds[k].s)) { bars = sds[k].s; break; }
+          }
+          if (!bars) continue;
+          sess.klines = bars.map(b => _tvBarToKline(b.v)).filter(k => Number.isFinite(k.c));
+          _us100PublishKlines(csid);
+          if (!firstBars) { firstBars = true; console.log('%c📊 US100 bars streaming across ' + _US100_TF_MAP.map(x => x.tf).join('/'), 'color:#5cb88a;font-family:monospace'); }
+        } else if (msg.m === 'du') {
+          // du payload shape: ["cs_us100_1m",{"sds_1":{"s":[{"i":59,"v":[t,o,h,l,c,v]}]}}]
+          const csid = msg.p && msg.p[0];
+          const sds  = msg.p && msg.p[1];
+          const sess = _US100_SESSIONS[csid];
+          if (!sess || !sds) continue;
+          let updates = null;
+          for (const k of Object.keys(sds)) {
+            if (sds[k] && Array.isArray(sds[k].s)) { updates = sds[k].s; break; }
+          }
+          if (!updates) continue;
+          for (const u of updates) {
+            const newBar = _tvBarToKline(u.v);
+            // u.i is the bar index — if it matches the last bar, in-place
+            // update; if it's one past the end, append. Past indices we just
+            // overwrite (TV occasionally revises a recent bar's volume).
+            const lastIdx = sess.klines.length - 1;
+            if (u.i === lastIdx + 1) sess.klines.push(newBar);
+            else if (u.i >= 0 && u.i <= lastIdx) sess.klines[u.i] = newBar;
+            // Cap retention so memory doesn't grow forever.
+            if (sess.klines.length > 240) sess.klines.splice(0, sess.klines.length - 240);
+          }
+          _us100PublishKlines(csid);
         }
       }
     });
