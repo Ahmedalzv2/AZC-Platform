@@ -270,8 +270,7 @@
         <!-- Asset view (chart + analysis) — hidden until an asset is picked -->
         <div id="liveChartContent" style="display:none;">
           <div class="page-header">
-            <h1>📈 <span id="tvCurrentSymbolLabel">US100</span> · ICT Cockpit</h1>
-            <p>US100 is the active ICT lane. Other assets stay in Spot Watch for buy-low / sell-high context.</p>
+            <h1><span id="tvCurrentSymbolLabel">US100</span></h1>
           </div>
           <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
             <span id="tvLivePrice" style="display:inline-block;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.3);border-radius:20px;padding:4px 14px;font-size:14px;font-weight:700;color:#c9a961;font-family:'JetBrains Mono',monospace;margin-right:10px;">--</span>
@@ -11202,6 +11201,34 @@
   // ═══════════════════════════════════════
   let _tvLiveWs = null;
   let _tvLiveWsRetry = 0;
+  // Same render set fetchNonBinancePrices runs on a fresh price, throttled
+  // so the WS firehose can't trigger 20 re-renders/sec during fast moves.
+  let _us100RenderPending = false;
+  let _us100LastRenderAt = 0;
+  function _us100LiveBurstRender() {
+    if (_us100RenderPending) return;
+    const now = Date.now();
+    const gap = now - _us100LastRenderAt;
+    const wait = gap >= 1000 ? 0 : 1000 - gap;
+    _us100RenderPending = true;
+    setTimeout(() => {
+      _us100RenderPending = false;
+      _us100LastRenderAt = Date.now();
+      const us100 = ASSETS.find(a => a.symbol === 'US100');
+      if (!us100) return;
+      try { if (typeof autoUpdateChecks === 'function') autoUpdateChecks(us100); } catch(e) {}
+      try { if (typeof detectScenario === 'function') detectScenario(us100.price); } catch(e) {}
+      try { if (typeof renderSignals === 'function') renderSignals(); } catch(e) {}
+      try { if (typeof renderAssets === 'function') renderAssets(); } catch(e) {}
+      try { if (typeof renderAnalysis === 'function') renderAnalysis(); } catch(e) {}
+      try { if (typeof renderMarketRead === 'function') renderMarketRead(); } catch(e) {}
+      if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === 'US100'
+          && typeof updateTVAnalysis === 'function') {
+        try { updateTVAnalysis('US100'); } catch(e) {}
+      }
+      try { if (typeof refreshOpenModal === 'function') refreshOpenModal(); } catch(e) {}
+    }, wait);
+  }
   function initUS100LiveStream() {
     const SYMBOL = 'FPMARKETS:US100';
     const url = 'wss://data.tradingview.com/socket.io/websocket';
@@ -11237,12 +11264,16 @@
         const us100 = ASSETS.find(a => a.symbol === 'US100');
         if (us100) {
           us100.price = last;
-          if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === 'US100') {
-            if (typeof updateChartPriceBadge === 'function') updateChartPriceBadge(last);
-            if (typeof updateTVAnalysis === 'function') updateTVAnalysis('US100');
+          // Fast path: badge always updates on every tick — it's just one
+          // DOM textContent write, cheap.
+          if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === 'US100'
+              && typeof updateChartPriceBadge === 'function') {
+            updateChartPriceBadge(last);
           }
-          if (typeof autoUpdateChecks === 'function') autoUpdateChecks(us100);
-          if (typeof detectScenario === 'function') detectScenario(last);
+          // Slow path: full re-render (signals, assets, analysis, market-read,
+          // TV cockpit, open modal) — same set fetchNonBinancePrices runs.
+          // Throttled to 1 Hz so WS bursts don't thrash the DOM.
+          _us100LiveBurstRender();
         }
       }
     });
