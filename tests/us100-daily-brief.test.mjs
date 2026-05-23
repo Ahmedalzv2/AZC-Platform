@@ -35,6 +35,41 @@ describe('US100 daily brief', () => {
     assert.match(text, /FP: \$562 · alerts active/);
   });
 
+  test('brief includes Levels to watch when 1D has prevBar / NDOG / NWOG', () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    const us100 = app.ASSETS.find(a => a.symbol === 'US100');
+    us100.price = 29670; us100.entry = 29650; us100.sl = 29600; us100.tp1 = 29800;
+    us100.tfEntries = {
+      '1d': {
+        dir: 'bull', score: 4,
+        prevBarHigh: 29800, prevBarLow: 29400,
+        ndog: { hi: 29680, lo: 29620 },
+        nwog: { hi: 29750, lo: 29550 },
+      },
+      '4h': { dir: 'bull', score: 3 },
+    };
+    app._userCapital = { bank: 0, fpMarketsUs100: 562, lastUpdated: 0 };
+    const text = app._buildUs100DailyBrief(gstAt(12, 30));
+    assert.match(text, /Levels to watch/);
+    assert.match(text, /PDH 29,800\.00/);
+    assert.match(text, /PDL 29,400\.00/);
+    assert.match(text, /NDOG 29,620\.00–29,680\.00/);
+    assert.match(text, /NWOG 29,550\.00–29,750\.00/);
+  });
+
+  test('_us100KeyLevels returns nulls when 1D analysis is missing', () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    const us100 = app.ASSETS.find(a => a.symbol === 'US100');
+    us100.tfEntries = null;
+    const lvls = app._us100KeyLevels(us100);
+    assert.equal(lvls.pdh, null);
+    assert.equal(lvls.pdl, null);
+    assert.equal(lvls.ndog, null);
+    assert.equal(lvls.nwog, null);
+  });
+
   test('brief falls back gracefully when tfEntries missing and no plan', () => {
     const { app } = loadApp();
     app.loadTradeModes();

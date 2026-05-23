@@ -99,6 +99,7 @@ const EXPORTS = [
   '_buildUs100TradeCard', 'FP_US100_USD_PER_POINT_PER_LOT',
   // US100 daily brief
   '_buildUs100DailyBrief', '_maybeFireDailyUs100Brief', '_us100UpcomingNews',
+  '_us100KeyLevels',
 ];
 
 function extractScript(html) {
