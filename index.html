@@ -6612,6 +6612,7 @@
     _newsAggregateTs = Date.now();
     if (btn) btn.textContent = '↻ Refresh';
     _renderNewsPage();
+    try { _checkNewsForHeldPositions(); } catch (e) {}
     // Kick off X-Live in the background and re-render when it returns
     _fetchAllXFeeds().then(xlive => {
       if (!xlive || !xlive.length) return;
@@ -6621,6 +6622,56 @@
       try { _renderNewsPage(); } catch(e) {}
     }).catch(()=>{});
     return _newsAggregateItems;
+  }
+
+  // News-on-held-position alert hook. Runs after every fetchAllNewsAggregate.
+  // Compares the latest items against _seenNewsUrls (localStorage), finds
+  // any NEW item that mentions an asset the user has an open spot
+  // position in, and fires a Telegram ping with title + P/L. This is the
+  // "sell into the news" qualitative trigger the user asked for —
+  // complements the quantitative AT SELL zone alert.
+  function _checkNewsForHeldPositions() {
+    if (typeof spotPositions === 'undefined' || typeof _newsAggregateItems === 'undefined') return;
+    const open = spotPositions.filter(p => !p.closedAt);
+    if (!open.length) return;
+    const heldSymbols = new Set(open.map(p => p.symbol));
+    let seen = {};
+    try { seen = JSON.parse(localStorage.getItem('ict_news_seen_urls') || '{}'); } catch (e) {}
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000; // 24h
+    let dirty = false;
+    // Iterate newest-first; cap at 50 to avoid spamming on first run.
+    for (const item of _newsAggregateItems.slice(0, 50)) {
+      if (!item || !item.url) continue;
+      if (seen[item.url]) continue;
+      seen[item.url] = Date.now();
+      dirty = true;
+      // First-run grace: if the item is older than 24h, mark seen but
+      // don't fire — avoids notification flood on a fresh browser session.
+      if (item.published && item.published * 1000 < cutoff) continue;
+      const mentioned = _detectAssetMentions(item).filter(s => heldSymbols.has(s));
+      if (!mentioned.length) continue;
+      for (const sym of mentioned) {
+        const asset = ASSETS.find(a => a.symbol === sym);
+        const px = asset?.price;
+        const pos = open.find(p => p.symbol === sym);
+        const pnl = (px && pos) ? ((px - pos.entry) / pos.entry) * 100 : null;
+        const pnlStr = pnl == null ? '' : ` · ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%`;
+        const title = `📰 ${sym} in the news${pnlStr}`;
+        const body = `${item.title?.slice(0, 200) || ''}\n${item.url}`;
+        try {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            const n = new Notification(title, { body: item.title?.slice(0, 160) || '', tag: 'news_' + sym + '_' + item.url });
+            n.onclick = () => { try { window.focus(); n.close(); } catch (e) {} };
+          }
+        } catch (e) {}
+        try { _sendTelegramAlert(title + '\n' + body); } catch (e) {}
+      }
+    }
+    // Trim seen map to last 500 URLs — prevents unbounded growth.
+    if (dirty) {
+      const entries = Object.entries(seen).sort((a, b) => b[1] - a[1]).slice(0, 500);
+      try { localStorage.setItem('ict_news_seen_urls', JSON.stringify(Object.fromEntries(entries))); } catch (e) {}
+    }
   }
 
   function _detectAssetMentions(item) {
