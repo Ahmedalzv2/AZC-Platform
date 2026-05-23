@@ -170,8 +170,14 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
 describe('_fastRefreshTick covers manual futures assets too', () => {
   test('SILVER at 10× refreshes the 5m setup used by Force Fire', async () => {
     // Force Fire needs fresh per-TF levels even with auto-fire disabled.
-    const { app, sandbox } = loadApp();
+    // Under v7 SILVER is spot by default — flip to futures for this test
+    // (which is about the refresh path, not the policy).
+    // Pin the clock to a Thursday (CME open) so isMarketClosed doesn't bail
+    // the refresh early when the test happens to run on a weekend.
+    const gst = new Date('2026-05-07T15:00:00Z');
+    const { app, sandbox } = loadApp({ now: gst });
     app.loadTradeModes();
+    app.ASSETS.find(a => a.symbol === 'SILVER').tradeMode = 'futures';
     app.setAssetLeverage('SILVER', 10);
     app.setLiveTradingEnabled(true);
     const fetchedUrls = [];

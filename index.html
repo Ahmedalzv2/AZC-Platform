@@ -1589,14 +1589,18 @@
   // localStorage get wiped and replaced with the new defaults. The user can
   // still flip an individual asset back via setTradeMode — that just writes
   // a new override on top of the migrated defaults.
-  // Policy v6: futures defaults remain selectable for manual Force Fire and
-  // diagnostics, while auto-fire stays disabled after OOS research.
+  // Policy v7 (user-driven simplification, 2026-05-23): only US100 is the
+  // ICT/futures cockpit. Every other asset — including GOLD and SILVER — is
+  // pure spot watch (buy-low / sell-high, 1–3 week hold). The SWING/SCALP
+  // entry alerts that fired on spot assets are suppressed below
+  // (autoAnalyzeAsset returns before the alert push when tradeMode === 'spot').
   const DEFAULT_TRADE_MODES = {
-    SILVER: 'futures', US100: 'futures', SOL: 'futures', GOLD: 'futures',
-    ETH: 'futures', XRP: 'futures',
-    BTC: 'spot', BNB: 'spot', SUI: 'spot', ASTR: 'spot',
+    US100: 'futures',
+    GOLD: 'spot', SILVER: 'spot',
+    BTC: 'spot', ETH: 'spot', SOL: 'spot', BNB: 'spot',
+    XRP: 'spot', SUI: 'spot', ASTR: 'spot',
   };
-  const TRADE_MODE_POLICY_VERSION = 5;
+  const TRADE_MODE_POLICY_VERSION = 7;
 
   function loadTradeModes() {
     try {
@@ -8633,7 +8637,11 @@
     asset.tfEntries = tfEntries;
     asset.tfEntriesUpdated = Date.now();
 
-    // Transition detection: fire entry alert when 3+ TFs flip to ready
+    // Transition detection: fire entry alert when 3+ TFs flip to ready.
+    // Skip for spot-mode assets — per policy v7, only US100 runs ICT/futures
+    // alerts; spot assets (GOLD/SILVER + every crypto) use Spot Watch
+    // (buy-low/sell-high) instead of SCALP/SWING signals.
+    if (asset.tradeMode === 'spot') return;
     const ready = TF_LIST.filter(tf => tfEntries[tf]?.entryReady);
     const readyCount = ready.length;
     const prevCount = _lastEntryCount[asset.symbol] || 0;
@@ -9108,13 +9116,11 @@
     const desktopHost = document.getElementById('sideAssetsRows');
     const mobileHost = document.getElementById('mobileAssetPicker');
     if (!desktopHost && !mobileHost) return;
-    const spotWatchSyms = new Set(['BTC','ETH','SOL','BNB','XRP','SUI','ASTR']);
-    const metalSyms = new Set(['GOLD','SILVER']);
+    // Policy v7: US100 alone in the ICT cockpit. Every other tradable asset
+    // (including GOLD + SILVER) sits in Spot Watch.
     const assets = [
       ...ASSETS.filter(a => a.symbol === 'US100'),
-      ...ASSETS.filter(a => spotWatchSyms.has(a.symbol)),
-      ...ASSETS.filter(a => metalSyms.has(a.symbol)),
-      ...ASSETS.filter(a => TV_SYMBOLS[a.symbol] && a.symbol !== 'US100' && !spotWatchSyms.has(a.symbol) && !metalSyms.has(a.symbol)),
+      ...ASSETS.filter(a => a.symbol !== 'US100' && TV_SYMBOLS[a.symbol]),
     ];
     let lastGroup = '';
     const rows = assets.map(a => {
@@ -9127,20 +9133,16 @@
         : (a.bias || '—');
       const grade = (a.grade || '').toString().toUpperCase();
       const isUs100 = a.symbol === 'US100';
-      const isSpotWatch = spotWatchSyms.has(a.symbol);
-      const isFutures = _isFuturesAsset(a) && !isSpotWatch;
-      const groupName = isUs100 ? 'US100 ICT Cockpit' : isSpotWatch ? 'Spot Watch' : metalSyms.has(a.symbol) ? 'Metals Manual' : 'Other';
+      const isSpotWatch = !isUs100;          // policy v7: everything else = spot watch
+      const isFutures = isUs100;
+      const groupName = isUs100 ? 'US100 ICT Cockpit' : 'Spot Watch';
       const groupHeader = groupName !== lastGroup
         ? `<div class="side-asset-group">${groupName}</div>`
         : '';
       lastGroup = groupName;
       const modeBadge = isUs100
         ? `<span class="side-mode-badge mode-fut" title="US100 manual ICT cockpit">ICT</span>`
-        : isSpotWatch
-          ? `<span class="side-mode-badge mode-spot" title="Spot Watch - buy low, sell high, no scalp">WATCH</span>`
-          : isFutures
-        ? `<span class="side-mode-badge mode-fut" title="Futures — ICT entry/SL/TP, leverage, alerts">⚡ FUT</span>`
-        : `<span class="side-mode-badge mode-spot" title="Spot — buy low, sell high, no alerts">🏦 SPOT</span>`;
+        : `<span class="side-mode-badge mode-spot" title="Spot Watch — buy low, sell high, no scalp/swing alerts">WATCH</span>`;
       // Spot assets get a zone chip showing AT BUY / NEAR BUY / AT SELL / NEAR SELL.
       // 'mid' (out of zone) renders nothing — keeps the row uncluttered for the
       // 6 of 8 spot assets that aren't actionable on any given tick.

@@ -2,22 +2,22 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
-describe('Trade-mode policy (v6 — post-90d-OOS research)', () => {
-  test('DEFAULT_TRADE_MODES still flags SOL/SILVER/US100/GOLD as futures', () => {
+describe('Trade-mode policy (v7 — US100 only on the ICT lane, everything else spot)', () => {
+  test('DEFAULT_TRADE_MODES: only US100 is futures, everything else is spot', () => {
     const { app } = loadApp();
-    assert.equal(app.DEFAULT_TRADE_MODES.SOL, 'futures');
-    assert.equal(app.DEFAULT_TRADE_MODES.SILVER, 'futures');
     assert.equal(app.DEFAULT_TRADE_MODES.US100,  'futures');
-    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'futures');
+    assert.equal(app.DEFAULT_TRADE_MODES.SOL,    'spot', 'v7: SOL now spot watch');
+    assert.equal(app.DEFAULT_TRADE_MODES.SILVER, 'spot', 'v7: SILVER now spot watch');
+    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'spot', 'v7: GOLD now spot watch');
     assert.equal(app.DEFAULT_TRADE_MODES.BTC,    'spot');
   });
 
-  test('loadTradeModes seeds SOL with futures', () => {
+  test('loadTradeModes seeds SOL with spot under v7 policy', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
-    assert.equal(sol.tradeMode, 'futures');
-    assert.equal(app._isFuturesAsset(sol), true);
+    assert.equal(sol.tradeMode, 'spot');
+    assert.equal(app._isFuturesAsset(sol), false);
   });
 });
 
