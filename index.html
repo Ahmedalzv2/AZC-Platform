@@ -77,6 +77,9 @@
       <div class="brand">
         <div class="logo">Ahmad<br><em style="color:var(--gold-soft);font-size:15px;">AutoPilot</em></div>
         <div class="sub">ICT · v21</div>
+        <!-- Capital widget — bank, FP Markets, spot exposure, total.
+             Click any number to edit. Persisted in localStorage. -->
+        <div id="capitalCard" class="capital-card" onclick="if(event.target===this||event.target.classList.contains('cap-label'))_editCapital()"></div>
       </div>
       <div class="side-nav">
         <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Top Setup</button>
@@ -6680,6 +6683,89 @@
   // position in, and fires a Telegram ping with title + P/L. This is the
   // "sell into the news" qualitative trigger the user asked for —
   // complements the quantitative AT SELL zone alert.
+  // ─────────────────────────────────────────────────────────────────────
+  // 💰 USER CAPITAL — bank + FP Markets (US100) + spot exposure + total
+  // ─────────────────────────────────────────────────────────────────────
+  // User said: "I have $562 in FPmarket for US100." Pre-seed that. Bank
+  // balance + any other lanes default to 0 and are edited via the click-
+  // to-edit prompt on the sidebar widget. Live spot exposure is derived
+  // from open spotPositions × current prices, so it updates automatically
+  // and doesn't need user input.
+  let _userCapital = { bank: 0, fpMarketsUs100: 562, lastUpdated: 0 };
+  function loadUserCapital() {
+    try {
+      const raw = JSON.parse(localStorage.getItem('ict_user_capital') || '{}');
+      _userCapital = {
+        bank: Number(raw.bank) || 0,
+        fpMarketsUs100: raw.fpMarketsUs100 != null ? Number(raw.fpMarketsUs100) : 562,
+        lastUpdated: Number(raw.lastUpdated) || 0,
+      };
+    } catch (e) {}
+  }
+  function saveUserCapital() {
+    _userCapital.lastUpdated = Date.now();
+    try { localStorage.setItem('ict_user_capital', JSON.stringify(_userCapital)); } catch (e) {}
+  }
+  function _computeSpotExposure() {
+    if (typeof spotPositions === 'undefined') return { value: 0, cost: 0, pnl: 0 };
+    let value = 0, cost = 0;
+    for (const p of spotPositions) {
+      if (p.closedAt) continue;
+      const a = ASSETS.find(x => x.symbol === p.symbol);
+      if (!a || !(a.price > 0)) continue;
+      value += (p.size || 0) * a.price;
+      cost  += (p.size || 0) * p.entry;
+    }
+    const pnl = cost > 0 ? ((value - cost) / cost) * 100 : 0;
+    return { value, cost, pnl };
+  }
+  function _renderCapitalCard() {
+    const el = document.getElementById('capitalCard');
+    if (!el) return;
+    const exp = _computeSpotExposure();
+    const total = (_userCapital.bank || 0) + (_userCapital.fpMarketsUs100 || 0) + exp.value;
+    const fmt = (n) => '$' + Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+    const pnlClass = exp.pnl >= 0 ? 'cap-pnl-up' : 'cap-pnl-down';
+    const pnlStr = exp.cost > 0 ? `(${exp.pnl >= 0 ? '+' : ''}${exp.pnl.toFixed(2)}%)` : '';
+    el.innerHTML = `
+      <div class="cap-row" onclick="event.stopPropagation();_editCapital('bank')">
+        <span class="cap-label">Bank</span>
+        <span class="cap-value">${fmt(_userCapital.bank)}</span>
+      </div>
+      <div class="cap-row" onclick="event.stopPropagation();_editCapital('fpMarketsUs100')">
+        <span class="cap-label">FP · US100</span>
+        <span class="cap-value">${fmt(_userCapital.fpMarketsUs100)}</span>
+      </div>
+      <div class="cap-row">
+        <span class="cap-label">Spot held</span>
+        <span class="cap-value">${fmt(exp.value)} <span class="${pnlClass}">${pnlStr}</span></span>
+      </div>
+      <div class="cap-row cap-total">
+        <span class="cap-label">Total</span>
+        <span class="cap-value">${fmt(total)}</span>
+      </div>
+    `;
+  }
+  function _editCapital(field) {
+    if (!field) return;
+    const label = field === 'bank' ? 'bank balance' : field === 'fpMarketsUs100' ? 'FP Markets US100 balance' : field;
+    const current = Number(_userCapital[field]) || 0;
+    const raw = prompt(`Edit ${label} (USD):`, current.toFixed(2));
+    if (raw == null) return;
+    const v = parseFloat(raw);
+    if (!Number.isFinite(v) || v < 0) { try { showToast('Invalid amount', 'err'); } catch (e) {} return; }
+    _userCapital[field] = v;
+    saveUserCapital();
+    _renderCapitalCard();
+    try { showToast(`✓ ${label} → $${v.toLocaleString()}`, 'ok'); } catch (e) {}
+  }
+  function initUserCapital() {
+    loadUserCapital();
+    _renderCapitalCard();
+    // Re-render every 5s so spot-held value tracks live prices.
+    setInterval(_renderCapitalCard, 5000);
+  }
+
   function _checkNewsForHeldPositions() {
     if (typeof spotPositions === 'undefined' || typeof _newsAggregateItems === 'undefined') return;
     const open = spotPositions.filter(p => !p.closedAt);
@@ -12206,6 +12292,7 @@
     _try('initRelayStatePush', initRelayStatePush);
     _try('initTelegramActionPoller', initTelegramActionPoller);
     _try('initPositionMilestones', initPositionMilestones);
+    _try('initUserCapital', initUserCapital);
     syncBinance(true); // Initial sync for non-WS setup
     setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
     // Fast-refresh: pull fresh 1m klines for futures assets every

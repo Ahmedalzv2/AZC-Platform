@@ -1451,6 +1451,51 @@
   border-color: var(--text-mute);
   color: var(--text-dim);
 }
+/* Capital card in the sidebar — bank, FP Markets, spot held, total */
+.capital-card {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: rgba(201,169,97,0.06);
+  border: 1px solid rgba(201,169,97,0.18);
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+.cap-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.cap-row.cap-total {
+  border-top: 1px dashed rgba(255,255,255,0.10);
+  margin-top: 4px;
+  padding-top: 6px;
+  cursor: default;
+}
+.cap-row:not(.cap-total):hover {
+  background: rgba(201,169,97,0.10);
+  border-radius: 4px;
+}
+.cap-label {
+  color: var(--text-mute);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.cap-value {
+  color: var(--text);
+  font-weight: 700;
+}
+.cap-row.cap-total .cap-label,
+.cap-row.cap-total .cap-value {
+  color: var(--gold);
+  font-size: 12px;
+}
+.cap-pnl-up   { color: var(--bull); font-size: 10px; }
+.cap-pnl-down { color: var(--bear); font-size: 10px; }
+
 /* Held asset has hit / is approaching its sell zone — most actionable case;
    gold ring overrides P/L color emphasis so the user notices */
 .picks-chip.hold-sell {
