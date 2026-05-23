@@ -3503,6 +3503,45 @@
     } catch (err) {}
   }
 
+  // Toggle handlers for the micro-capital lane controls — separate from the
+  // master switch so the user can stage: pick lane → review caps → arm live.
+  function setMicroCapitalLaneEnabled(on) {
+    setMicroCapitalConfig({ laneEnabled: !!on, ...((!on) ? { armed: false } : {}) });
+    try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
+  }
+  function setMicroCapitalArmed(on) {
+    const cfg = _microCapitalConfig();
+    if (on && !cfg.laneEnabled) {
+      try { showToast('Enable lane first', 'err'); } catch (e) {}
+      return;
+    }
+    setMicroCapitalConfig({ armed: !!on });
+    try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
+  }
+  function _renderMicroCapitalGateHTML() {
+    const cfg = _microCapitalConfig();
+    const wallet = (typeof _userCapital !== 'undefined') ? Number(_userCapital.mexcMicroCapital || 0) : 0;
+    const maxRiskUsd = wallet * (cfg.maxRiskPctPerTrade / 100);
+    const dailyCapUsd = Math.min(
+      Number(cfg.dailyLossCapUsdAbs) || 0,
+      wallet * (Number(cfg.dailyLossCapPct) || 0) / 100,
+    );
+    const laneBtn = `<button onclick="setMicroCapitalLaneEnabled(${!cfg.laneEnabled})" style="background:${cfg.laneEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${cfg.laneEnabled?'var(--bull)':'var(--border)'};color:${cfg.laneEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${cfg.laneEnabled?'🟢 LANE ON':'⚪ LANE OFF'}</button>`;
+    const armBtn = `<button onclick="setMicroCapitalArmed(${!cfg.armed})" ${cfg.laneEnabled?'':'disabled'} style="background:${cfg.armed?'rgba(224,93,93,0.20)':'rgba(101,101,109,0.15)'};border:1px solid ${cfg.armed?'var(--bear)':'var(--border)'};color:${cfg.armed?'var(--bear)':cfg.laneEnabled?'var(--text)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:${cfg.laneEnabled?'pointer':'not-allowed'};opacity:${cfg.laneEnabled?1:0.5};font-family:'JetBrains Mono',monospace;">${cfg.armed?'🔴 ARMED · LIVE':'🛡 ARM LIVE'}</button>`;
+    return `
+      <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">MEXC micro-capital lane · \$${wallet.toFixed(4)}</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
+        ${laneBtn}
+        ${armBtn}
+        <span style="font-size:11px;color:var(--text-mute);">${cfg.armed?'⚠ Live orders gated by caps below':cfg.laneEnabled?'Lane on · still dry-run until armed':'Disabled · gate is a pass-through'}</span>
+      </div>
+      <div style="font-size:10px;color:var(--text-mute);margin-bottom:14px;line-height:1.6;font-family:'JetBrains Mono',monospace;">
+        Caps: risk/trade ≤ \$${maxRiskUsd.toFixed(4)} (${cfg.maxRiskPctPerTrade}%) · daily loss ≤ \$${dailyCapUsd.toFixed(4)} · max ${cfg.maxTradesPerDay} trades/day · 1 open position · ${Math.round(cfg.perSymbolCooldownMs/60000)}-min per-symbol cooldown.<br/>
+        Blocked attempts are journaled with a skip reason. US100 unaffected (FP Markets, not MEXC).
+      </div>
+    `;
+  }
+
   async function placeMexcFuturesOrder(asset, side, entry, sl, tp, qty, leverage, opts) {
     opts = opts || {};
     if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
@@ -5468,6 +5507,7 @@
             ${dryBtn}
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
           </div>
+          ${_renderMicroCapitalGateHTML()}
           <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SW (swing) auto-fire · ${Object.keys(SW_ASSET_CONFIG).join(' + ')}</div>
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
             ${swBtn}
@@ -6876,7 +6916,7 @@
   // to-edit prompt on the sidebar widget. Live spot exposure is derived
   // from open spotPositions × current prices, so it updates automatically
   // and doesn't need user input.
-  let _userCapital = { bank: 0, fpMarketsUs100: 562, mexcMicroCapital: 50, lastUpdated: 0 };
+  let _userCapital = { bank: 0, fpMarketsUs100: 562, mexcMicroCapital: 48.9912, lastUpdated: 0 };
   function loadUserCapital() {
     try {
       const raw = JSON.parse(localStorage.getItem('ict_user_capital') || '{}');
@@ -6885,7 +6925,7 @@
         fpMarketsUs100: raw.fpMarketsUs100 != null ? Number(raw.fpMarketsUs100) : 562,
         // MEXC micro-capital lane. Default $50 matches the trial size the
         // user agreed to seed. US100 is unaffected (CFD via FP Markets, not MEXC).
-        mexcMicroCapital: raw.mexcMicroCapital != null ? Number(raw.mexcMicroCapital) : 50,
+        mexcMicroCapital: raw.mexcMicroCapital != null ? Number(raw.mexcMicroCapital) : 48.9912,
         lastUpdated: Number(raw.lastUpdated) || 0,
       };
     } catch (e) {}
@@ -6913,8 +6953,12 @@
     const exp = _computeSpotExposure();
     const bank = _userCapital.bank || 0;
     const fp   = _userCapital.fpMarketsUs100 || 0;
-    const total = bank + fp + exp.value;
+    const mexc = _userCapital.mexcMicroCapital || 0;
+    const total = bank + fp + mexc + exp.value;
     const fmt = (n) => '$' + Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+    // MEXC futures wallet — small enough that rounding to 2dp hides change;
+    // show 4dp inline so the user can read the live wallet figure directly.
+    const fmtMexc = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
     const pnlClass = exp.pnl >= 0 ? 'cap-pnl-up' : 'cap-pnl-down';
     const pnlStr = exp.cost > 0 ? ` ${exp.pnl >= 0 ? '+' : ''}${exp.pnl.toFixed(2)}%` : '';
     // US100 only trades CME hours (closed weekends). Surface that inline
@@ -6932,6 +6976,7 @@
         <div class="cap-empty-msg">
           <span>💰 No capital set</span>
           <button class="cap-edit-btn" onclick="_editCapital('bank')">Set Bank</button>
+          <button class="cap-edit-btn" onclick="_editCapital('mexcMicroCapital')">Set MEXC · Futures</button>
           <button class="cap-edit-btn" onclick="_editCapital('fpMarketsUs100')">Set FP · US100</button>
           <span class="cap-empty-note">Add balance to start tracking trades. Picks below are still visible — just informational until capital is set.</span>
         </div>`;
@@ -6944,6 +6989,10 @@
         <button class="cap-chip cap-chip-edit" onclick="_editCapital('bank')" title="Click to edit your bank balance">
           <span class="cap-chip-label">Bank</span>
           <span class="cap-chip-val">${fmt(bank)}</span>
+        </button>
+        <button class="cap-chip cap-chip-edit" onclick="_editCapital('mexcMicroCapital')" title="Click to edit MEXC futures wallet (micro-capital lane)">
+          <span class="cap-chip-label">MEXC · Futures</span>
+          <span class="cap-chip-val">${fmtMexc(mexc)}</span>
         </button>
         <button class="cap-chip cap-chip-edit" onclick="_editCapital('fpMarketsUs100')" title="Click to edit FP Markets US100 balance">
           <span class="cap-chip-label">FP · US100</span>
@@ -6963,16 +7012,22 @@
   }
   function _editCapital(field) {
     if (!field) return;
-    const label = field === 'bank' ? 'bank balance' : field === 'fpMarketsUs100' ? 'FP Markets US100 balance' : field;
+    const label = field === 'bank' ? 'bank balance'
+                : field === 'fpMarketsUs100' ? 'FP Markets US100 balance'
+                : field === 'mexcMicroCapital' ? 'MEXC futures wallet (USDT)'
+                : field;
     const current = Number(_userCapital[field]) || 0;
-    const raw = prompt(`Edit ${label} (USD):`, current.toFixed(2));
+    // MEXC wallet needs 4dp because the figure runs as 48.9912 — rounding
+    // to 2dp would silently truncate the user's typed precision.
+    const digits = field === 'mexcMicroCapital' ? 4 : 2;
+    const raw = prompt(`Edit ${label}:`, current.toFixed(digits));
     if (raw == null) return;
     const v = parseFloat(raw);
     if (!Number.isFinite(v) || v < 0) { try { showToast('Invalid amount', 'err'); } catch (e) {} return; }
     _userCapital[field] = v;
     saveUserCapital();
     _renderCapitalCard();
-    try { showToast(`✓ ${label} → $${v.toLocaleString()}`, 'ok'); } catch (e) {}
+    try { showToast(`✓ ${label} → ${v.toLocaleString('en-US', { maximumFractionDigits: digits })}`, 'ok'); } catch (e) {}
   }
   function initUserCapital() {
     loadUserCapital();
