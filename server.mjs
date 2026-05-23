@@ -214,6 +214,129 @@ async function telegramSend(text) {
   return { ok: true, message_id: j.result?.message_id, ts: Date.now() };
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Two-way Telegram commands
+// ─────────────────────────────────────────────────────────────────────
+// Architecture: the browser dashboard (running 24/7 in ict-dash Firefox)
+// POSTs its current state — positions + zone snapshot — to /state every
+// minute. The relay caches it. When a Telegram command arrives, the
+// relay answers from the cached state directly, no browser round-trip.
+// Cache becomes "stale" after 3 minutes without an update — replies
+// include a "stale state" warning instead of pretending the data is fresh.
+let _dashState = { positions: [], zones: [], ts: 0 };
+const STATE_STALE_MS = 3 * 60 * 1000;
+
+// Update-poller state. We poll Telegram's getUpdates every 10s with
+// offset tracking. Only run if a token is configured.
+let _tgOffset = 0;
+let _tgPollerStarted = false;
+const _tgAcceptedChats = new Set();
+if (TG_CHAT) _tgAcceptedChats.add(String(TG_CHAT));
+
+function fmtUsd(n, digits = 4) {
+  if (!Number.isFinite(n)) return '$—';
+  return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: digits });
+}
+function _staleNote() {
+  if (!_dashState.ts) return ' (no state yet — browser ticker not connected)';
+  const age = Date.now() - _dashState.ts;
+  if (age > STATE_STALE_MS) return ` (stale ${Math.round(age/60000)}m — browser ticker may be down)`;
+  return '';
+}
+function _handlePicks() {
+  const stale = _staleNote();
+  const picks = (_dashState.zones || []).filter(z => z.state === 'buy_at' || z.state === 'buy_near');
+  if (!picks.length) return `📈 No picks right now${stale}.`;
+  const lines = picks
+    .sort((a, b) => (a.state === 'buy_at' ? -1 : b.state === 'buy_at' ? 1 : Math.abs(a.distPct) - Math.abs(b.distPct)))
+    .map(z => {
+      const tag = z.state === 'buy_at' ? 'AT BUY' : `NEAR BUY ${z.distPct.toFixed(1)}%`;
+      const tgt = z.sellWide ? ` → ${fmtUsd(z.sellWide)}` : '';
+      return `• ${z.symbol} · ${tag} · ${fmtUsd(z.price)}${tgt}`;
+    });
+  return `📈 ${picks.length} pick${picks.length > 1 ? 's' : ''}${stale}\n` + lines.join('\n');
+}
+function _handlePositions() {
+  const stale = _staleNote();
+  const open = (_dashState.positions || []).filter(p => !p.closedAt);
+  if (!open.length) return `📌 No open positions${stale}.`;
+  const lines = open.map(p => {
+    const z = (_dashState.zones || []).find(x => x.symbol === p.symbol);
+    const px = z?.price;
+    const pnl = px ? ((px - p.entry) / p.entry) * 100 : null;
+    const days = Math.max(0, Math.floor((Date.now() - p.ts) / 86400000));
+    const pnlStr = pnl == null ? '—' : `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%`;
+    const tgt = p.target ? ` · target ${fmtUsd(p.target)}` : '';
+    return `• ${p.symbol} · size ${p.size} @ ${fmtUsd(p.entry)} · ${days}d · ${pnlStr}${tgt}`;
+  });
+  return `📌 ${open.length} open position${open.length > 1 ? 's' : ''}${stale}\n` + lines.join('\n');
+}
+function _handleStatus() {
+  const stale = _staleNote();
+  const open = (_dashState.positions || []).filter(p => !p.closedAt).length;
+  const picks = (_dashState.zones || []).filter(z => z.state === 'buy_at' || z.state === 'buy_near').length;
+  const atSell = (_dashState.zones || []).filter(z => z.state === 'sell_at').length;
+  return [
+    '🩺 ICT Autopilot status' + stale,
+    `• Picks (buy zone): ${picks}`,
+    `• Open positions: ${open}`,
+    `• AT SELL hits: ${atSell}`,
+    `• Last browser update: ${_dashState.ts ? new Date(_dashState.ts).toISOString().slice(11, 19) + ' UTC' : 'never'}`,
+  ].join('\n');
+}
+function _handleHelp() {
+  return [
+    '🤖 Commands:',
+    '/picks — assets currently at/near buy zone',
+    '/positions — your open spot holdings + live P/L',
+    '/status — quick health snapshot',
+    '/help — this message',
+  ].join('\n');
+}
+async function _processTgMessage(msg) {
+  const chat_id = String(msg.chat?.id || '');
+  if (!_tgAcceptedChats.has(chat_id)) return; // ignore strangers
+  const text = String(msg.text || '').trim();
+  if (!text.startsWith('/')) return;
+  const cmd = text.split(/\s+/)[0].toLowerCase().replace(/@.+$/, '');
+  let reply = null;
+  if      (cmd === '/picks')     reply = _handlePicks();
+  else if (cmd === '/positions') reply = _handlePositions();
+  else if (cmd === '/status')    reply = _handleStatus();
+  else if (cmd === '/help' || cmd === '/start') reply = _handleHelp();
+  if (reply) {
+    try { await telegramSend(reply); } catch (e) { console.warn('[tg] reply failed', e.message); }
+  }
+}
+async function _tgPollOnce() {
+  if (!TG_TOKEN) return;
+  const url = `https://api.telegram.org/bot${TG_TOKEN}/getUpdates?timeout=25&offset=${_tgOffset}&allowed_updates=${encodeURIComponent('["message"]')}`;
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    const j = await r.json();
+    if (!j.ok) { console.warn('[tg] getUpdates not ok', j.description); return; }
+    for (const upd of j.result || []) {
+      _tgOffset = Math.max(_tgOffset, upd.update_id + 1);
+      if (upd.message) {
+        _processTgMessage(upd.message).catch(e => console.warn('[tg] handler', e.message));
+      }
+    }
+  } catch (e) {
+    // Long-poll timeout / transient — just retry next tick.
+  }
+}
+function _startTgPoller() {
+  if (_tgPollerStarted || !TG_TOKEN) return;
+  _tgPollerStarted = true;
+  (async function loop() {
+    while (true) {
+      await _tgPollOnce();
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  })();
+  console.log('telegram command poller running for chat', TG_CHAT);
+}
+
 // CORS is open: this server's only public-facing endpoints (/api/us100-price,
 // /us100) return non-secret quotes that anyone could scrape from TV directly.
 // Worth keeping the dashboard on github.io able to fetch this VPS for users
@@ -253,6 +376,28 @@ const server = http.createServer(async (req, res) => {
       try { return sendJson(res, 200, await us100Bars(tfsParam, limit), CORS_HEADERS); }
       catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
     }
+    if (url.pathname === '/state' && req.method === 'POST') {
+      // Browser ticker pushes its current state here every minute so the
+      // Telegram command handler can answer /picks /positions /status from
+      // cached data without waking the dashboard.
+      let body = '';
+      try {
+        await new Promise((resolve, reject) => {
+          req.on('data', c => { body += c; if (body.length > 32 * 1024) { reject(new Error('body-too-large')); req.destroy(); } });
+          req.on('end', resolve);
+          req.on('error', reject);
+        });
+        const payload = JSON.parse(body || '{}');
+        _dashState = {
+          positions: Array.isArray(payload.positions) ? payload.positions : [],
+          zones: Array.isArray(payload.zones) ? payload.zones : [],
+          ts: Date.now(),
+        };
+        return sendJson(res, 200, { ok: true }, CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 400, { error: error.message }, CORS_HEADERS);
+      }
+    }
     if (url.pathname === '/notify' && req.method === 'POST') {
       // Read body, expect { text }. Cap at 2KB so a stuck client can't flood us.
       let body = '';
@@ -291,4 +436,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, host, () => {
   console.log(`ICT AutoPilot serving http://${host}:${port}/`);
+  _startTgPoller();
 });
