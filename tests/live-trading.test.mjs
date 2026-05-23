@@ -166,6 +166,30 @@ describe('computeMexcOrderQty', () => {
     });
     assert.equal(app.computeMexcOrderQty({}, 75.65, 75.65), null);
   });
+
+  test('high-price assets do NOT underflow to null at micro margin (regression: ETH @ $0.20/10×)', () => {
+    // $0.20 margin × 10× / $4500 = 0.000444 units. Earlier 2dp rounding
+    // produced 0.00 → null → caller fell back to qty=1 ETH → gate blocked.
+    // 6dp rounding preserves the actual qty.
+    const { app } = loadApp({
+      storage: { ict_target_margin_usdt: '0.20' },
+    });
+    const q = app.computeMexcOrderQty({}, 4500, 4450, 10);
+    assert.ok(q != null && q > 0, `expected non-null positive qty for ETH, got ${q}`);
+    assert.ok(Math.abs(q - 0.000444) < 1e-5, `expected ~0.000444, got ${q}`);
+  });
+
+  test('auto-fire toggles persist to localStorage (regression: SW reset on reload)', () => {
+    const { app } = loadApp();
+    app.setSwAutoFire(true);
+    app.setScalpAutoFire(true);
+    // Re-load with the same storage backing — confirms the flag survives.
+    const { app: app2 } = loadApp({
+      storage: { ict_sw_autofire: '1', ict_scalp_autofire: '1' },
+    });
+    assert.equal(app2.getSwAutoFire(), true);
+    assert.equal(app2.getScalpAutoFire(), true);
+  });
 });
 
 describe('placeMexcFuturesOrder', () => {
