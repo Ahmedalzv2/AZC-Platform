@@ -1373,10 +1373,9 @@
     padding-right: env(safe-area-inset-right);
   }
 
-/* ── Buy Picks banner — sticky top-of-dashboard "what to buy now" surface */
+/* ── Buy Picks banner — sits below the sticky capital strip. Not sticky
+   itself so the capital strip is the only thing pinned during scroll. */
 #buyPicksBanner {
-  position: sticky;
-  top: 0;
   z-index: 50;
   background: linear-gradient(180deg, rgba(92,184,138,0.16) 0%, rgba(92,184,138,0.06) 100%);
   border-bottom: 1px solid rgba(92,184,138,0.35);
@@ -1451,50 +1450,110 @@
   border-color: var(--text-mute);
   color: var(--text-dim);
 }
-/* Capital card in the sidebar — bank, FP Markets, spot held, total */
-.capital-card {
-  margin-top: 12px;
-  padding: 8px 10px;
-  background: rgba(201,169,97,0.06);
-  border: 1px solid rgba(201,169,97,0.18);
-  border-radius: 8px;
+/* Capital strip — top of every tab, sticky above the picks banner */
+.capital-strip {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  background: linear-gradient(180deg, rgba(201,169,97,0.16) 0%, rgba(201,169,97,0.06) 100%);
+  border-bottom: 1px solid rgba(201,169,97,0.32);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 6px 14px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
 }
-.cap-row {
+.cap-strip-row {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cap-chip {
+  background: rgba(0,0,0,0.30);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 11px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  display: inline-flex;
   align-items: baseline;
-  padding: 3px 0;
+  gap: 6px;
   cursor: pointer;
+  transition: all 0.15s;
 }
-.cap-row.cap-total {
-  border-top: 1px dashed rgba(255,255,255,0.10);
-  margin-top: 4px;
-  padding-top: 6px;
-  cursor: default;
+.cap-chip:hover {
+  background: rgba(0,0,0,0.5);
+  border-color: rgba(201,169,97,0.4);
 }
-.cap-row:not(.cap-total):hover {
-  background: rgba(201,169,97,0.10);
-  border-radius: 4px;
-}
-.cap-label {
+.cap-chip-edit { border-style: dashed; }
+.cap-chip-label {
   color: var(--text-mute);
-  font-size: 10px;
+  font-size: 9px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
+  font-weight: 700;
 }
-.cap-value {
+.cap-chip-val {
   color: var(--text);
   font-weight: 700;
 }
-.cap-row.cap-total .cap-label,
-.cap-row.cap-total .cap-value {
+.cap-total-chip {
+  background: rgba(201,169,97,0.20);
+  border: 1px solid var(--gold);
   color: var(--gold);
+  padding: 5px 14px;
+  border-radius: 8px;
   font-size: 12px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-left: auto;
 }
-.cap-pnl-up   { color: var(--bull); font-size: 10px; }
-.cap-pnl-down { color: var(--bear); font-size: 10px; }
+.cap-total-val {
+  color: var(--gold);
+  font-weight: 800;
+  font-size: 13px;
+}
+.cap-pnl-up   { color: var(--bull); font-size: 10px; margin-left: 4px; }
+.cap-pnl-down { color: var(--bear); font-size: 10px; margin-left: 4px; }
+.cap-note {
+  color: var(--text-mute);
+  font-size: 9px;
+  margin-left: 4px;
+  font-style: italic;
+}
+
+/* Zero-capital state — surfaces a clear "set balance to trade" prompt */
+.capital-strip.cap-empty {
+  background: linear-gradient(180deg, rgba(242,179,61,0.16) 0%, rgba(242,179,61,0.06) 100%);
+  border-bottom-color: rgba(242,179,61,0.4);
+}
+.cap-empty-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--liq);
+}
+.cap-edit-btn {
+  background: rgba(242,179,61,0.18);
+  border: 1px solid var(--liq);
+  color: var(--liq);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  cursor: pointer;
+}
+.cap-empty-note {
+  color: var(--text-mute);
+  font-size: 10px;
+  font-style: italic;
+  width: 100%;
+}
 
 /* Held asset has hit / is approaching its sell zone — most actionable case;
    gold ring overrides P/L color emphasis so the user notices */
