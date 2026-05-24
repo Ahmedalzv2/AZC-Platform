@@ -226,6 +226,13 @@ async function telegramSend(text) {
 let _dashState = { positions: [], zones: [], ts: 0 };
 const STATE_STALE_MS = 3 * 60 * 1000;
 
+// AUTO on/off cache so "is the dashboard actually running with AUTO on?"
+// can be answered with a single curl, without depending on Telegram log
+// scraping. Dashboard POSTs to /auto-state on every toggle and heartbeat;
+// GET returns the latest record plus a freshness verdict.
+let _autoState = { state: 'unknown', ts: 0, lastFireTs: 0 };
+const AUTO_STALE_MS = 7 * 60 * 1000;
+
 // Update-poller state. We poll Telegram's getUpdates every 10s with
 // offset tracking. Only run if a token is configured.
 let _tgOffset = 0;
@@ -483,6 +490,38 @@ const server = http.createServer(async (req, res) => {
           ts: Date.now(),
         };
         return sendJson(res, 200, { ok: true }, CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 400, { error: error.message }, CORS_HEADERS);
+      }
+    }
+    if (url.pathname === '/auto-state' && req.method === 'GET') {
+      const age = _autoState.ts ? Date.now() - _autoState.ts : null;
+      const fresh = age != null && age < AUTO_STALE_MS;
+      return sendJson(res, 200, {
+        state: _autoState.state,
+        ts: _autoState.ts,
+        ageMs: age,
+        stale: age == null || !fresh,
+        running: fresh && _autoState.state === 'on',
+        lastFireTs: _autoState.lastFireTs || 0,
+      }, CORS_HEADERS);
+    }
+    if (url.pathname === '/auto-state' && req.method === 'POST') {
+      let body = '';
+      try {
+        await new Promise((resolve, reject) => {
+          req.on('data', c => { body += c; if (body.length > 512) { reject(new Error('body-too-large')); req.destroy(); } });
+          req.on('end', resolve);
+          req.on('error', reject);
+        });
+        const payload = JSON.parse(body || '{}');
+        const state = payload.state === 'on' ? 'on' : 'off';
+        _autoState = {
+          state,
+          ts: Date.now(),
+          lastFireTs: Number(payload.lastFireTs) || _autoState.lastFireTs || 0,
+        };
+        return sendJson(res, 200, { ok: true, ..._autoState }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 400, { error: error.message }, CORS_HEADERS);
       }

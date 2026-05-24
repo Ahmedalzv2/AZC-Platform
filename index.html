@@ -3560,6 +3560,7 @@
       if (getTargetMarginUsdt() == null) setTargetMarginUsdt(0.20);
       try { showToast('AUTO: ON · live · $0.20/fire', 'ok'); } catch (e) {}
       try { _sendTelegramAlert('🟢 AUTO: ON · ' + new Date().toISOString().slice(11,16) + ' UTC · live · $0.20/fire'); } catch (e) {}
+      _pushAutoState('on');
       _startAutoHeartbeat();
     } else {
       setSwAutoFire(false);
@@ -3568,6 +3569,7 @@
       setLiveTradingEnabled(false);
       try { showToast('AUTO: OFF · safe', 'ok'); } catch (e) {}
       try { _sendTelegramAlert('🔴 AUTO: OFF · ' + new Date().toISOString().slice(11,16) + ' UTC'); } catch (e) {}
+      _pushAutoState('off');
       _stopAutoHeartbeat();
     }
     try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
@@ -3585,11 +3587,25 @@
       if (!isAutoFireFullyArmed()) { _stopAutoHeartbeat(); return; }
       const t = new Date().toISOString().slice(11,16);
       try { _sendTelegramAlert('💓 AUTO heartbeat · ' + t + ' UTC'); } catch (e) {}
+      _pushAutoState('on');
     };
     _autoHeartbeatTimer = setInterval(tick, 5 * 60 * 1000);
+    _pushAutoState('on');
   }
   function _stopAutoHeartbeat() {
     if (_autoHeartbeatTimer) { clearInterval(_autoHeartbeatTimer); _autoHeartbeatTimer = null; }
+  }
+  // Push to the relay's /auto-state so "is AUTO actually on right now?" can
+  // be answered with one curl, independent of Telegram delivery.
+  function _pushAutoState(state) {
+    try {
+      fetch(TG_RELAY_BASE + '/auto-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: state, ts: Date.now() }),
+        cache: 'no-store',
+      }).catch(() => {});
+    } catch (e) {}
   }
 
   // Toggle handlers for the micro-capital lane controls — separate from the
