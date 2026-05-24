@@ -1963,3 +1963,137 @@
   outline-offset: 2px;
   border-radius: var(--r-btn);
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   LIVE CHART — pass 2 layout
+   Decision strip above, hero chart in the middle, deeper analysis card
+   below, ICT methods dropdown at the very end (US100 only). Goal: the
+   most actionable context is the first thing you see; the chart is the
+   visual hero; everything else recedes into supporting detail.
+═══════════════════════════════════════════════════════════════════ */
+
+.lc-decision-strip {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--space-5);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-card);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
+  box-shadow: var(--shadow-card);
+}
+.lc-decision-kpi { min-width: 0; }
+.lc-decision-kpi .kpi-value {
+  color: var(--gold);
+  letter-spacing: -0.01em;
+}
+.lc-decision-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+@media (max-width: 900px) {
+  .lc-decision-strip {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+  }
+  .lc-decision-actions {
+    justify-content: flex-start;
+  }
+}
+
+.lc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+.lc-tfs {
+  display: inline-flex;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-btn);
+  padding: 3px;
+  gap: 2px;
+}
+.lc-tfs .tf-btn {
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-mute);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.lc-tfs .tf-btn:hover { color: var(--text); background: var(--bg-hot); }
+.lc-tfs .tf-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+/* Existing .tf-btn elsewhere (if any) keep the old look outside this group */
+
+.lc-quick-track {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.lc-quick-track input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-btn);
+  padding: 7px 12px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  width: 220px;
+  outline: none;
+  transition: border-color var(--t-fast) var(--ease);
+}
+.lc-quick-track input:focus { border-color: var(--accent-line); }
+.lc-quick-track input::placeholder { color: var(--text-faint); }
+
+/* The hero chart container — taller, framed by a subtle ring, with the
+   premium shadow stack that lifts it off the page. */
+.lc-chart-hero {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-hero);
+  overflow: hidden;
+  height: clamp(560px, 70vh, 820px);
+  min-height: 560px;
+  box-shadow: var(--shadow-hero);
+  position: relative;
+}
+.lc-chart-hero::after {
+  /* Subtle inset ring so the chart feels embedded, not a flat iframe.
+     Pointer-events none so it doesn't intercept TradingView controls. */
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-hero);
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.025) inset;
+}
+
+@media (max-width: 900px) {
+  .lc-chart-hero { height: clamp(420px, 56vh, 640px); min-height: 420px; }
+  .lc-toolbar { gap: var(--space-2); }
+  .lc-quick-track input { width: 160px; }
+}
+
+/* Chip pulse modifier — used by the fire-status chip when it goes "ready". */
+.chip.is-pulsing { animation: chip-pulse 1.2s ease-in-out infinite; }
+@keyframes chip-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(226,100,100,0.45); }
+  50%      { box-shadow: 0 0 0 6px rgba(226,100,100,0); }
+}

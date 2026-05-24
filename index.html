@@ -276,16 +276,32 @@
         <div id="liveChartContent" style="display:none;">
           <div class="page-header">
             <h1><span id="tvCurrentSymbolLabel">US100</span></h1>
+            <p>Live TradingView chart with full ICT methodology overlay. Pick a timeframe; the decision strip below tracks bias, fire status, and the next action.</p>
           </div>
-          <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-            <span id="tvLivePrice" style="display:inline-block;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.3);border-radius:20px;padding:4px 14px;font-size:14px;font-weight:700;color:#c9a961;font-family:'JetBrains Mono',monospace;margin-right:10px;">--</span>
-            <input id="tvQuickTrack" type="text" placeholder="Quick-track symbol (e.g. DOGE)" autocomplete="off" spellcheck="false"
-              onkeydown="if(event.key==='Enter'){event.preventDefault();quickTrackAsset();}"
-              style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;width:200px;outline:none;">
-            <button onclick="quickTrackAsset()" style="background:rgba(201,169,97,0.15);border:1px solid rgba(201,169,97,0.4);border-radius:8px;padding:7px 12px;color:var(--gold);font-size:12px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Track</button>
-            <div style="flex:1;"></div>
-            <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Timeframe:</div>
-            <div style="display:flex;gap:6px;">
+
+          <!-- Decision strip — the at-a-glance row above the chart.
+               KPI on the left, action chips on the right. Everything
+               actionable in the first eyeful, no scrolling required. -->
+          <div class="lc-decision-strip">
+            <div class="lc-decision-kpi">
+              <div class="kpi-label">Live price</div>
+              <div class="kpi-value is-lg" id="tvLivePrice">—</div>
+            </div>
+            <div class="lc-decision-actions">
+              <span id="tvFireStatusBadge"
+                    class="chip is-muted"
+                    title="Fire status for the selected asset — READY = next tick fires, NEAR = closing in, WAITING = far, BLOCKED = some gate stops it">— pick asset</span>
+              <button id="tvForceFireBtn" class="btn is-primary is-sm"
+                      onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()"
+                      title="Open the manual trade-plan details">Build trade plan</button>
+              <button class="btn is-ghost is-sm"
+                      onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()">⚙ Details</button>
+            </div>
+          </div>
+
+          <!-- TF + quick-track row — secondary chart controls -->
+          <div class="lc-toolbar">
+            <div class="lc-tfs" role="tablist" aria-label="Chart timeframe">
               <button class="tf-btn active" data-tf="1" onclick="switchTVTimeframe('1')">1m</button>
               <button class="tf-btn" data-tf="5" onclick="switchTVTimeframe('5')">5m</button>
               <button class="tf-btn" data-tf="15" onclick="switchTVTimeframe('15')">15m</button>
@@ -294,54 +310,20 @@
               <button class="tf-btn" data-tf="D" onclick="switchTVTimeframe('D')">Daily</button>
               <button class="tf-btn" data-tf="W" onclick="switchTVTimeframe('W')">Weekly</button>
             </div>
+            <div class="lc-quick-track">
+              <input id="tvQuickTrack" type="text" placeholder="Quick-track symbol…" autocomplete="off" spellcheck="false"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();quickTrackAsset();}">
+              <button class="btn is-ghost is-sm" onclick="quickTrackAsset()">⚡ Track</button>
+            </div>
           </div>
-          <style>
-            .tf-btn {
-              padding: 7px 12px;
-              background: transparent;
-              border: 1px solid var(--border);
-              border-radius: 6px;
-              color: var(--text-dim);
-              font-size: 11px;
-              font-weight: 600;
-              font-family: 'JetBrains Mono', monospace;
-              cursor: pointer;
-              transition: all 0.2s;
-            }
-            .tf-btn:hover {
-              border-color: var(--gold);
-              color: var(--text);
-            }
-            .tf-btn.active {
-              background: rgba(201,169,97,0.15);
-              border-color: var(--gold);
-              color: var(--gold);
-            }
-            #tvChartContainer {
-              background: var(--bg-surface);
-              border: 1px solid var(--border);
-              border-radius: 12px;
-              overflow: hidden;
-              margin-bottom: 20px;
-              min-height: 600px;
-            }
-          </style>
-          <div id="tvChartContainer" style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px;height:600px;min-height:600px;"></div>
+
+          <!-- Hero chart container — given the room to dominate. -->
+          <div id="tvChartContainer" class="lc-chart-hero"></div>
 
           <!-- ICT Analysis Panel for selected asset -->
-          <div class="ap-card full">
-            <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div class="ap-card full is-accent" style="margin-top: var(--space-5);">
+            <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
               <span id="tvAnalysisTitle">📊 US100 ICT Cockpit</span>
-              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-                <span id="tvFireStatusBadge"
-                      title="Fire status for the selected asset — READY = next tick fires, NEAR = closing in, WAITING = far, BLOCKED = some gate stops it"
-                      style="background:transparent;border:1px solid var(--text-mute);color:var(--text-mute);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">— pick asset</span>
-                <button id="tvForceFireBtn"
-                        onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()"
-                        title="Open the manual trade-plan details"
-                        style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">Build Trade Plan</button>
-                <button onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚙ Asset details</button>
-              </div>
             </div>
             <div id="tvAnalysisPanel" style="font-size:13px;color:var(--text-dim);line-height:1.8;">
               <div style="color:var(--text-mute);padding:20px;text-align:center;">Select an asset to see analysis…</div>
@@ -11321,20 +11303,27 @@
     if (fire) {
       const badge = document.getElementById('tvFireStatusBadge');
       if (badge) {
-        const pulse = fire.state === 'ready' ? 'animation:zone-pulse 1.2s ease-in-out infinite;' : '';
-        badge.style.cssText = `background:transparent;border:1px solid ${fire.color};color:${fire.color};border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;${pulse}`;
+        const variant = (fire.state === 'ready') ? 'is-bear'
+                      : (fire.state === 'near')  ? 'is-warn'
+                      : (fire.state === 'wait' || fire.state === 'idle') ? 'is-muted'
+                      : (fire.state === 'blocked' || fire.state === 'no-trade') ? 'is-bear'
+                      : (fire.state === 'in-position') ? 'is-info'
+                      : (fire.state === 'spot') ? 'is-accent'
+                      : 'is-muted';
+        const pulse = (fire.state === 'ready') ? ' is-pulsing' : '';
+        badge.className = 'chip ' + variant + pulse;
         badge.textContent = fire.label;
         badge.title = fire.detail || fire.reason || '';
       }
       const forceBtn = document.getElementById('tvForceFireBtn');
       if (forceBtn) {
+        // Reset any prior inline styles so the .btn class controls the look
+        forceBtn.style.cssText = '';
         if (_isUs100IctAsset(asset)) {
-          forceBtn.textContent = 'Build Trade Plan';
+          forceBtn.textContent = 'Build trade plan';
           forceBtn.title = 'Open US100 manual ICT trade-plan details';
           forceBtn.onclick = () => openSetupModal(asset);
-          forceBtn.style.background = 'rgba(201,169,97,0.18)';
-          forceBtn.style.borderColor = 'var(--gold)';
-          forceBtn.style.color = 'var(--gold)';
+          forceBtn.className = 'btn is-primary is-sm';
         } else {
           forceBtn.textContent = '🔥 Force Fire';
           forceBtn.title = 'Force-fire this asset on MEXC NOW — bypasses proximity, uses live price';
@@ -11343,9 +11332,7 @@
             if (!sym) { alert('Select an asset first'); return; }
             _onClickForceFire(sym);
           };
-          forceBtn.style.background = 'rgba(224,93,93,0.18)';
-          forceBtn.style.borderColor = 'var(--bear)';
-          forceBtn.style.color = 'var(--bear)';
+          forceBtn.className = 'btn is-danger is-sm';
         }
       }
     }
