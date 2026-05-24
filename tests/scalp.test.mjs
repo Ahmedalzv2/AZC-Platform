@@ -52,10 +52,14 @@ describe('_normalizeBiasDir', () => {
 
 describe('scalpMonitorTick', () => {
   // Build a SILVER asset with a clean 1m bear setup matching HTF bias.
+  // tradeMode is explicitly 'futures' because the scalp monitor's first
+  // gate (after master) is _isFuturesAsset — the production default for
+  // SILVER is 'spot', so without this the test never reaches its scenario.
   function silverWithBear1m(priceOverride) {
     return {
       symbol: 'SILVER',
       bias: 'BEARISH',
+      tradeMode: 'futures',
       price: priceOverride !== undefined ? priceOverride : 75.65,
       grade: 'b',
       tfEntries: {
@@ -68,6 +72,20 @@ describe('scalpMonitorTick', () => {
       },
     };
   }
+
+  test('asset NOT in futures mode → tradeMode-not-futures (spot-default protection)', async () => {
+    const { app } = loadApp();
+    app.saveMexcKeys('k', 's');
+    app.setLiveTradingEnabled(true);
+    app.setScalpTf('SILVER', '1m');
+    // SAME setup as a normal scalp call but tradeMode='spot' — must be blocked
+    const a = silverWithBear1m();
+    a.tradeMode = 'spot';
+    const r = await app.scalpMonitorTick(a);
+    assert.equal(r.fired, false);
+    assert.equal(r.reason, 'tradeMode-not-futures');
+    assert.equal(r.tradeMode, 'spot');
+  });
 
   test('master OFF → master-off', async () => {
     const { app } = loadApp();
@@ -85,7 +103,7 @@ describe('scalpMonitorTick', () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
-    const r = await app.scalpMonitorTick({ symbol: 'US100', bias: 'BULLISH', tfEntries: {} });
+    const r = await app.scalpMonitorTick({ symbol: 'US100', bias: 'BULLISH', tradeMode: 'futures', tfEntries: {} });
     assert.equal(r.reason, 'unsupported-symbol');
   });
 
@@ -104,7 +122,7 @@ describe('scalpMonitorTick', () => {
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
     app.setScalpTf('SILVER', '1m');
-    const r = await app.scalpMonitorTick({ symbol: 'SILVER', bias: 'BEARISH', price: 75.65, tfEntries: null });
+    const r = await app.scalpMonitorTick({ symbol: 'SILVER', bias: 'BEARISH', tradeMode: 'futures', price: 75.65, tfEntries: null });
     assert.equal(r.reason, 'no-tf-data');
   });
 
@@ -113,7 +131,7 @@ describe('scalpMonitorTick', () => {
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
     app.setScalpTf('SILVER', '1m');
-    const r = await app.scalpMonitorTick({ symbol: 'SILVER', bias: 'BEARISH', price: 75.65, tfEntries: { '1m': { error: true } } });
+    const r = await app.scalpMonitorTick({ symbol: 'SILVER', bias: 'BEARISH', tradeMode: 'futures', price: 75.65, tfEntries: { '1m': { error: true } } });
     assert.equal(r.reason, 'no-tf-data');
   });
 
@@ -124,7 +142,7 @@ describe('scalpMonitorTick', () => {
     app.setScalpTf('SILVER', '1m');
     // dir present but fvgZone missing → _suggestedEntryForTf returns null
     const r = await app.scalpMonitorTick({
-      symbol: 'SILVER', bias: 'BEARISH', price: 75.65,
+      symbol: 'SILVER', bias: 'BEARISH', tradeMode: 'futures', price: 75.65,
       tfEntries: { '1m': { dir: 'bear', score: 1 } },
     });
     assert.equal(r.reason, 'no-tf-setup');
@@ -136,7 +154,7 @@ describe('scalpMonitorTick', () => {
     app.setLiveTradingEnabled(true);
     app.setScalpTf('SILVER', '1m');
     const r = await app.scalpMonitorTick({
-      symbol: 'SILVER', bias: 'BEARISH', price: 75.65,
+      symbol: 'SILVER', bias: 'BEARISH', tradeMode: 'futures', price: 75.65,
       tfEntries: {
         '1m': {
           dir: 'bull',
@@ -241,6 +259,7 @@ describe('scalpMonitorTick', () => {
       },
     });
     ctx.app.loadLiveTradingState();
+    ctx.app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     ctx.app.setScalpAutoFire(true);
     const r = await ctx.app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.fired, true);
@@ -262,7 +281,7 @@ describe('scalpMonitorTick', () => {
     // quality / fill selection bias, NOT inverted entries).
     function silverWithBull1m() {
       return {
-        symbol: 'SILVER', bias: 'BULLISH', price: 75.65, grade: 'b',
+        symbol: 'SILVER', bias: 'BULLISH', tradeMode: 'futures', price: 75.65, grade: 'b',
         tfEntries: { '1m': { dir: 'bull', fvgZone: { dir: 'bull', lo: 75.55, mid: 75.65, hi: 75.75 }, score: 3, entryReady: true } },
       };
     }
@@ -348,7 +367,10 @@ describe('scalpMonitorTick', () => {
     const ctx = loadApp({
       storage: {
         journal: '[]',
-        // no keys → reason 'no-keys' from placeMexcFuturesOrder
+        // Lane on + armed so the gate passes; no keys then triggers the
+        // 'no-keys' rollback path inside placeMexcFuturesOrder. (Live + lane
+        // off is now blocked one layer earlier — covered by gate tests.)
+        ict_mexc_micro_v1: JSON.stringify({ laneEnabled: true, armed: true }),
         ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: false }),
         ict_scalp_tf_SILVER: '1m',
       },

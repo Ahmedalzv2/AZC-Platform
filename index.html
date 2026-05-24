@@ -3482,11 +3482,14 @@
       tradesToday: sum.trades, lossUsdToday: sum.lossUsd,
       openCount, lane: 'mexc-micro-capital',
     };
-    // Lane-opt-in: when the user hasn't selected the micro-capital lane the
-    // gate is a pass-through. Keeps the existing dry-run research / manual
-    // force-fire surface untouched until the lane is explicitly selected.
+    // Lane-opt-in: dry-run (research/manual force-fire) passes through when
+    // the user hasn't selected the lane — keeps dry-run testing frictionless.
+    // LIVE always requires lane enabled + armed; the previous full pass-
+    // through let a live order skip every safety cap by simply having the
+    // lane toggle off, which contradicted "every MEXC order is guarded".
     if (!cfg.laneEnabled) {
-      return { allow: true, reason: null, audit: { ...audit, laneEnabled: false } };
+      if (dryRun) return { allow: true, reason: null, audit: { ...audit, laneEnabled: false } };
+      return { allow: false, reason: 'lane-disabled', audit: { ...audit, laneEnabled: false } };
     }
     // Dry-run is the research lane: gate still computes + audits, but allow.
     // Live still respects every cap.
@@ -4663,6 +4666,7 @@
     if (!asset) return { fired: false, reason: 'no-asset' };
     const sym = asset.symbol;
     if (!_liveTradingEnabled)        return _recordScalpDiag(sym, { fired: false, reason: 'master-off' });
+    if (!_isFuturesAsset(asset))     return _recordScalpDiag(sym, { fired: false, reason: 'tradeMode-not-futures', tradeMode: asset.tradeMode });
     if (!_mexcContractSymbol(asset)) return _recordScalpDiag(sym, { fired: false, reason: 'unsupported-symbol' });
     const tf = getScalpTf(sym);
     if (!SCALP_TF_FAST.has(tf))      return _recordScalpDiag(sym, { fired: false, reason: 'scalp-off' });
@@ -4736,6 +4740,7 @@
     const cfg = SW_ASSET_CONFIG[sym];
     if (!cfg)                        return _recordSwDiag(sym, { fired: false, reason: 'no-sw-config' });
     if (!_liveTradingEnabled)        return _recordSwDiag(sym, { fired: false, reason: 'master-off' });
+    if (!_isFuturesAsset(asset))     return _recordSwDiag(sym, { fired: false, reason: 'tradeMode-not-futures', tradeMode: asset.tradeMode });
     if (!_mexcContractSymbol(asset)) return _recordSwDiag(sym, { fired: false, reason: 'unsupported-symbol' });
 
     const tfData = asset.tfEntries && asset.tfEntries[SW_TF];

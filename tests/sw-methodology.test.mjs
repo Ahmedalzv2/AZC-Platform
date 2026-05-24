@@ -59,6 +59,10 @@ describe('_swingMonitorTick — gate behavior', () => {
     app.setLiveTradingEnabled(true);
     app.setLiveTradingDryRun(true);
     const eth = app.ASSETS.find(a => a.symbol === 'ETH');
+    // Production default for ETH is 'spot'. The SW monitor now refuses to
+    // fire spot-defaulted assets to keep auto-trading on opt-in. These tests
+    // exercise the fire path, so flip explicitly.
+    app.setTradeMode('ETH', 'futures');
     eth.price = opts.price ?? 3000;
     eth.tfEntries = eth.tfEntries || {};
     eth.tfEntries['1h'] = {
@@ -70,6 +74,24 @@ describe('_swingMonitorTick — gate behavior', () => {
     };
     return eth;
   }
+
+  test('SW refuses to fire when asset is spot-defaulted (futures-only auto-trading)', async () => {
+    const { app } = loadApp();
+    app.loadTradeModes();
+    app.saveMexcKeys('k', 's');
+    app.setLiveTradingEnabled(true);
+    // Do NOT setTradeMode → ETH stays spot per DEFAULT_TRADE_MODES
+    const eth = app.ASSETS.find(a => a.symbol === 'ETH');
+    eth.price = 3000;
+    eth.tfEntries = { '1h': {
+      dir: 'bear', score: 3, phase: 'trend', entryReady: true,
+      fvgZone: { dir: 'bear', lo: 2998, mid: 3000, hi: 3002 },
+    }};
+    const r = await app._swingMonitorTick(eth);
+    assert.equal(r.fired, false);
+    assert.equal(r.reason, 'tradeMode-not-futures');
+    assert.equal(r.tradeMode, 'spot');
+  });
 
   test('no SW config for asset → returns no-sw-config', async () => {
     const { app } = loadApp();
@@ -104,6 +126,7 @@ describe('_swingMonitorTick — gate behavior', () => {
   test('XRP shorts-only: bull signal → dir-filter blocks it', async () => {
     const { app } = loadApp();
     app.loadTradeModes();
+    app.setTradeMode('XRP', 'futures');
     app.setLiveTradingEnabled(true);
     const xrp = app.ASSETS.find(a => a.symbol === 'XRP');
     xrp.price = 1.5;
@@ -120,6 +143,7 @@ describe('_swingMonitorTick — gate behavior', () => {
   test('XRP scoreMin=2: score 1 → score-too-low blocks it', async () => {
     const { app } = loadApp();
     app.loadTradeModes();
+    app.setTradeMode('XRP', 'futures');
     app.setLiveTradingEnabled(true);
     const xrp = app.ASSETS.find(a => a.symbol === 'XRP');
     xrp.price = 1.5;

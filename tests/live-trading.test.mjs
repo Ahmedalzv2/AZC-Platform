@@ -33,6 +33,7 @@ describe('live-trading status machine', () => {
     app.saveMexcKeys('key', 'secret');
     app.setLiveTradingEnabled(true);
     app.setLiveTradingDryRun(false);
+    app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     assert.equal(app.liveTradingStatus().state, 'on-live');
     assert.equal(app.liveTradingStatus().icon, '🔴');
   });
@@ -42,6 +43,7 @@ describe('live-trading status machine', () => {
     app.saveMexcKeys('key', 'secret');
     app.setLiveTradingEnabled(true);
     app.setLiveTradingDryRun(false);
+    app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     app.clearMexcKeys();
     assert.equal(app.getMexcApiKey(), '');
     assert.equal(app.getMexcApiSecret(), '');
@@ -53,6 +55,7 @@ describe('live-trading status machine', () => {
     ctx1.app.saveMexcKeys('persist-key', 'persist-secret');
     ctx1.app.setLiveTradingEnabled(true);
     ctx1.app.setLiveTradingDryRun(false);
+    ctx1.app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     const ctx2 = loadApp({
       storage: {
         ict_mexc_api_key: 'persist-key',
@@ -249,6 +252,7 @@ describe('placeMexcFuturesOrder', () => {
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
     app.setLiveTradingDryRun(false);
+    app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     const r = await app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.5, 75.9, 1, 3);
     assert.equal(r.sent, false);
     assert.equal(r.reason, 'no-worker');
@@ -279,6 +283,7 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
+    ctx.app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.5, 75.9, 2, 3);
     assert.equal(r.sent, true, `expected sent:true, got ${JSON.stringify(r)}`);
     const orderCalls = calls.filter(c => String(c.url).includes('/order/submit'));
@@ -321,6 +326,7 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
+    ctx.app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.5, 75.9, 1, 3);
     assert.equal(r.sent, false);
     assert.equal(r.status, 401);
@@ -345,6 +351,7 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
+    ctx.app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.5, 75.9, 1, 3);
     assert.equal(r.sent, false);
     assert.equal(r.reason, 'mexc-600');
@@ -385,6 +392,7 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
+    ctx.app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     // Plain LIMIT (type=1). Price = entry. SL/TP rounded to MEXC scale.
     // Caller passes qty in underlying units (0.46 oz / 0.01 contractSize = 46 ct).
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.655, 75.503, 75.901, 0.46, 25);
@@ -419,6 +427,7 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
+    ctx.app.setMicroCapitalConfig({ laneEnabled: true, armed: true, balanceUsd: 10000, maxRiskPctPerTrade: 99 });
     const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.65, 75.50, 75.90, 0.46, 200);
     assert.equal(r.sent, true);
     const body = JSON.parse(calls.find(c => String(c.url).includes('/order/submit')).init.body);
