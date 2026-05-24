@@ -5610,8 +5610,8 @@
     const hasKeys = !!(getMexcApiKey() && getMexcApiSecret());
     const masterBtn = `<button onclick="setLiveTradingEnabled(${!_liveTradingEnabled});openLiveTradingModal();" style="background:${_liveTradingEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_liveTradingEnabled?'var(--bull)':'var(--border)'};color:${_liveTradingEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingEnabled?'🟢 ON':'🔴 OFF'}</button>`;
     const dryBtn = `<button onclick="setLiveTradingDryRun(${!_liveTradingDryRun});openLiveTradingModal();" style="background:${_liveTradingDryRun?'rgba(242,179,61,0.20)':'rgba(224,93,93,0.20)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingDryRun?'📝 DRY-RUN':'🔴 LIVE'}</button>`;
-    const swBtn = `<button onclick="setSwAutoFire(${!_swAutoFireEnabled});openLiveTradingModal();" style="background:${_swAutoFireEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_swAutoFireEnabled?'var(--bull)':'var(--border)'};color:${_swAutoFireEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_swAutoFireEnabled?'🎯 SW AUTO ON':'🎯 SW AUTO OFF'}</button>`;
     const workerUrl = getMexcWorkerUrl();
+    const futuresAssetsCount = (typeof ASSETS !== 'undefined') ? ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a)).length : 0;
     // Per-asset state is computed inside _renderAutoExecAssetBlock so the
     // modal can render a block per asset without me touching this scope.
     // Build the .alert-box contents as a separate string. On refresh we
@@ -5660,13 +5660,17 @@
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
           </div>
           ${_renderMicroCapitalGateHTML()}
-          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SW (swing) auto-fire · ${Object.keys(SW_ASSET_CONFIG).join(' + ')}</div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-            ${swBtn}
-            <span style="font-size:11px;color:var(--text-mute);">${_swAutoFireEnabled?'Walk-forward-validated 1h ICT setups will auto-fire':'Signals tracked silently · no fires until you toggle ON'}</span>
-          </div>
-          ${ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a)).map(a => _renderAutoExecAssetBlock(a)).join('')}
+
+          ${futuresAssetsCount === 0 ? `
+          <div style="margin-top:14px;padding:14px;background:rgba(242,179,61,0.10);border:1px solid var(--liq);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6;">
+            <div style="color:var(--liq);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.08em;font-size:11px;">⚠ Required: pick assets to monitor</div>
+            <div style="color:var(--text);margin-bottom:8px;">AUTO is armed but <strong>no assets are wired for futures</strong>. Every crypto defaults to SPOT mode — those are tracked silently and never fire orders.</div>
+            <div style="color:var(--text-mute);font-size:11px;">Use the picker below to promote each asset you want monitored (BTC, ETH, etc.) to futures mode. Until you do, AUTO has nothing to act on.</div>
+          </div>` : ''}
+
+          <div style="font-size:10px;color:var(--gold);margin-top:14px;margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">Futures assets · ${futuresAssetsCount} wired</div>
           ${_renderAutoExecAddPicker()}
+          ${ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a)).map(a => _renderAutoExecAssetBlock(a)).join('')}
         </div>
 
         <div style="margin-top:12px;display:flex;gap:8px;">
@@ -5683,13 +5687,14 @@
         ${_renderScalpDiagHTML()}
 
         <div style="margin-top:12px;padding:10px;background:var(--bg-elevated);border:1px dashed var(--border);border-radius:8px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.6;">
-          ℹ Auto-fire is <strong style="color:var(--text);">globally disabled</strong> per the post-90d-OOS
-          verdict (no positive-EV configs found on crypto ICT scalp). Signals,
-          FIRE STATUS badges, and the 🔥 Force Fire button stay live for
-          manual entries. HTF mode fires on the main entry; Scalp 5m fires on
-          the per-TF 5m FVG/OB setup (both require direction to match the
-          asset's HTF bias). Leverage is capped at 25× universally; default
-          per asset is 10×. Use 🔗 Open on MEXC for everything else.
+          <div style="color:var(--text);font-weight:700;margin-bottom:6px;">How AUTO actually fires:</div>
+          1. Keys + Worker URL saved (above) and Test connection green<br/>
+          2. USDT in your MEXC <strong>Futures</strong> wallet (not Spot, not Funding)<br/>
+          3. Asset promoted to <strong>futures mode</strong> via the picker above — SPOT assets never fire<br/>
+          4. Asset has a SW config (currently only ETH + XRP are walk-forward-validated)<br/>
+          5. 1h setup aligns (FVG mid in range, phase ok, score ≥ threshold)<br/>
+          <br/>
+          🔥 <strong>Force Fire</strong> button bypasses #4 and #5 — handy for testing the pipeline. Leverage capped at 25× universally; default 10× per asset.
         </div>
         ` : ''}
     `;
