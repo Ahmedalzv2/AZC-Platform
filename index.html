@@ -3608,7 +3608,9 @@
     try {
       fetch(TG_RELAY_BASE + '/auto-state', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: (typeof _relayWriteHeaders === 'function')
+          ? _relayWriteHeaders()
+          : { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state: state, ts: Date.now() }),
         cache: 'no-store',
       }).catch(() => {});
@@ -4842,7 +4844,9 @@
       try {
         fetch(TG_RELAY_BASE + '/auto-state', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: (typeof _relayWriteHeaders === 'function')
+            ? _relayWriteHeaders()
+            : { 'Content-Type': 'application/json' },
           body: JSON.stringify({ state: 'on', lastFireTs: Date.now() }),
           cache: 'no-store',
         }).catch(() => {});
@@ -8174,6 +8178,24 @@
   const TG_RELAY_URL = TG_RELAY_BASE + '/notify';
   const TG_STATE_URL = TG_RELAY_BASE + '/state';
 
+  // Shared token the relay requires on every write endpoint. Stored in
+  // localStorage; set via `localStorage.setItem('ict_relay_token','...')`.
+  // Helper builds Content-Type + X-ICT-Token so each fetch call doesn't have
+  // to know the header name. When the user hasn't saved a token the legacy
+  // mode (relay started without ICT_RELAY_TOKEN) still works.
+  function getRelayToken() {
+    try { return localStorage.getItem('ict_relay_token') || ''; } catch (e) { return ''; }
+  }
+  function setRelayToken(tok) {
+    try { localStorage.setItem('ict_relay_token', String(tok || '').trim()); } catch (e) {}
+  }
+  function _relayWriteHeaders(extra) {
+    const h = { 'Content-Type': 'application/json', ...(extra || {}) };
+    const t = getRelayToken();
+    if (t) h['X-ICT-Token'] = t;
+    return h;
+  }
+
   // Push current dashboard state to the relay so the Telegram command poller
   // there can answer /picks /positions /status without round-tripping to
   // this browser. Browser is the source of truth (positions live in
@@ -8202,7 +8224,7 @@
         : [];
       fetch(TG_STATE_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _relayWriteHeaders(),
         body: JSON.stringify({ zones, positions }),
         cache: 'no-store',
       }).catch(() => {});
@@ -8224,7 +8246,11 @@
     if (typeof spotPositions === 'undefined') return;
     let payload = null;
     try {
-      const r = await fetch(TG_ACTIONS_URL, { cache: 'no-store' });
+      const tok = getRelayToken();
+      const r = await fetch(TG_ACTIONS_URL, {
+        cache: 'no-store',
+        headers: tok ? { 'X-ICT-Token': tok } : undefined,
+      });
       if (!r.ok) return;
       payload = await r.json();
     } catch (e) { return; }
@@ -8374,7 +8400,7 @@
     try {
       fetch(TG_RELAY_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _relayWriteHeaders(),
         body: JSON.stringify({ text: String(text).slice(0, 1500) }),
         cache: 'no-store',
       }).catch(() => {});
@@ -8845,7 +8871,7 @@
     try {
       fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _relayWriteHeaders(),
         body: JSON.stringify(payload),
         cache: 'no-store',
       }).then(r => { if (r && r.ok) { je._learned = true; try { saveJournal(); } catch(e){} } })
