@@ -4,10 +4,23 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLearningFile } from './trade-learnings.mjs';
+import { authedWriteWith } from './relay-auth.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 3002);
-const host = process.env.HOST || '0.0.0.0';
+// Default loopback — when run on an exposed host, the operator must opt in
+// to 0.0.0.0 explicitly (the docker container's env file does this). Prevents
+// "demoing it locally" accidentally publishing the relay's write endpoints.
+const host = process.env.HOST || '127.0.0.1';
+// Shared token gates write endpoints. When unset, the relay prints a one-time
+// warning and runs in legacy unauthenticated mode (so existing dev setups
+// don't break). Production env should always set this — when set, /notify,
+// /state, /auto-state POST, /learn-trade, and /actions all require the
+// `X-ICT-Token` header to match.
+const RELAY_TOKEN = String(process.env.ICT_RELAY_TOKEN || '').trim();
+if (!RELAY_TOKEN) {
+  console.warn('[relay] ICT_RELAY_TOKEN is unset — write endpoints are public. Set it in production.');
+}
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -432,9 +445,14 @@ function _startTgPoller() {
 const CORS_HEADERS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, OPTIONS',
-  'access-control-allow-headers': 'Content-Type',
+  'access-control-allow-headers': 'Content-Type, X-ICT-Token',
   'access-control-max-age': '86400',
 };
+
+function authedWrite(req) { return authedWriteWith(RELAY_TOKEN, req); }
+function denyAuth(res) {
+  return sendJson(res, 401, { error: 'auth-required' }, CORS_HEADERS);
+}
 
 // Trade-learnings post-mortems land under trade-learnings/{wins,losses,be}/.
 // The folder is bind-mounted into the docker container so files persist on
@@ -471,15 +489,16 @@ const server = http.createServer(async (req, res) => {
       catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
     }
     if (url.pathname === '/actions' && req.method === 'GET') {
-      // Browser ticker polls this every few seconds. Returning empties the
-      // queue — pending actions are at-most-once delivered. Acceptable for
-      // /close because the user can simply re-send the command if their
-      // browser crashed mid-flight.
+      // Destructive GET (returns + clears the queue). Auth-required so a
+      // random scraper can't drain pending Telegram commands before the
+      // dashboard sees them.
+      if (!authedWrite(req)) return denyAuth(res);
       const out = _pendingActions;
       _pendingActions = [];
       return sendJson(res, 200, { actions: out }, CORS_HEADERS);
     }
     if (url.pathname === '/state' && req.method === 'POST') {
+      if (!authedWrite(req)) return denyAuth(res);
       // Browser ticker pushes its current state here every minute so the
       // Telegram command handler can answer /picks /positions /status from
       // cached data without waking the dashboard.
@@ -514,6 +533,7 @@ const server = http.createServer(async (req, res) => {
       }, CORS_HEADERS);
     }
     if (url.pathname === '/auto-state' && req.method === 'POST') {
+      if (!authedWrite(req)) return denyAuth(res);
       let body = '';
       try {
         await new Promise((resolve, reject) => {
@@ -537,6 +557,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (url.pathname === '/learn-trade' && req.method === 'POST') {
+      if (!authedWrite(req)) return denyAuth(res);
       let body = '';
       try {
         await new Promise((resolve, reject) => {
@@ -556,6 +577,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (url.pathname === '/notify' && req.method === 'POST') {
+      if (!authedWrite(req)) return denyAuth(res);
       // Read body, expect { text }. Cap at 2KB so a stuck client can't flood us.
       let body = '';
       try {
