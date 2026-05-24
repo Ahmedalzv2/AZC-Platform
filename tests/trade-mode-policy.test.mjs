@@ -3,23 +3,23 @@ import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
 describe('Trade-mode policy: futures vs spot', () => {
-  test('DEFAULT_TRADE_MODES policy v7: only US100 is futures, everything else is spot', () => {
+  test('DEFAULT_TRADE_MODES policy v8: only US100 is futures, everything else is spot', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const modes = app.DEFAULT_TRADE_MODES;
     assert.equal(modes.US100,  'futures', 'US100 is the only ICT cockpit asset');
-    assert.equal(modes.SILVER, 'spot', 'v7: SILVER drops out of ICT futures');
-    assert.equal(modes.GOLD,   'spot', 'v7: GOLD drops out of ICT futures');
-    assert.equal(modes.SOL,    'spot', 'v7: SOL flipped to spot watch');
-    assert.equal(modes.ETH,    'spot', 'v7: ETH flipped to spot watch');
-    assert.equal(modes.XRP,    'spot', 'v7: XRP flipped to spot watch');
+    assert.equal(modes.SILVER, 'spot', 'v8: SILVER drops out of ICT futures');
+    assert.equal(modes.GOLD,   'spot', 'v8: GOLD drops out of ICT futures');
+    assert.equal(modes.SOL,    'spot', 'v8: SOL flipped to spot watch');
+    assert.equal(modes.ETH,    'spot', 'v8: ETH flipped to spot watch');
+    assert.equal(modes.XRP,    'spot', 'v8: XRP flipped to spot watch');
     assert.equal(modes.BTC,    'spot');
     assert.equal(modes.BNB,    'spot');
     assert.equal(modes.SUI,    'spot');
     assert.equal(modes.ASTR,   'spot');
   });
 
-  test('loadTradeModes seeds every ASSET with the v7 policy mode', () => {
+  test('loadTradeModes seeds every ASSET with the v8 policy mode', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const seedFor = (sym) => app.ASSETS.find(a => a.symbol === sym)?.tradeMode;
@@ -30,7 +30,7 @@ describe('Trade-mode policy: futures vs spot', () => {
     assert.equal(seedFor('BTC'),    'spot');
   });
 
-  test('_isFuturesAsset returns true only for US100 under v7 policy', () => {
+  test('_isFuturesAsset returns true only for US100 under v8 policy', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const us100  = app.ASSETS.find(a => a.symbol === 'US100');
@@ -39,8 +39,8 @@ describe('Trade-mode policy: futures vs spot', () => {
     const btc    = app.ASSETS.find(a => a.symbol === 'BTC');
 
     assert.equal(app._isFuturesAsset(us100),  true);
-    assert.equal(app._isFuturesAsset(silver), false, 'v7: SILVER is spot');
-    assert.equal(app._isFuturesAsset(gold),   false, 'v7: GOLD is spot');
+    assert.equal(app._isFuturesAsset(silver), false, 'v8: SILVER is spot');
+    assert.equal(app._isFuturesAsset(gold),   false, 'v8: GOLD is spot');
     assert.equal(app._isFuturesAsset(btc),    false);
   });
 
@@ -97,7 +97,7 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     const gst = new Date('2026-05-07T08:00:00Z');
     const { app } = loadApp({ now: gst });
     app.loadTradeModes();
-    // US100 is the only futures asset in v7 — explicitly flip a different
+    // US100 is the only futures asset in v8 — explicitly flip a different
     // symbol if you want to test futures-mode behavior without market-hours
     // confusion. SILVER is fine here once we re-flip it to futures.
     setupAtEntry(app, 'SILVER', 'futures');
@@ -131,7 +131,7 @@ describe('checkArmedAlerts: spot assets do NOT fire trade calls', () => {
     const gst = new Date('2026-05-07T08:00:00Z');
     const { app } = loadApp({ now: gst });
     app.loadTradeModes();
-    // SILVER is spot by default in v7 — flip it back to futures for this
+    // SILVER is spot by default in v8 — flip it back to futures for this
     // mixed-mode test so we have a futures asset that's NOT US100 (US100 has
     // its own market-hours gating that complicates the assertion).
     setupAtEntry(app, 'SILVER', 'futures');

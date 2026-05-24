@@ -846,7 +846,7 @@
       levels: null, checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — outside KZ, await weekly confirmation'
     },
     {
-      symbol: 'GOLD', platform: 'MEXC FUTURES', type: 'FUTURES',
+      symbol: 'GOLD', platform: 'MEXC SPOT', type: 'SPOT',
       entry: 4708.62, sl: 4700, tp1: 4750, tp2: 4800,
       grade: 'b', armed: false, price: 4708.62, change24h: 0,
       bias: 'BEARISH', dol: '$4,400', invalidation: 'Monthly close > $5,000',
@@ -855,7 +855,7 @@
       levels: null, checks: [1,1,0,1,1,0,1,1,1,1], reason: 'B — PO3 and FVG unclear'
     },
     {
-      symbol: 'SILVER', platform: 'MEXC FUTURES', type: 'FUTURES',
+      symbol: 'SILVER', platform: 'MEXC SPOT', type: 'SPOT',
       entry: 75.65, sl: 75.50, tp1: 75.90, tp2: 76.20,
       grade: 'b', armed: false, price: 75.655, change24h: 0,
       bias: 'BEARISH', dol: '$68–70', invalidation: 'Monthly close > $90',
@@ -1711,7 +1711,7 @@
     BTC: 'spot', ETH: 'spot', SOL: 'spot', BNB: 'spot',
     XRP: 'spot', SUI: 'spot', ASTR: 'spot',
   };
-  const TRADE_MODE_POLICY_VERSION = 7;
+  const TRADE_MODE_POLICY_VERSION = 8;
 
   function loadTradeModes() {
     try {

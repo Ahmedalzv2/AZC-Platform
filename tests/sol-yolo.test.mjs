@@ -2,17 +2,17 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
-describe('Trade-mode policy (v7 — US100 only on the ICT lane, everything else spot)', () => {
+describe('Trade-mode policy (v8 — US100 only on the ICT lane, everything else spot)', () => {
   test('DEFAULT_TRADE_MODES: only US100 is futures, everything else is spot', () => {
     const { app } = loadApp();
     assert.equal(app.DEFAULT_TRADE_MODES.US100,  'futures');
-    assert.equal(app.DEFAULT_TRADE_MODES.SOL,    'spot', 'v7: SOL now spot watch');
-    assert.equal(app.DEFAULT_TRADE_MODES.SILVER, 'spot', 'v7: SILVER now spot watch');
-    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'spot', 'v7: GOLD now spot watch');
+    assert.equal(app.DEFAULT_TRADE_MODES.SOL,    'spot', 'v8: SOL now spot watch');
+    assert.equal(app.DEFAULT_TRADE_MODES.SILVER, 'spot', 'v8: SILVER now spot watch');
+    assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'spot', 'v8: GOLD now spot watch');
     assert.equal(app.DEFAULT_TRADE_MODES.BTC,    'spot');
   });
 
-  test('loadTradeModes seeds SOL with spot under v7 policy', () => {
+  test('loadTradeModes seeds SOL with spot under v8 policy', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
