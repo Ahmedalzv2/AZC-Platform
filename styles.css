@@ -339,14 +339,16 @@
       50%      { opacity: 0.55; }
     }
 
-    /* Live-trading kill-switch — always-visible button anchored to the
-       top-right of the page so it lives in the same spot as the rest of
-       the status bar. OFF state is green/calm; ON state is red with a
-       slow pulse so it's impossible to miss while auto-execution can fire. */
+    /* Live-trading kill-switch — always-visible floating button anchored
+       to the bottom-right. Bottom placement keeps it out of the top
+       autopilot-bar (which would otherwise overlap the Sync segment) and
+       matches the "slam this if something's wrong" mental model. OFF state
+       is green/calm; ON state is red with a slow pulse so it's impossible
+       to miss while auto-execution can fire. */
     #liveKillSwitch {
       position: fixed;
       right: 16px;
-      top: 9px;
+      bottom: 16px;
       z-index: 5000;
       padding: 8px 16px;
       border-radius: 999px;
@@ -1221,11 +1223,12 @@
       padding-bottom: 64px;
     }
 
-    /* Top-right kill-switch shrinks slightly on phones so it fits the
-       44px AP bar and leaves room for the timing segments on the left. */
+    /* Compact kill-switch on phones. Stays bottom-right but smaller so
+       it doesn't crowd the mobile bottom nav (which has its own 64px
+       safe-area). */
     #liveKillSwitch {
-      top: 6px;
       right: 10px;
+      bottom: 72px;
       padding: 5px 12px;
       font-size: 10px;
       letter-spacing: 0.04em;
