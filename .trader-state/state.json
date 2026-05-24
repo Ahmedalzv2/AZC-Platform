@@ -1,0 +1,30 @@
+{
+  "ts": 1779642469693,
+  "cycleCount": 116,
+  "lastCycleAt": 1779642469692,
+  "symbols": [
+    "BTC_USDT",
+    "ETH_USDT",
+    "BNB_USDT",
+    "XRP_USDT",
+    "DOGE_USDT",
+    "AVAX_USDT",
+    "LINK_USDT"
+  ],
+  "inKillzone": false,
+  "tradesToday": 0,
+  "dailyPnlUsd": 0,
+  "dailyResetAt": 1779667200000,
+  "consecutiveLosses": 0,
+  "haltedAt": null,
+  "riskTiers": {
+    "default": 0.02,
+    "top2": 0.03,
+    "best": 0.05
+  },
+  "cooldownUntil": {},
+  "pendingOrder": null,
+  "positionContext": null,
+  "lastScanSummary": null,
+  "lastError": null
+}
