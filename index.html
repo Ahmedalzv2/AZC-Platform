@@ -95,7 +95,6 @@
         <button class="nav-btn" onclick="switchTab('journal')">📰 News</button>
         <button class="nav-btn" onclick="switchTab('calendar')">📅 Calendar</button>
         <button class="nav-btn" onclick="switchTab('web3')">🐋 Web3</button>
-        <button class="nav-btn" onclick="switchTab('ict-methods')">📊 ICT Methods</button>
         <button class="nav-btn" onclick="switchTab('rules')">📋 Rules</button>
       </div>
     </nav>
@@ -353,6 +352,23 @@
               <div style="color:var(--text-mute);padding:20px;text-align:center;">Select an asset to see analysis…</div>
             </div>
           </div>
+
+          <!-- ICT Concepts & Graphs — moved here from its own tab. Only visible
+               when US100 is the active asset; render lazily on first open. -->
+          <details id="liveChartMethodsBlock" style="display:none;margin-top:18px;background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;">
+            <summary style="cursor:pointer;font-size:14px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono',monospace;list-style:none;display:flex;align-items:center;gap:10px;">
+              <span style="display:inline-block;transition:transform 0.2s;" class="lc-methods-caret">▶</span>
+              📊 ICT Concepts & Graphs
+              <span style="font-size:11px;color:var(--text-mute);font-weight:500;margin-left:auto;">Visual breakdown of every concept</span>
+            </summary>
+            <div style="margin-top:14px;">
+              <div class="methods-grid" id="methodsGrid"></div>
+            </div>
+          </details>
+          <style>
+            #liveChartMethodsBlock[open] .lc-methods-caret { transform: rotate(90deg); }
+            #liveChartMethodsBlock summary::-webkit-details-marker { display: none; }
+          </style>
         </div>
       </div>
 
@@ -668,13 +684,8 @@
         </div>
       </div>
 
-      <div id="ict-methods" class="tab-content">
-        <div class="page-header">
-          <h1>ICT Concepts & Graphs</h1>
-          <p>Visual breakdown of every concept in your system.</p>
-        </div>
-        <div class="methods-grid" id="methodsGrid"></div>
-      </div>
+      <!-- ICT Methods tab removed — now lives as a dropdown at the end of
+           the US100 live chart (see #liveChartMethodsBlock below). -->
 
       <!-- ═══ RULES TAB ═══ -->
       <div id="rules" class="tab-content">
@@ -2542,7 +2553,6 @@
     if (mobBtn) mobBtn.classList.add('active');
     // Scroll to top on mobile tab switch
     if (window.innerWidth <= 900) window.scrollTo({top:0, behavior:'smooth'});
-    if (tab==='ict-methods') renderMethods();
     if (tab==='autopilot') { renderSignals(); renderMarketRead(); }
     if (tab==='live-chart') {
       // Don't auto-init the chart on first visit — keep the empty hint until
@@ -11293,6 +11303,14 @@
 
   function updateTVAnalysis(symbol) {
     const a = ASSETS.find(x => x.symbol === symbol);
+    // ICT Concepts dropdown lives at the end of the US100 live chart only.
+    // Hide it for every other asset so the page doesn't carry the methods
+    // grid as dead weight. Lazy-render is wired via the toggle listener in
+    // _initLiveChartMethodsDropdown.
+    try {
+      const methodsBlock = document.getElementById('liveChartMethodsBlock');
+      if (methodsBlock) methodsBlock.style.display = (symbol === 'US100') ? '' : 'none';
+    } catch (e) {}
     // Update live price badge in chart header
     const priceTag = document.getElementById('tvLivePrice');
     if (priceTag && a) {
@@ -13309,10 +13327,6 @@
     <button class="mob-nav-btn" id="mobBtn-web3" onclick="switchTab('web3',this)">
       <span class="mob-icon">🐋</span>
       <span class="mob-label">Web3</span>
-    </button>
-    <button class="mob-nav-btn" id="mobBtn-ict-methods" onclick="switchTab('ict-methods',this)">
-      <span class="mob-icon">📊</span>
-      <span class="mob-label">Methods</span>
     </button>
     <button class="mob-nav-btn" id="mobBtn-rules" onclick="switchTab('rules',this)">
       <span class="mob-icon">📋</span>
