@@ -17,7 +17,7 @@ describe('MEXC micro-capital safety gate ($50 trial lane)', () => {
     const d = new Date(); d.setHours(hour, minute, 0, 0); return d.getTime();
   }
 
-  test('defaults are conservative: lane OFF · $50 / 0.5% risk / $1 cap / 3 trades / 15-min cooldown', () => {
+  test('defaults are loss-aware: lane OFF · $50 / 0.5% risk / $1 daily-loss / 1 open / 15-min cooldown', () => {
     const { app } = loadApp();
     const d = app.MICRO_CAPITAL_DEFAULTS;
     assert.equal(d.laneEnabled, false, 'lane is OFF by default — opt-in selector');
@@ -25,10 +25,10 @@ describe('MEXC micro-capital safety gate ($50 trial lane)', () => {
     assert.equal(d.maxRiskPctPerTrade, 0.5);
     assert.equal(d.dailyLossCapUsdAbs, 1);
     assert.equal(d.dailyLossCapPct, 2);
-    assert.equal(d.maxTradesPerDay, 3);
     assert.equal(d.maxOpenPositions, 1);
     assert.equal(d.perSymbolCooldownMs, 15 * 60 * 1000);
     assert.equal(d.armed, false, 'live arming gate is OFF by default');
+    assert.equal(d.maxTradesPerDay, undefined, 'count cap intentionally removed — loss cap is the real safety');
   });
 
   test('lane OFF → gate is a pass-through (existing surfaces undisturbed)', () => {
@@ -112,20 +112,36 @@ describe('MEXC micro-capital safety gate ($50 trial lane)', () => {
     app.setMicroCapitalConfig({ laneEnabled: false, armed: false });
   });
 
-  test('max trades/day: 3 fires today → 4th blocked', () => {
+  test('no count cap: many fires today still allowed if loss cap not breached', () => {
     const { app } = loadApp();
     app.setMicroCapitalConfig({ laneEnabled: true, armed: true });
     app.journal = [
-      makeFire({ symbol: 'BTC', ts: todayMs(10), live: true, dryRun: false }),
-      makeFire({ symbol: 'ETH', ts: todayMs(11), live: true, dryRun: false }),
-      makeFire({ symbol: 'SOL', ts: todayMs(11, 30), live: true, dryRun: false }),
+      makeFire({ symbol: 'BTC', ts: todayMs(8),  live: true, dryRun: false, realizedUsd:  0.10 }),
+      makeFire({ symbol: 'ETH', ts: todayMs(9),  live: true, dryRun: false, realizedUsd:  0.05 }),
+      makeFire({ symbol: 'SOL', ts: todayMs(10), live: true, dryRun: false, realizedUsd: -0.20 }),
+      makeFire({ symbol: 'DOGE',ts: todayMs(11), live: true, dryRun: false, realizedUsd:  0.15 }),
     ];
     const r = app.checkMicroCapitalGate({
       symbol: 'XRP', dryRun: false, riskUsd: 0.20, balanceUsd: 50,
       openPositionCount: 0, nowMs: todayMs(12),
     });
-    assert.equal(r.allow, false);
-    assert.equal(r.reason, 'max-trades-cap');
+    assert.equal(r.allow, true, r.reason || '');
+    app.setMicroCapitalConfig({ laneEnabled: false, armed: false });
+  });
+
+  test('count-cap surface is gone: setting maxTradesPerDay in override is ignored', () => {
+    const { app } = loadApp();
+    // Old configs in localStorage may still carry maxTradesPerDay; ignore it.
+    app.setMicroCapitalConfig({ laneEnabled: true, armed: true, maxTradesPerDay: 1 });
+    app.journal = [
+      makeFire({ symbol: 'BTC', ts: todayMs(10), live: true, dryRun: false, realizedUsd: 0.10 }),
+    ];
+    const r = app.checkMicroCapitalGate({
+      symbol: 'ETH', dryRun: false, riskUsd: 0.20, balanceUsd: 50,
+      openPositionCount: 0, nowMs: todayMs(12),
+    });
+    assert.equal(r.allow, true, r.reason || '');
+    assert.notEqual(r.reason, 'max-trades-cap');
     app.setMicroCapitalConfig({ laneEnabled: false, armed: false });
   });
 

@@ -3410,9 +3410,17 @@
   // ── MEXC micro-capital safety gate ─────────────────────────────
   // Guards the $50 trial lane. Every MEXC order funnel calls this before
   // either dry-run journaling or live submit. Returns { allow, reason, audit }
-  // — caller MUST honour `allow=false` and journal the skip reason. Defaults
-  // are conservative: 0.5% risk/trade, $1 OR 2% daily-loss cap (whichever is
-  // smaller), 3 trades/day max, one open position, 15-min per-symbol cooldown.
+  // — caller MUST honour `allow=false` and journal the skip reason.
+  //
+  // Safety shape: loss-aware, not count-aware. The $1 / 2% daily-loss cap is
+  // the real protection against runaway spam; per-trade risk + one open
+  // position + per-symbol cooldown prevent revenge / re-entry within the same
+  // setup. The bare per-day trade COUNT cap (maxTradesPerDay) was removed
+  // 2026-05-24 — it was masking the loss cap (every block looked like "max
+  // trades" instead of "you're bleeding") and prevented learning from more
+  // trades per day. Each resolved fire now lands a markdown post-mortem in
+  // trade-learnings/ via the tv-relay so future setups read from real history.
+  //
   // Override via localStorage 'ict_mexc_micro_v1'. US100 never reaches here
   // because _mexcContractSymbol('US100') returns null and the order funnel
   // rejects upstream.
@@ -3422,7 +3430,6 @@
     maxRiskPctPerTrade: 0.5,     // tiny fixed risk ceiling
     dailyLossCapUsdAbs: 1,       // absolute floor — the smaller of this …
     dailyLossCapPct: 2,          // … and this percentage cap is enforced
-    maxTradesPerDay: 3,
     maxOpenPositions: 1,
     perSymbolCooldownMs: 15 * 60 * 1000,
     armed: false,                // explicit live-mode arming gate
@@ -3500,9 +3507,6 @@
     );
     if (sum.lossUsd >= dailyCapUsd && dailyCapUsd > 0) {
       return { allow: false, reason: 'daily-loss-cap', audit: { ...audit, dailyCapUsd } };
-    }
-    if (sum.trades >= (cfg.maxTradesPerDay || 0)) {
-      return { allow: false, reason: 'max-trades-cap', audit };
     }
     const lastSym = sum.lastBySymbol[sym] || 0;
     const cooldownMs = Number(cfg.perSymbolCooldownMs) || 0;
@@ -8756,6 +8760,8 @@
         else if (mins === 480 && !je.outcome) je.outcome = 'be';
         saveJournal();
         renderJournal();
+        // Newly resolved → ship a post-mortem markdown to trade-learnings/.
+        if (je.outcome && !je._learned) _postLearnTrade(je);
       }
     } catch(e) {}
   }
@@ -8788,6 +8794,58 @@
     renderJournal();
     showToast(`${je.symbol} marked as ${outcome.toUpperCase()}`, outcome === 'win' ? 'ok' : outcome === 'loss' ? 'err' : 'info');
     pushToSheet();
+    if (je.outcome && !je._learned) _postLearnTrade(je);
+  }
+
+  // Ships the resolved trade to tv-relay /learn-trade so a markdown
+  // post-mortem lands under trade-learnings/{wins,losses,be}/. Skip path:
+  // gate-blocked skip entries (no entry/sl/tp) carry no execution signal
+  // worth a learning file. Dedupe by journal id locally (_learned) and by
+  // filename server-side, so retries are safe.
+  function _postLearnTrade(je) {
+    if (!je || !je.outcome) return;
+    if (je.skipReason) return;                       // gate-blocked skip — not a real fire
+    if (!Number.isFinite(je.entry) || !Number.isFinite(je.sl)) return; // need a real setup
+    const url = (typeof TG_RELAY_BASE === 'string' && TG_RELAY_BASE)
+      ? TG_RELAY_BASE + '/learn-trade' : null;
+    if (!url) return;
+    const isBull = (Number(je.tp) > Number(je.entry));
+    const side = isBull ? 'long' : 'short';
+    const rDist = Math.abs(Number(je.entry) - Number(je.sl));
+    const exitPrice = je.outcome === 'win' ? Number(je.tp)
+                    : je.outcome === 'loss' ? Number(je.sl)
+                    : Number(je.entry);
+    const realizedUsd = Number.isFinite(Number(je.realizedUsd)) ? Number(je.realizedUsd) : null;
+    const rMultiple = je.outcome === 'win' ? 1 * (Math.abs(Number(je.tp) - Number(je.entry)) / rDist)
+                    : je.outcome === 'loss' ? -1
+                    : 0;
+    const payload = {
+      id: je.id,
+      timestamp: je.timestamp,
+      symbol: je.symbol,
+      side,
+      entry: je.entry, sl: je.sl, tp: je.tp,
+      priceAtCall: je.priceAtCall,
+      exitPrice,
+      outcome: je.outcome,
+      realizedUsd,
+      rMultiple,
+      grade: je.grade, bias: je.bias, session: je.session,
+      lane: 'mexc-micro-capital',
+      orderId: je.orderId || (je.mexcResponse && je.mexcResponse.data) || null,
+      confluences: Array.isArray(je.confluences) ? je.confluences : null,
+      analysis: je.analysis,
+      outcomeChecks: je.outcomeChecks,
+    };
+    try {
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        cache: 'no-store',
+      }).then(r => { if (r && r.ok) { je._learned = true; try { saveJournal(); } catch(e){} } })
+        .catch(() => {});
+    } catch (e) {}
   }
 
   function renderJournal() {
