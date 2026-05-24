@@ -3002,7 +3002,11 @@
       btn.textContent = 'TRADER: IN-TRADE';
       btn.classList.add('trader-position');
     } else {
-      btn.textContent = `TRADER: ON · ${s.tradesToday||0}/3 · $${(s.dailyPnlUsd||0).toFixed(2)}`;
+      const trades = s.tradesToday || 0;
+      const pnl    = s.dailyPnlUsd || 0;
+      const losses = s.consecutiveLosses || 0;
+      const pnlSign = pnl >= 0 ? '+' : '';
+      btn.textContent = `TRADER: ON · ${trades} trades · ${pnlSign}$${pnl.toFixed(2)} · ${losses}/3 losses`;
       btn.classList.add('trader-on');
     }
   }
