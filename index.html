@@ -4827,6 +4827,18 @@
   function _recordFireResult(symbol, payload) {
     if (!symbol) return payload;
     _lastFireResult[symbol] = { ...payload, ts: Date.now(), symbol };
+    // Push lastFireTs to the relay so /auto-state reflects real fire activity
+    // — only on actually-sent live orders (not dry-run, not skip reasons).
+    if (payload && payload.sent === true && payload.dryRun !== true) {
+      try {
+        fetch(TG_RELAY_BASE + '/auto-state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: 'on', lastFireTs: Date.now() }),
+          cache: 'no-store',
+        }).catch(() => {});
+      } catch (e) {}
+    }
     return payload;
   }
 
