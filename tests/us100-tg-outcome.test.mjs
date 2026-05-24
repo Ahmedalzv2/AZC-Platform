@@ -105,7 +105,7 @@ describe('US100 Telegram outcome commands (/win /loss /be)', () => {
     app._executeTelegramAction({ type: 'outcome', outcome: 'loss' });
     assert.equal(app.journal[0].outcome, 'loss');
     const msg = sent.map(b => { try { return JSON.parse(b).text; } catch { return ''; } })
-                    .find(t => t.includes('US100'));
+                    .find(t => typeof t === 'string' && t.includes('US100'));
     assert.match(msg, /❌ US100/);
     assert.match(msg, /-1\.00R/);
   });

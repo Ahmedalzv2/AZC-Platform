@@ -3,6 +3,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeLearningFile } from './trade-learnings.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 3002);
@@ -435,6 +436,12 @@ const CORS_HEADERS = {
   'access-control-max-age': '86400',
 };
 
+// Trade-learnings post-mortems land under trade-learnings/{wins,losses,be}/.
+// The folder is bind-mounted into the docker container so files persist on
+// host disk; the user reviews them with normal grep/cat. Per-file dedupe by
+// filename — re-POSTing the same id is a no-op so the dashboard can retry.
+const LEARN_ROOT = process.env.LEARN_ROOT || path.join(root, 'trade-learnings');
+
 function sendJson(res, status, body, extraHeaders = {}) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -527,6 +534,25 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, ..._autoState }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 400, { error: error.message }, CORS_HEADERS);
+      }
+    }
+    if (url.pathname === '/learn-trade' && req.method === 'POST') {
+      let body = '';
+      try {
+        await new Promise((resolve, reject) => {
+          req.on('data', c => { body += c; if (body.length > 16 * 1024) { reject(new Error('body-too-large')); req.destroy(); } });
+          req.on('end', resolve);
+          req.on('error', reject);
+        });
+        const payload = JSON.parse(body || '{}');
+        if (!payload || !payload.symbol || !payload.outcome) {
+          return sendJson(res, 400, { error: 'missing-fields' }, CORS_HEADERS);
+        }
+        const out = await writeLearningFile(payload, LEARN_ROOT);
+        if (!out.ok) return sendJson(res, 400, { error: out.reason || 'write-failed' }, CORS_HEADERS);
+        return sendJson(res, 200, out, CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 500, { error: error.message }, CORS_HEADERS);
       }
     }
     if (url.pathname === '/notify' && req.method === 'POST') {
