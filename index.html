@@ -8836,6 +8836,7 @@
   function _postLearnTrade(je) {
     if (!je || !je.outcome) return;
     if (je.skipReason) return;                       // gate-blocked skip — not a real fire
+    if (je.live !== true && je.dryRun !== true) return; // signal-log entries auto-resolved against historical klines aren't trades — no money moved, no post-mortem
     if (!Number.isFinite(je.entry) || !Number.isFinite(je.sl)) return; // need a real setup
     const url = (typeof TG_RELAY_BASE === 'string' && TG_RELAY_BASE)
       ? TG_RELAY_BASE + '/learn-trade' : null;
