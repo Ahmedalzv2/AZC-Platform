@@ -6,6 +6,13 @@ tests/.backtest-cache/
 # Per-resolved-trade post-mortems; user data, not source.
 trade-learnings/
 
+# Trader runtime state. Tracking state.json caused checkouts to recreate
+# the .trader-state directory inode, busting the relay's Docker bind mount
+# and making the dashboard report the trader as offline. Keep the dir
+# (via .gitkeep) so the mount target exists in fresh clones.
+.trader-state/*
+!.trader-state/.gitkeep
+
 # Relay secrets — never commit. See docker-compose.relay.yml.
 relay.env
 .env
