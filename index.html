@@ -43,8 +43,8 @@
        (single source of truth with the toolbar badge). -->
   <button id="liveKillSwitch"
           onclick="setAllAutoFireArmed(!isAutoFireFullyArmed())"
-          title="Auto-fire master arm — one tap arms/disarms everything">
-    🚀 ARM AUTO-FIRE
+          title="Auto trading — tap to toggle on/off">
+    AUTO: OFF
   </button>
 
   <!-- ═══ AUTOPILOT TOP BAR ═══ -->
@@ -2992,18 +2992,18 @@
       el.textContent = s.icon;
       el.title = `Live trading: ${s.label} (tap to configure)`;
     }
-    // Floating arm button — reflects full armed state, not just master switch.
+    // Single auto on/off button — reflects everything-armed state.
     const kill = document.getElementById('liveKillSwitch');
     if (kill) {
-      const armed = isAutoFireFullyArmed();
-      if (armed) {
+      const on = isAutoFireFullyArmed();
+      if (on) {
         kill.classList.add('live-on');
-        kill.textContent = '🔴 AUTO-FIRING · STOP';
-        kill.title = 'Auto-fire is ARMED — live orders active. Tap to disarm everything.';
+        kill.textContent = 'AUTO: ON';
+        kill.title = 'Auto trading is ON — live orders active. Tap to turn OFF.';
       } else {
         kill.classList.remove('live-on');
-        kill.textContent = '🚀 ARM AUTO-FIRE';
-        kill.title = 'Auto-fire is OFF. Tap to arm: master ON, dry-run OFF, lane+armed, SW auto-fire ON.';
+        kill.textContent = 'AUTO: OFF';
+        kill.title = 'Auto trading is OFF. Tap to turn ON.';
       }
     }
   }
@@ -3557,14 +3557,13 @@
       setMicroCapitalConfig({ laneEnabled: true, armed: true });
       setSwAutoFire(true);
       if (getTargetMarginUsdt() == null) setTargetMarginUsdt(0.20);
-      try { showToast('🔴 AUTO-FIRE ARMED · live · $0.20/fire', 'ok'); } catch (e) {}
+      try { showToast('AUTO: ON · live · $0.20/fire', 'ok'); } catch (e) {}
     } else {
-      // Disarm to the safest state — preserves keys but stops everything.
       setSwAutoFire(false);
       setMicroCapitalConfig({ laneEnabled: false, armed: false });
       setLiveTradingDryRun(true);
       setLiveTradingEnabled(false);
-      try { showToast('🛡 DISARMED · all safe', 'ok'); } catch (e) {}
+      try { showToast('AUTO: OFF · safe', 'ok'); } catch (e) {}
     }
     try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
     try { _updateLiveTradingBadge(); } catch (e) {}
@@ -3614,13 +3613,11 @@
     );
     const margin = getTargetMarginUsdt();
     const marginStr = margin != null ? `$${margin.toFixed(2)}` : 'unset → qty=1 fallback';
-    // The one-tap. Loud + obvious. Two-state (arm/disarm) — no confirm dialog
-    // because the floating 🛑 STOP LIVE button is the always-available undo.
-    const armed = isAutoFireFullyArmed();
-    const oneTapBtn = `<button onclick="setAllAutoFireArmed(${!armed})" style="width:100%;background:${armed?'linear-gradient(180deg,#e05d5d 0%,#b03030 100%)':'linear-gradient(180deg,#5cb88a 0%,#3a9468 100%)'};border:none;color:#fff;padding:14px 18px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;box-shadow:0 2px 8px ${armed?'rgba(224,93,93,0.4)':'rgba(92,184,138,0.3)'};margin-bottom:10px;">${armed?'🔴 AUTO-FIRING · TAP TO DISARM':'🚀 ONE-TAP ARM AUTO-FIRE'}</button>`;
-    const oneTapNote = `<div style="font-size:10px;color:var(--text-mute);margin-bottom:10px;line-height:1.5;font-family:'JetBrains Mono',monospace;">${armed?'Master ON · dry-run OFF · lane armed · SW auto-fire ON · \$0.20/fire. Floating 🛑 button kills everything in one tap.':'One tap arms: master ON, dry-run OFF, lane+armed, SW auto-fire ON, \$0.20/fire. Requires MEXC keys saved.'}</div>`;
-    const laneBtn = `<button onclick="setMicroCapitalLaneEnabled(${!cfg.laneEnabled})" style="background:${cfg.laneEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${cfg.laneEnabled?'var(--bull)':'var(--border)'};color:${cfg.laneEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${cfg.laneEnabled?'🟢 LANE ON':'⚪ LANE OFF'}</button>`;
-    const armBtn = `<button onclick="setMicroCapitalArmed(${!cfg.armed})" ${cfg.laneEnabled?'':'disabled'} style="background:${cfg.armed?'rgba(224,93,93,0.20)':'rgba(101,101,109,0.15)'};border:1px solid ${cfg.armed?'var(--bear)':'var(--border)'};color:${cfg.armed?'var(--bear)':cfg.laneEnabled?'var(--text)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:${cfg.laneEnabled?'pointer':'not-allowed'};opacity:${cfg.laneEnabled?1:0.5};font-family:'JetBrains Mono',monospace;">${cfg.armed?'🔴 ARMED · LIVE':'🛡 ARM LIVE'}</button>`;
+    // Single auto on/off — same atomic flip as the floating button. The
+    // floating button is the always-available undo, so no confirm dialog.
+    const on = isAutoFireFullyArmed();
+    const oneTapBtn = `<button onclick="setAllAutoFireArmed(${!on})" style="width:100%;background:${on?'linear-gradient(180deg,#e05d5d 0%,#b03030 100%)':'linear-gradient(180deg,#5cb88a 0%,#3a9468 100%)'};border:none;color:#fff;padding:14px 18px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;box-shadow:0 2px 8px ${on?'rgba(224,93,93,0.4)':'rgba(92,184,138,0.3)'};margin-bottom:10px;">${on?'AUTO: ON — TAP TO STOP':'AUTO: OFF — TAP TO START'}</button>`;
+    const oneTapNote = `<div style="font-size:10px;color:var(--text-mute);margin-bottom:14px;line-height:1.5;font-family:'JetBrains Mono',monospace;">${on?'Live orders active · \$0.20/fire. Floating AUTO button (bottom-right) also toggles this.':'No orders fire while OFF. Requires MEXC keys saved.'}</div>`;
     // One-tap margin preset row — the value most users set wrong. Quick presets
     // cover the $50 trial range; the input lets advanced users override.
     const presetBtn = (n) => {
@@ -3631,11 +3628,6 @@
       <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">MEXC micro-capital lane · \$${wallet.toFixed(4)}</div>
       ${oneTapBtn}
       ${oneTapNote}
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
-        ${laneBtn}
-        ${armBtn}
-        <span style="font-size:11px;color:var(--text-mute);">${cfg.armed?'⚠ Live orders gated by caps below':cfg.laneEnabled?'Lane on · still dry-run until armed':'Disabled · gate is a pass-through'}</span>
-      </div>
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
         <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;">Margin/fire:</span>
         ${presetBtn(0.20)}
