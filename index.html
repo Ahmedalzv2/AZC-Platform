@@ -1945,12 +1945,9 @@
       const customBadge = a.custom ? `<div class="asset-custom-badge">CUSTOM</div>` : '';
       const removeBtn = a.custom ? `<button class="gw-remove-btn" onclick="event.stopPropagation();removeCustomAsset('${a.symbol}')" title="Remove ${a.symbol}">✕</button>` : '';
       const tp1Val = (a.tp1||a.tp||0);
-      const isSpot = a.tradeMode === 'spot';
-      const modeToggleHtml = `
-        <div style="display:flex;gap:0;margin-top:10px;border-radius:6px;overflow:hidden;border:1px solid var(--border);font-size:10px;font-weight:700;" onclick="event.stopPropagation()">
-          <button onclick="setTradeMode('${a.symbol}','spot')" style="flex:1;padding:5px 0;border:none;cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.05em;background:${isSpot?'rgba(201,169,97,0.25)':'var(--bg)'};color:${isSpot?'var(--gold)':'var(--text-mute)'};">🏦 SPOT</button>
-          <button onclick="setTradeMode('${a.symbol}','futures')" style="flex:1;padding:5px 0;border:none;cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.05em;background:${!isSpot?'rgba(92,184,138,0.2)':'var(--bg)'};color:${!isSpot?'var(--bull)':'var(--text-mute)'};">⚡ FUTURES</button>
-        </div>`;
+      // SPOT/FUTURES toggle removed from the tile — the user reviews; Claude
+      // executes. Mode is set via setTradeMode() from the live trading flow,
+      // not by per-tile clicks. Master AUTO toggle is the only control.
       return `
         <div class="asset-tile ${tileClass}" data-symbol="${a.symbol}" style="position:relative;" onclick="openSetupModal(ASSETS.find(x=>x.symbol==='${a.symbol}'))">
           ${customBadge}
@@ -1962,7 +1959,6 @@
           ${a.change24h !== 0 ? '<div class="asset-change" style="color:' + changeColor + '">' + (a.change24h > 0 ? '+' : '') + a.change24h.toFixed(2) + '%</div>' : ''}
           <div class="asset-bias ${biasClass}">${biasLabel}</div>
           <div class="asset-grade">${a.grade.toUpperCase()}</div>
-          ${modeToggleHtml}
         </div>
       `;
     }).join('');
@@ -2371,37 +2367,6 @@
         </div>
       </div>
 
-      <!-- 💰 Position Size Calculator -->
-      <div style="margin-bottom:16px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;">
-        <div style="color:var(--gold);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px;">💰 Position Size Calculator</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
-          <div>
-            <div style="font-size:9px;color:var(--text-mute);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;">Account Size ($)</div>
-            <input type="number" id="calcAccount" placeholder="10000" min="0" step="100"
-              value="${(() => { try { return localStorage.getItem('ict_calc_account') || ''; } catch(e) { return ''; } })()}"
-              oninput="localStorage.setItem('ict_calc_account',this.value);_updateCalc('${asset.symbol}')"
-              style="width:100%;box-sizing:border-box;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;font-family:'JetBrains Mono',monospace;padding:8px;outline:none;">
-          </div>
-          <div>
-            <div style="font-size:9px;color:var(--text-mute);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;">Risk per Trade (%)</div>
-            <input type="number" id="calcRisk" placeholder="1" min="0.01" max="100" step="0.1"
-              value="${(() => { try { return localStorage.getItem('ict_calc_risk') || ''; } catch(e) { return ''; } })()}"
-              oninput="localStorage.setItem('ict_calc_risk',this.value);_updateCalc('${asset.symbol}')"
-              style="width:100%;box-sizing:border-box;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;font-family:'JetBrains Mono',monospace;padding:8px;outline:none;">
-          </div>
-        </div>
-        <div id="calcResult_${asset.symbol}" style="font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.9;color:var(--text-dim);">${_calcPositionHTML(asset)}</div>
-      </div>
-
-      <!-- Editable remarks -->
-      <div style="margin-bottom:8px;">
-        <div style="color:var(--gold);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;">📝 Your Remarks</div>
-        <textarea id="remarkInput_${asset.symbol}"
-          placeholder="Add your own notes — structure observations, confluences, what you're watching…"
-          onblur="saveAssetRemark('${asset.symbol}', this.value)"
-          style="width:100%;min-height:80px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;font-family:'Geist',sans-serif;padding:12px;resize:vertical;line-height:1.6;outline:none;">${savedRemark}</textarea>
-        <div style="font-size:10px;color:var(--text-mute);margin-top:4px;">Auto-saved when you click outside the box. Persists across sessions.</div>
-      </div>
     `;
     document.getElementById('setupModal').classList.add('active');
   }
@@ -13240,10 +13205,9 @@
     _try('renderMarketRead', renderMarketRead);
     _try('renderMarketIntelligencePanel', renderMarketIntelligencePanel);
     _try('renderAnalysis', renderAnalysis);
-    _try('openUS100Cockpit', () => {
-      switchTab('live-chart');
-      switchTVChart('US100');
-    });
+    // Dashboard (Top Setup) is the default landing tab. The Live Chart
+    // cockpit is one click away; the user explicitly wants the review
+    // surface up front, not the chart.
     _try('renderAlertLog', renderAlertLog);
     _try('renderJournal', renderJournal);
     _try('renderEconCalendar', renderEconCalendar);
