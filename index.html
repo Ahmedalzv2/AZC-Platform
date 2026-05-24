@@ -2932,6 +2932,7 @@
       _liveTradingDryRun = s.dryRun !== false; // default true
     } catch (e) { _liveTradingEnabled = false; _liveTradingDryRun = true; }
     _updateLiveTradingBadge();
+    try { if (isAutoFireFullyArmed()) _startAutoHeartbeat(); } catch (e) {}
   }
   function _persistLiveTradingState() {
     try { localStorage.setItem('ict_live_trading_v2', JSON.stringify({ enabled: _liveTradingEnabled, dryRun: _liveTradingDryRun })); } catch (e) {}
@@ -3558,16 +3559,37 @@
       setSwAutoFire(true);
       if (getTargetMarginUsdt() == null) setTargetMarginUsdt(0.20);
       try { showToast('AUTO: ON · live · $0.20/fire', 'ok'); } catch (e) {}
+      try { _sendTelegramAlert('🟢 AUTO: ON · ' + new Date().toISOString().slice(11,16) + ' UTC · live · $0.20/fire'); } catch (e) {}
+      _startAutoHeartbeat();
     } else {
       setSwAutoFire(false);
       setMicroCapitalConfig({ laneEnabled: false, armed: false });
       setLiveTradingDryRun(true);
       setLiveTradingEnabled(false);
       try { showToast('AUTO: OFF · safe', 'ok'); } catch (e) {}
+      try { _sendTelegramAlert('🔴 AUTO: OFF · ' + new Date().toISOString().slice(11,16) + ' UTC'); } catch (e) {}
+      _stopAutoHeartbeat();
     }
     try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
     try { _updateLiveTradingBadge(); } catch (e) {}
     return true;
+  }
+
+  // Heartbeat: while AUTO is ON, ping Telegram every 5 min so "tab open and
+  // running" can be confirmed remotely. Survives reload via the resume call
+  // at the bottom of state-load. _stopAutoHeartbeat is idempotent.
+  let _autoHeartbeatTimer = null;
+  function _startAutoHeartbeat() {
+    _stopAutoHeartbeat();
+    const tick = () => {
+      if (!isAutoFireFullyArmed()) { _stopAutoHeartbeat(); return; }
+      const t = new Date().toISOString().slice(11,16);
+      try { _sendTelegramAlert('💓 AUTO heartbeat · ' + t + ' UTC'); } catch (e) {}
+    };
+    _autoHeartbeatTimer = setInterval(tick, 5 * 60 * 1000);
+  }
+  function _stopAutoHeartbeat() {
+    if (_autoHeartbeatTimer) { clearInterval(_autoHeartbeatTimer); _autoHeartbeatTimer = null; }
   }
 
   // Toggle handlers for the micro-capital lane controls — separate from the
