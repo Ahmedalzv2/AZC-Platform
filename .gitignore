@@ -10,3 +10,6 @@ trade-learnings/
 relay.env
 .env
 .env.*
+
+# Trader runtime state — ephemeral, not source
+.trader-state/
