@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLearningFile } from './trade-learnings.mjs';
 import { authedWriteWith } from './relay-auth.mjs';
+import { callMexcSigned, ALLOWED_PATH_PREFIX as MEXC_ALLOWED } from './mexc-signer.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 3002);
@@ -20,6 +21,15 @@ const host = process.env.HOST || '127.0.0.1';
 const RELAY_TOKEN = String(process.env.ICT_RELAY_TOKEN || '').trim();
 if (!RELAY_TOKEN) {
   console.warn('[relay] ICT_RELAY_TOKEN is unset — write endpoints are public. Set it in production.');
+}
+// MEXC server-side signing keys. When set, /mexc/signed accepts {path,
+// method, body, params} from the dashboard, signs server-side, and forwards.
+// Browser stops storing the secret. When unset, /mexc/signed returns 503
+// and the dashboard falls back to its existing worker+browser-sign path.
+const MEXC_API_KEY    = String(process.env.MEXC_API_KEY    || '').trim();
+const MEXC_API_SECRET = String(process.env.MEXC_API_SECRET || '').trim();
+if (!MEXC_API_KEY || !MEXC_API_SECRET) {
+  console.warn('[relay] MEXC_API_KEY/SECRET unset — /mexc/signed disabled. Browser signing still works via the Cloudflare worker.');
 }
 
 const mime = {
@@ -554,6 +564,34 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, ..._autoState }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 400, { error: error.message }, CORS_HEADERS);
+      }
+    }
+    if (url.pathname === '/mexc/signed' && req.method === 'POST') {
+      if (!authedWrite(req)) return denyAuth(res);
+      if (!MEXC_API_KEY || !MEXC_API_SECRET) {
+        return sendJson(res, 503, { error: 'server-signing-disabled' }, CORS_HEADERS);
+      }
+      let body = '';
+      try {
+        await new Promise((resolve, reject) => {
+          req.on('data', c => { body += c; if (body.length > 8 * 1024) { reject(new Error('body-too-large')); req.destroy(); } });
+          req.on('end', resolve);
+          req.on('error', reject);
+        });
+        const payload = JSON.parse(body || '{}');
+        const path = String(payload.path || '');
+        if (!path.startsWith(MEXC_ALLOWED)) {
+          return sendJson(res, 400, { error: 'bad-path', detail: 'path must start with ' + MEXC_ALLOWED }, CORS_HEADERS);
+        }
+        const r = await callMexcSigned({
+          apiKey: MEXC_API_KEY, apiSecret: MEXC_API_SECRET,
+          path, method: payload.method || 'GET',
+          body: payload.body, params: payload.params,
+        });
+        res.writeHead(r.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...CORS_HEADERS });
+        return res.end(r.body);
+      } catch (error) {
+        return sendJson(res, 502, { error: error.message }, CORS_HEADERS);
       }
     }
     if (url.pathname === '/learn-trade' && req.method === 'POST') {

@@ -3297,6 +3297,75 @@
     return _hmacSha256Hex(apiSecret, String(apiKey) + String(reqTime) + String(paramString || ''));
   }
 
+  // Server-side signing mode. When the user flips this on (typically after
+  // setting MEXC_API_KEY/SECRET in the relay's env file) the dashboard sends
+  // unsigned requests to the relay's /mexc/signed endpoint instead of signing
+  // locally in the browser. The browser stops needing the secret, which
+  // closes the XSS / extension / shared-device exposure.
+  //
+  // Off (default) → existing path: get keys from localStorage, HMAC in
+  // browser, POST to Cloudflare worker. Backwards compatible.
+  // On → POST { path, method, body, params } to ${TG_RELAY_BASE}/mexc/signed
+  // with the X-ICT-Token header. Relay signs + forwards. Browser never sees
+  // the secret.
+  function isMexcServerSigning() {
+    try { return localStorage.getItem('ict_mexc_server_signing') === 'true'; } catch (e) { return false; }
+  }
+  function setMexcServerSigning(on) {
+    try { localStorage.setItem('ict_mexc_server_signing', on ? 'true' : 'false'); } catch (e) {}
+  }
+  // Single chokepoint for every signed MEXC call. Returns the same shape
+  // regardless of route so callers stop caring how the request was signed.
+  //   { sent: bool, status, text, error?, reason? }
+  async function _callMexcSigned({ path, method = 'GET', body, params }) {
+    const m = String(method).toUpperCase();
+    if (isMexcServerSigning()) {
+      const url = (typeof TG_RELAY_BASE === 'string' && TG_RELAY_BASE) ? TG_RELAY_BASE + '/mexc/signed' : null;
+      if (!url) return { sent: false, reason: 'no-relay' };
+      const tok = (typeof getRelayToken === 'function') ? getRelayToken() : '';
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: tok ? { 'Content-Type': 'application/json', 'X-ICT-Token': tok } : { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, method: m, body, params }),
+          cache: 'no-store',
+        });
+        const text = await r.text();
+        if (r.status === 503) return { sent: false, reason: 'server-signing-disabled', status: 503, text };
+        if (r.status === 401) return { sent: false, reason: 'no-relay-token', status: 401, text };
+        return { sent: r.ok, status: r.status, text };
+      } catch (err) {
+        return { sent: false, error: String(err.message || err) };
+      }
+    }
+    // Browser-signing path. Keys-first error order matches the legacy
+    // contract that placeMexcFuturesOrder + tests rely on.
+    const apiKey = getMexcApiKey(); const apiSecret = getMexcApiSecret();
+    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
+    const workerUrl = getMexcWorkerUrl();
+    if (!workerUrl) return { sent: false, reason: 'no-worker' };
+    const reqTime = String(Date.now());
+    let url, init;
+    if (m === 'GET') {
+      const qs = params ? Object.keys(params).sort().map(k => encodeURIComponent(k) + '=' + encodeURIComponent(String(params[k]))).join('&') : '';
+      url = workerUrl + path + (qs ? '?' + qs : '');
+      const signature = await _signMexcRequest(apiKey, apiSecret, reqTime, qs);
+      init = { method: 'GET', headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature, 'Recv-Window': '5000' } };
+    } else {
+      const paramString = body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body));
+      const signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramString);
+      url = workerUrl + path;
+      init = { method: m, body: paramString, headers: { 'Content-Type': 'application/json', 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature, 'Recv-Window': '5000' } };
+    }
+    try {
+      const r = await fetch(url, init);
+      const text = await r.text();
+      return { sent: r.ok, status: r.status, text };
+    } catch (err) {
+      return { sent: false, error: String(err.message || err) };
+    }
+  }
+
   // qty = (account × risk%) / |entry − sl|. Mirrors the asset-modal
   // calculator. Returns null if account/risk aren't set, so callers can
   // fall back to a manual qty.
@@ -3822,39 +3891,19 @@
     }
 
     // ── LIVE PATH ────────────────────────────────────────────────
-    const apiKey = getMexcApiKey();
-    const apiSecret = getMexcApiSecret();
-    const workerUrl = getMexcWorkerUrl();
-    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
-    if (!workerUrl) return { sent: false, reason: 'no-worker', message: 'Set the Worker URL in live-trading settings.' };
-
-    const reqTime = String(Date.now());
-    const paramJson = JSON.stringify(body);
-    let signature;
-    try {
-      signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson);
-    } catch (e) {
-      return { sent: false, reason: 'sign-failed', error: String((e && e.message) || e) };
+    // Routes via _callMexcSigned which chooses server-signing (relay holds
+    // the secret) or browser-signing (legacy worker path) based on the
+    // ict_mexc_server_signing flag. Either way, returns { sent, status, text }.
+    const r = await _callMexcSigned({ path: '/api/v1/private/order/submit', method: 'POST', body });
+    if (!r.sent && r.reason) {
+      return { sent: false, reason: r.reason, error: r.error || r.text };
     }
-
-    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/submit';
-    let resp, json;
-    try {
-      resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'ApiKey': apiKey,
-          'Request-Time': reqTime,
-          'Signature': signature,
-        },
-        body: paramJson,
-      });
-      const txt = await resp.text();
-      try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
-    } catch (e) {
-      return { sent: false, reason: 'network', error: String((e && e.message) || e) };
+    if (r.error) {
+      return { sent: false, reason: 'network', error: r.error };
     }
+    let json;
+    try { json = JSON.parse(r.text); } catch (e) { json = { raw: r.text }; }
+    const resp = { ok: r.sent, status: r.status };
 
     const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
     try {
