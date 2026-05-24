@@ -1,0 +1,31 @@
+# ict-tv-relay — TradingView/MEXC bridge for the AZC Platform dashboard.
+# Behind Traefik (host network) via the traefik.* labels. Bridge network is
+# fine because Traefik discovers via the Docker socket.
+#
+# Secrets live in ./relay.env (gitignored). Never commit that file.
+# Bring up: docker compose -f docker-compose.relay.yml up -d
+# Restart : docker compose -f docker-compose.relay.yml restart
+
+services:
+  relay:
+    container_name: ict-tv-relay
+    image: ict-tv-relay:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.relay
+    restart: unless-stopped
+    env_file:
+      - relay.env
+    environment:
+      - PORT=3002
+      - HOST=0.0.0.0
+    volumes:
+      - ./trade-learnings:/app/trade-learnings
+    expose:
+      - "3002"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tvrelay.entrypoints=websecure"
+      - "traefik.http.routers.tvrelay.rule=Host(`tv-relay.srv1688368.hstgr.cloud`)"
+      - "traefik.http.routers.tvrelay.tls.certresolver=letsencrypt"
+      - "traefik.http.services.tvrelay.loadbalancer.server.port=3002"
