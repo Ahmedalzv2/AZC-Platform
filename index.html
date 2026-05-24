@@ -8821,6 +8821,35 @@
     if (je.outcome && !je._learned) _postLearnTrade(je);
   }
 
+  // Pure P/L accounting (mirrors pnl-accounting.mjs which is unit-tested).
+  // Inlined here because index.html is a single non-module script — can't
+  // import the .mjs from this scope.
+  const _FUNDING_WINDOW_MS = 8 * 60 * 60 * 1000;
+  function _fundingWindowsCrossed(openMs, closeMs) {
+    const o = Math.floor(Number(openMs) / _FUNDING_WINDOW_MS);
+    const c = Math.floor(Number(closeMs) / _FUNDING_WINDOW_MS);
+    return Math.max(0, c - o);
+  }
+  function _computeRealizedNet(o) {
+    const s = String(o.side || '').toLowerCase();
+    const dir = s === 'short' ? -1 : 1;
+    const e = Number(o.entry), x = Number(o.exit), q = Number(o.qty);
+    if (!Number.isFinite(e) || !Number.isFinite(x) || !Number.isFinite(q) || q <= 0) {
+      return { grossUsd: 0, feeUsdOpen: 0, feeUsdClose: 0, fundingUsd: 0, holdMs: 0, windowsCrossed: 0, netUsd: 0 };
+    }
+    const grossUsd     = dir * (x - e) * q;
+    const notionalOpen = e * q;
+    const notionalClose= x * q;
+    const feeUsdOpen   = notionalOpen  * (Number(o.feePctOpen)  || 0);
+    const feeUsdClose  = notionalClose * (Number(o.feePctClose) || 0);
+    const oTs = Number(o.openTs), cTs = Number(o.closeTs);
+    const holdMs       = Number.isFinite(oTs) && Number.isFinite(cTs) ? Math.max(0, cTs - oTs) : 0;
+    const windowsCrossed = (Number.isFinite(oTs) && Number.isFinite(cTs)) ? _fundingWindowsCrossed(oTs, cTs) : 0;
+    const fundingUsd   = windowsCrossed * notionalOpen * (Number(o.fundingPct8h) || 0);
+    const netUsd       = grossUsd - feeUsdOpen - feeUsdClose - fundingUsd;
+    return { grossUsd, feeUsdOpen, feeUsdClose, fundingUsd, holdMs, windowsCrossed, netUsd };
+  }
+
   // Ships the resolved trade to tv-relay /learn-trade so a markdown
   // post-mortem lands under trade-learnings/{wins,losses,be}/. Skip path:
   // gate-blocked skip entries (no entry/sl/tp) carry no execution signal
@@ -8840,7 +8869,31 @@
     const exitPrice = je.outcome === 'win' ? Number(je.tp)
                     : je.outcome === 'loss' ? Number(je.sl)
                     : Number(je.entry);
-    const realizedUsd = Number.isFinite(Number(je.realizedUsd)) ? Number(je.realizedUsd) : null;
+    // Fee + funding accounting. Use the order's vol from mexcBody when
+    // available (live fires) — that's contracts, multiplied by entry to get
+    // notional. Defaults assume MEXC zero-fee promo + 0.01%/8h funding;
+    // override via localStorage.ict_mexc_fees JSON.
+    const qty = Number(je.mexcBody && je.mexcBody.vol) || 0;
+    let feeCfg = { taker: 0, maker: 0, fundingPct8h: 0.0001 };
+    try { feeCfg = { ...feeCfg, ...(JSON.parse(localStorage.getItem('ict_mexc_fees') || '{}') || {}) }; } catch (e) {}
+    // POST_ONLY (type=2) opens at maker; the close is always a market exit (taker).
+    const useMaker = !!(je.mexcBody && je.mexcBody.type === 2);
+    const feeOpen  = useMaker ? feeCfg.maker : feeCfg.taker;
+    const feeClose = feeCfg.taker;
+    const closeTs  = Number.isFinite(Number(je.outcomeChecks && (je.outcomeChecks['30'] != null && je.timestamp + 30*60*1000)))
+                       ? je.timestamp + 30 * 60 * 1000   // first auto-resolve check window
+                       : Date.now();
+    let accounting = null;
+    if (qty > 0 && je.live === true) {
+      accounting = _computeRealizedNet({
+        side, entry: je.entry, exit: exitPrice, qty,
+        openTs: je.timestamp, closeTs,
+        feePctOpen: feeOpen, feePctClose: feeClose,
+        fundingPct8h: feeCfg.fundingPct8h,
+      });
+    }
+    const realizedUsd = accounting ? accounting.netUsd
+                      : (Number.isFinite(Number(je.realizedUsd)) ? Number(je.realizedUsd) : null);
     const rMultiple = je.outcome === 'win' ? 1 * (Math.abs(Number(je.tp) - Number(je.entry)) / rDist)
                     : je.outcome === 'loss' ? -1
                     : 0;
@@ -8861,7 +8914,22 @@
       confluences: Array.isArray(je.confluences) ? je.confluences : null,
       analysis: je.analysis,
       outcomeChecks: je.outcomeChecks,
+      accounting,   // { grossUsd, feeUsdOpen, feeUsdClose, fundingUsd, windowsCrossed, holdMs, netUsd } or null
     };
+    // Stash the computed net back on the journal entry so the local
+    // dashboard's win-rate / total-USD stats stay consistent with the
+    // markdown file the relay just wrote.
+    if (accounting && Number.isFinite(accounting.netUsd)) {
+      je.realizedUsd = accounting.netUsd;
+      je.feeFundingBreakdown = {
+        grossUsd: accounting.grossUsd,
+        feeUsdOpen: accounting.feeUsdOpen,
+        feeUsdClose: accounting.feeUsdClose,
+        fundingUsd: accounting.fundingUsd,
+        windowsCrossed: accounting.windowsCrossed,
+      };
+      try { saveJournal(); } catch (e) {}
+    }
     try {
       fetch(url, {
         method: 'POST',
