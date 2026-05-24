@@ -43,8 +43,16 @@
        (single source of truth with the toolbar badge). -->
   <button id="liveKillSwitch"
           onclick="setAllAutoFireArmed(!isAutoFireArmedAnyMode())"
-          title="Auto trading — tap to toggle on/off">
+          title="Browser AUTO — toggles dashboard-side auto-fire (separate from server-side AZC trader)">
     AUTO: OFF
+  </button>
+  <!-- Server-side AZC trader kill switch. Polls /trader-state every 5s.
+       STOP touches the relay's stop.flag → systemd will restart the
+       trader once START clears the flag. -->
+  <button id="azcTraderSwitch"
+          onclick="toggleAzcTrader()"
+          title="Server-side autonomous trader — STOP halts immediately, START clears the brake">
+    TRADER: …
   </button>
 
   <!-- ═══ AUTOPILOT TOP BAR ═══ -->
@@ -2966,6 +2974,61 @@
     if (_liveTradingDryRun)    return { state: 'on-dryrun',    icon: '🟢', label: 'ON · DRY-RUN' };
     return { state: 'on-live', icon: '🔴', label: 'ON · LIVE' };
   }
+  // ──────────────────────────────────────────────────────────────────
+  // Server-side AZC trader kill switch — independent from the browser
+  // AUTO toggle above. STOP touches the relay's stop.flag (the trader
+  // honors it within one cycle); START removes the flag and systemd
+  // brings the trader back up.
+  // ──────────────────────────────────────────────────────────────────
+  let _azcTraderState = null;
+  async function refreshAzcTraderState() {
+    try {
+      const r = await fetch(TG_RELAY_BASE + '/trader-state', { cache: 'no-store' });
+      _azcTraderState = await r.json();
+    } catch (e) {
+      _azcTraderState = { ok: false, running: false, reason: 'fetch-failed' };
+    }
+    const btn = document.getElementById('azcTraderSwitch');
+    if (!btn) return;
+    btn.classList.remove('trader-on', 'trader-position', 'trader-stopped');
+    const s = _azcTraderState || {};
+    const stale = s.lastCycleAt ? (Date.now() - s.lastCycleAt) > 60000 : true;
+    if (s.stopFlag) {
+      btn.textContent = 'TRADER: STOPPED';
+      btn.classList.add('trader-stopped');
+    } else if (!s.ok || stale) {
+      btn.textContent = 'TRADER: OFFLINE';
+    } else if (s.pendingOrder || (s.positionContext && s.positionContext.posId)) {
+      btn.textContent = 'TRADER: IN-TRADE';
+      btn.classList.add('trader-position');
+    } else {
+      btn.textContent = `TRADER: ON · ${s.tradesToday||0}/3 · $${(s.dailyPnlUsd||0).toFixed(2)}`;
+      btn.classList.add('trader-on');
+    }
+  }
+  async function toggleAzcTrader() {
+    const s = _azcTraderState || {};
+    const path = s.stopFlag ? '/trader-start' : '/trader-stop';
+    if (path === '/trader-stop' && !confirm('Stop the server-side AZC trader?\n\nIt will halt within one cycle (≤30s). Any open MEXC position stays open — its SL/TP remain with the exchange.\n\nProceed?')) return;
+    try {
+      const r = await fetch(TG_RELAY_BASE + path, {
+        method: 'POST',
+        headers: (typeof _relayWriteHeaders === 'function') ? _relayWriteHeaders() : { 'Content-Type': 'application/json' },
+      });
+      const j = await r.json();
+      if (!j.ok) { alert('Trader toggle failed: ' + JSON.stringify(j)); return; }
+    } catch (e) {
+      alert('Trader toggle failed: ' + e.message);
+      return;
+    }
+    refreshAzcTraderState();
+  }
+  // Poll trader state every 5s while the page is open.
+  if (typeof window !== 'undefined') {
+    setInterval(() => { try { refreshAzcTraderState(); } catch (e) {} }, 5000);
+    setTimeout(() => { try { refreshAzcTraderState(); } catch (e) {} }, 1200);
+  }
+
   function _updateLiveTradingBadge() {
     if (typeof document === 'undefined' || !document.getElementById) return;
     const s = liveTradingStatus();
