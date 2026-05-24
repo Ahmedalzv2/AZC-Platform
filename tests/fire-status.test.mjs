@@ -2,8 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
-describe('Policy v7 — only US100 is futures, every MEXC-eligible asset is spot watch', () => {
-  test('DEFAULT_TRADE_MODES: GOLD/SOL/SILVER are spot (v7)', () => {
+describe('Policy v8 — only US100 is futures, every MEXC-eligible asset is spot watch', () => {
+  test('DEFAULT_TRADE_MODES: GOLD/SOL/SILVER are spot (v8)', () => {
     const { app } = loadApp();
     assert.equal(app.DEFAULT_TRADE_MODES.GOLD,   'spot');
     assert.equal(app.DEFAULT_TRADE_MODES.SOL,    'spot');
@@ -24,19 +24,19 @@ describe('Policy v7 — only US100 is futures, every MEXC-eligible asset is spot
     assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), 'XAUT_USDT');
   });
 
-  test('Default futures-eligible set is empty under v7 (only US100, which is CFD-only)', () => {
+  test('Default futures-eligible set is empty under v8 (only US100, which is CFD-only)', () => {
     const { app } = loadApp();
     app.loadTradeModes();
     const eligible = app.ASSETS
       .filter(a => app._isFuturesAsset(a) && app._mexcContractSymbol(a))
       .map(a => a.symbol);
-    assert.equal(eligible.length, 0, `v7: no default futures candidates have a MEXC contract (got ${eligible.join(',')})`);
+    assert.equal(eligible.length, 0, `v8: no default futures candidates have a MEXC contract (got ${eligible.join(',')})`);
     assert.ok(!eligible.includes('US100'), 'US100 is futures but CFD-only — no MEXC contract');
   });
 });
 
 describe('getFireStatus — at-a-glance trigger state', () => {
-  // Under v7 SOL defaults to spot. The fire-status flow only kicks in for
+  // Under v8 SOL defaults to spot. The fire-status flow only kicks in for
   // futures-mode assets, so flip SOL back to futures explicitly for these
   // fixtures — the test is about getFireStatus behavior, not policy.
   function bootLive(app) {

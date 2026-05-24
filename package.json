@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node server.mjs",
     "test": "TZ=UTC node --test --test-reporter=spec 'tests/*.test.mjs'",
     "test:watch": "TZ=UTC node --test --watch 'tests/*.test.mjs'",
     "dump-fixtures": "node tests/dump-fixtures.mjs"
