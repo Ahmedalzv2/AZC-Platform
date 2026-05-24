@@ -29,21 +29,43 @@ if (!API_KEY || !API_SECRET) {
   console.error('FATAL: MEXC_API_KEY / MEXC_API_SECRET not set'); process.exit(2);
 }
 
-const SYMBOLS = ['BTC_USDT'];        // start with one liquid pair
-const TF_MIN = 5;                     // 5-minute timeframe
-const LOOKBACK_BARS = 40;             // ~3.3 hours of context
+// Three-symbol concentrated watchlist. BTC/ETH/SOL have the deepest books
+// and tightest spreads on MEXC perpetuals — micro-capital can't afford to
+// chase low-liquidity pairs.
+const SYMBOLS = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT'];
+const TF_MIN = 5;                     // 5m for FVG entry detection
+const HTF_MIN = 60;                   // 1H for trend filter
+const LOOKBACK_BARS = 40;             // ~3.3h of 5m context
+const HTF_LOOKBACK = 24;              // 24h of 1H context
+const HTF_SMA = 20;                   // 1H SMA(20) for trend filter
 const LEVERAGE = 10;
-const RISK_PCT = 0.005;               // 0.5% of equity per trade
-const DAILY_LOSS_CAP_USD = 1.0;
-const MAX_TRADES_PER_DAY = 3;
+const RISK_PCT = 0.015;               // 1.5% of equity per trade ($0.75 @ $50)
+const DAILY_LOSS_CAP_USD = 10.0;      // 20% of $50 — "bad day, stop trading" cut
 const MAX_OPEN_POSITIONS = 1;
 const COOLDOWN_MS = 15 * 60 * 1000;
 const RR = 1.5;
-const TICK_MS = 30_000;               // scan every 30s
-const POSITION_POLL_MS = 5_000;       // when in position, check every 5s
-const MAKER_ORDER_TTL_MS = 180_000;   // cancel unfilled maker after 3 min
-const FVG_BUFFER_PCT = 0.10;          // SL beyond far edge + 10% of FVG body
-const TOUCH_TOLERANCE_PCT = 0.0005;   // price must be within 0.05% of FVG mid to fire
+const TICK_MS = 30_000;
+const POSITION_POLL_MS = 5_000;
+const MAKER_ORDER_TTL_MS = 180_000;
+const FVG_BUFFER_PCT = 0.10;
+const TOUCH_TOLERANCE_PCT = 0.0008;   // proximity gate, 0.08% of price
+
+// Killzone gate — only fire during real liquidity windows. Outside these
+// hours, FVGs are algo chop with low follow-through. Hours are UTC.
+//   London KZ: 07:00-10:00 UTC (= 11:00-14:00 GST)
+//   NY AM KZ:  12:30-16:00 UTC (= 16:30-20:00 GST)
+const KILLZONES_UTC = [
+  { startH: 7,  startM: 0,  endH: 10, endM: 0 },
+  { startH: 12, startM: 30, endH: 16, endM: 0 },
+];
+function inKillzone(now = new Date()) {
+  const m = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return KILLZONES_UTC.some(z => {
+    const s = z.startH * 60 + z.startM;
+    const e = z.endH * 60 + z.endM;
+    return m >= s && m < e;
+  });
+}
 const LEARN_ROOT = path.resolve('./trade-learnings');
 const STATE_DIR  = path.resolve('./.trader-state');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
@@ -53,6 +75,7 @@ const STOP_FLAG  = path.join(STATE_DIR, 'stop.flag');
 // Runtime state
 // ──────────────────────────────────────────────────────────────────
 const cooldownUntil = new Map();      // symbol → ts ms when cooldown expires
+const metaCache = new Map();          // symbol → { contractSize, minVol, priceUnit } (cached)
 let tradesToday = 0;
 let dailyPnlUsd = 0;
 let dailyResetAt = nextUtcMidnight();
@@ -60,6 +83,7 @@ let pendingOrder = null;              // { symbol, orderId, expiresAt }
 let lastError = null;
 let lastCycleAt = 0;
 let cycleCount = 0;
+let lastScanSummary = null;           // top candidates from last scan, surfaced in state.json
 
 function nextUtcMidnight() {
   const d = new Date();
@@ -85,11 +109,16 @@ async function writeState(extra = {}) {
     cycleCount,
     lastCycleAt,
     symbols: SYMBOLS,
+    inKillzone: inKillzone(),
     tradesToday,
     dailyPnlUsd: Number(dailyPnlUsd.toFixed(6)),
     dailyResetAt,
+    riskPct: RISK_PCT,
+    dailyCapUsd: DAILY_LOSS_CAP_USD,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
+    positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp } : null,
+    lastScanSummary,
     lastError,
     ...extra,
   };
@@ -107,19 +136,28 @@ async function mexcSigned(opts) {
   return { ok: r.ok, status: r.status, raw: r.body, json: body };
 }
 
-// Public klines fetch (no signing). 5m candles.
-async function fetchKlines(symbol, limit = LOOKBACK_BARS) {
-  const url = `https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min${TF_MIN}&limit=${limit}`;
+// Public klines fetch (no signing). interval default = 5m.
+async function fetchKlines(symbol, intervalMin = TF_MIN, limit = LOOKBACK_BARS) {
+  const url = `https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min${intervalMin}&limit=${limit}`;
   const r = await fetch(url);
   const j = await r.json();
   const d = j.data || {};
-  // MEXC returns parallel arrays: open, close, high, low, time, vol, amount
   if (!Array.isArray(d.open)) return [];
   const bars = d.open.map((o, i) => ({
     o: +o, c: +d.close[i], h: +d.high[i], l: +d.low[i], t: +d.time[i],
   }));
-  // Drop the in-progress last bar.
-  return bars.slice(0, -1);
+  return bars.slice(0, -1);   // drop in-progress bar
+}
+
+// HTF trend filter — 1H SMA(20). Returns 'bull' if last close > SMA,
+// 'bear' if below. Used to gate the 5m FVG direction.
+async function htfTrend(symbol) {
+  const bars = await fetchKlines(symbol, HTF_MIN, HTF_LOOKBACK);
+  if (bars.length < HTF_SMA) return null;
+  const recent = bars.slice(-HTF_SMA);
+  const sma = recent.reduce((a, b) => a + b.c, 0) / recent.length;
+  const last = bars[bars.length - 1].c;
+  return last > sma ? 'bull' : 'bear';
 }
 
 async function fetchTicker(symbol) {
@@ -200,90 +238,103 @@ function detectUnmitigatedFvg(bars) {
 // ──────────────────────────────────────────────────────────────────
 let positionContext = null;  // remembers { symbol, side, entry, sl, tp, qty, lev, posId, openedAt }
 
-async function tryFire(symbol) {
-  // ── gates ────────────────────────────────────────────────────
-  maybeRollDay();
-  if (tradesToday >= MAX_TRADES_PER_DAY)                    return { skip: 'daily-trade-cap' };
-  if (dailyPnlUsd <= -DAILY_LOSS_CAP_USD)                   return { skip: 'daily-loss-cap' };
+// Build a candidate trade for a single symbol. Returns { skip } if any
+// per-symbol gate fails; otherwise returns the prepared trade payload so
+// the multi-asset scanner can rank candidates and fire one.
+async function buildCandidate(symbol) {
   const cd = cooldownUntil.get(symbol) || 0;
-  if (Date.now() < cd)                                       return { skip: 'cooldown', detail: `${Math.round((cd-Date.now())/1000)}s` };
+  if (Date.now() < cd) return { skip: 'cooldown', symbol };
+
+  let meta = metaCache.get(symbol);
+  const [bars5m, htfBars, ticker] = await Promise.all([
+    fetchKlines(symbol, TF_MIN, LOOKBACK_BARS),
+    fetchKlines(symbol, HTF_MIN, HTF_LOOKBACK),
+    fetchTicker(symbol),
+    meta ? Promise.resolve(null) : fetchContractMeta(symbol).then(m => { metaCache.set(symbol, m); meta = m; }),
+  ]);
+  if (!bars5m.length || !htfBars.length || !ticker || !meta) return { skip: 'no-data', symbol };
+
+  const recent = htfBars.slice(-HTF_SMA);
+  if (recent.length < HTF_SMA) return { skip: 'htf-warmup', symbol };
+  const sma = recent.reduce((a, b) => a + b.c, 0) / recent.length;
+  const htfDir = htfBars[htfBars.length-1].c > sma ? 'bull' : 'bear';
+
+  const fvg = detectUnmitigatedFvg(bars5m);
+  if (!fvg) return { skip: 'no-fvg', symbol };
+  if (fvg.dir !== htfDir) return { skip: 'htf-disagree', symbol };
+
+  const price = ticker.lastPrice;
+  const distPct = Math.abs((price - fvg.mid) / fvg.mid);
+  if (distPct > TOUCH_TOLERANCE_PCT) return { skip: 'far-from-fvg', symbol, distPct };
+
+  const sideOpen = fvg.dir === 'bull' ? 1 : 3;
+  const farEdge  = fvg.dir === 'bull' ? fvg.lo : fvg.hi;
+  const slDir    = fvg.dir === 'bull' ? -1 : 1;
+  const sl       = farEdge + slDir * (fvg.body * FVG_BUFFER_PCT);
+  const stopDist = Math.abs(price - sl);
+  if (!isFinite(stopDist) || stopDist <= 0) return { skip: 'invalid-stop', symbol };
+  const tp = fvg.dir === 'bull' ? price + stopDist * RR : price - stopDist * RR;
+  const stopDistUsdPerContract = meta.contractSize * stopDist;
+
+  return { symbol, fvg, htfDir, price, sl, tp, sideOpen, stopDistUsdPerContract, meta, distPct };
+}
+
+async function tryFire() {
+  maybeRollDay();
+  if (!inKillzone())                                         return { skip: 'outside-killzone' };
+  if (dailyPnlUsd <= -DAILY_LOSS_CAP_USD)                    return { skip: 'daily-loss-cap', detail: `pnl=$${dailyPnlUsd.toFixed(2)}` };
   if (pendingOrder)                                          return { skip: 'pending-order' };
 
   const openPositions = await getOpenPositions();
   if (openPositions.length >= MAX_OPEN_POSITIONS)            return { skip: 'in-position' };
 
-  // ── data ─────────────────────────────────────────────────────
-  const [bars, ticker, meta] = await Promise.all([
-    fetchKlines(symbol, LOOKBACK_BARS),
-    fetchTicker(symbol),
-    fetchContractMeta(symbol),
-  ]);
-  if (!bars.length || !ticker || !meta)                      return { skip: 'no-data' };
+  const results = await Promise.all(
+    SYMBOLS.map(s => buildCandidate(s).catch(e => ({ skip: 'err', symbol: s, detail: e.message })))
+  );
+  lastScanSummary = results.map(r => ({ symbol: r.symbol, skip: r.skip || null, dir: r.fvg?.dir, distPct: r.distPct }));
+  const valid = results.filter(r => !r.skip);
+  if (!valid.length) return { skip: 'no-candidates' };
 
-  const fvg = detectUnmitigatedFvg(bars);
-  if (!fvg)                                                  return { skip: 'no-fvg' };
+  // Closest to FVG mid wins — most actionable right now.
+  valid.sort((a, b) => a.distPct - b.distPct);
+  const pick = valid[0];
 
-  // ── proximity check ─────────────────────────────────────────
-  const price = ticker.lastPrice;
-  const distPct = Math.abs((price - fvg.mid) / fvg.mid);
-  if (distPct > TOUCH_TOLERANCE_PCT) {
-    return { skip: 'far-from-fvg', detail: `dist=${(distPct*100).toFixed(3)}% mid=${fvg.mid.toFixed(2)} px=${price.toFixed(2)}` };
-  }
-
-  // ── compute levels ──────────────────────────────────────────
-  const sideOpen = fvg.dir === 'bull' ? 1 : 3;   // 1 = open long, 3 = open short
-  const farEdge = fvg.dir === 'bull' ? fvg.lo : fvg.hi;
-  const slDir   = fvg.dir === 'bull' ? -1 : 1;
-  const sl      = farEdge + slDir * (fvg.body * FVG_BUFFER_PCT);
-  const stopDist = Math.abs(price - sl);
-  if (!isFinite(stopDist) || stopDist <= 0)                  return { skip: 'invalid-stop' };
-
-  const tp = fvg.dir === 'bull' ? price + stopDist * RR : price - stopDist * RR;
-
-  // ── sizing ──────────────────────────────────────────────────
   const equity = await getAccountUsdt();
-  const riskUsd = equity * RISK_PCT;            // $0.25 at $50
-  // notional per contract = contractSize * entryPrice
-  // stopDistUsd per contract = contractSize * stopDist
-  // qty = riskUsd / stopDistUsd
-  const stopDistUsdPerContract = meta.contractSize * stopDist;
-  let qty = Math.floor(riskUsd / stopDistUsdPerContract);
-  if (qty < meta.minVol) qty = meta.minVol;     // honor minVol even if it nudges risk slightly over
-  // Sanity: don't let qty go nuts (e.g. if stopDist is tiny)
-  const maxQtyByMargin = Math.floor((equity * 0.5 * LEVERAGE) / (meta.contractSize * price));
+  const riskUsd = equity * RISK_PCT;
+  let qty = Math.floor(riskUsd / pick.stopDistUsdPerContract);
+  if (qty < pick.meta.minVol) qty = pick.meta.minVol;
+  const maxQtyByMargin = Math.floor((equity * 0.5 * LEVERAGE) / (pick.meta.contractSize * pick.price));
   if (qty > maxQtyByMargin && maxQtyByMargin > 0) qty = maxQtyByMargin;
 
-  // ── snap price to priceUnit ─────────────────────────────────
-  const snapPrice = v => Math.round(v / meta.priceUnit) * meta.priceUnit;
-  const entry = snapPrice(fvg.mid);
-  const slSnap = snapPrice(sl);
-  const tpSnap = snapPrice(tp);
+  const snap = v => Math.round(v / pick.meta.priceUnit) * pick.meta.priceUnit;
+  const entry  = snap(pick.fvg.mid);
+  const slSnap = snap(pick.sl);
+  const tpSnap = snap(pick.tp);
 
-  // ── fire ────────────────────────────────────────────────────
   const body = {
-    symbol,
+    symbol: pick.symbol,
     price: entry,
     vol: qty,
     leverage: LEVERAGE,
-    side: sideOpen,
-    type: 2,             // POST_ONLY maker
-    openType: 1,         // isolated
+    side: pick.sideOpen,
+    type: 2,
+    openType: 1,
     stopLossPrice: slSnap,
     takeProfitPrice: tpSnap,
   };
-  log(`[fire] ${symbol} ${fvg.dir.toUpperCase()} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${(stopDistUsdPerContract*qty).toFixed(3)}`);
+  log(`[fire] ${pick.symbol} ${pick.fvg.dir.toUpperCase()} htf=${pick.htfDir} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${(pick.stopDistUsdPerContract*qty).toFixed(3)} cand=${valid.length}/${SYMBOLS.length}`);
   const r = await placeOrder(body);
   if (!r.json || r.json.success !== true) {
-    return { skip: 'mexc-rejected', detail: JSON.stringify(r.json || r.raw).slice(0, 200) };
+    return { skip: 'mexc-rejected', detail: JSON.stringify(r.json || r.raw).slice(0, 200), symbol: pick.symbol };
   }
   const orderId = r.json.data;
-  pendingOrder = { symbol, orderId, expiresAt: Date.now() + MAKER_ORDER_TTL_MS };
+  pendingOrder = { symbol: pick.symbol, orderId, expiresAt: Date.now() + MAKER_ORDER_TTL_MS };
   positionContext = {
-    symbol, dir: fvg.dir, side: sideOpen, entry, sl: slSnap, tp: tpSnap,
-    qty, lev: LEVERAGE, contractSize: meta.contractSize, openedAt: Date.now(),
-    orderId, fvgFormedAt: fvg.formedAt,
+    symbol: pick.symbol, dir: pick.fvg.dir, side: pick.sideOpen, entry, sl: slSnap, tp: tpSnap,
+    qty, lev: LEVERAGE, contractSize: pick.meta.contractSize, openedAt: Date.now(),
+    orderId, fvgFormedAt: pick.fvg.formedAt, htfDir: pick.htfDir,
   };
-  return { fired: true, orderId, entry, sl: slSnap, tp: tpSnap };
+  return { fired: true, orderId, symbol: pick.symbol, entry, sl: slSnap, tp: tpSnap };
 }
 
 async function watchPendingOrder() {
@@ -427,12 +478,9 @@ while (true) {
     }
     if (!pendingOrder && !positionContext) {
       maybeRollDay();
-      for (const sym of SYMBOLS) {
-        const r = await tryFire(sym);
-        if (r.fired) break;
-        if (r.skip && r.skip !== 'far-from-fvg' && r.skip !== 'no-fvg') {
-          log(`[skip:${sym}] ${r.skip}${r.detail ? ' · ' + r.detail : ''}`);
-        }
+      const r = await tryFire();
+      if (r.skip && r.skip !== 'no-candidates') {
+        log(`[skip] ${r.skip}${r.detail ? ' · ' + r.detail : ''}`);
       }
     }
     lastError = null;
