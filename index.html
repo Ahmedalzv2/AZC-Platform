@@ -3007,7 +3007,7 @@
       } else {
         kill.classList.remove('live-on');
         kill.textContent = 'AUTO: OFF';
-        kill.title = 'Auto trading is OFF. Tap to arm; you will be asked to type LIVE before real orders fire.';
+        kill.title = 'Auto trading is OFF. Tap to arm; you will be asked to confirm before real orders fire.';
       }
     }
   }
@@ -3631,17 +3631,14 @@
   function isAutoFireFullyArmed() {
     return isAutoFireArmedAnyMode() && _liveTradingDryRun === false;
   }
-  // Two-stage arming so a single tap can never flip dryRun=false. First tap
-  // arms everything in dry-run (master ON, lane ON, armed, SW auto-fire ON,
-  // but dryRun=true so no real orders go). The user must explicitly type
-  // "LIVE" to flip dryRun=false; the typed confirmation is what proves
-  // intent, since a single tap on a floating button can happen by accident
-  // (sleeve, phone in pocket, kid grabbing the tablet, etc.). Mirrors the
-  // "git push --force" / "drop database" pattern.
+  // Single yes/no confirm before flipping dryRun=false. Earlier versions
+  // required typing "LIVE" — too much friction during fast manual testing,
+  // and the remaining safety stack (futures-only paths, X-ICT-Token gate on
+  // the relay, hard daily-loss cap) already prevents an accidental tap from
+  // doing real damage. One click of "OK" is the proof-of-intent now.
   function _confirmGoLive() {
     try {
-      const v = prompt('Type LIVE to disable dry-run and place REAL MEXC orders.\n\nCancel keeps the run in dry-run (no real money).');
-      return String(v || '').trim().toUpperCase() === 'LIVE';
+      return confirm('Fire REAL MEXC orders?\n\nOK = live (real money). Cancel = dry-run only.');
     } catch (e) { return false; }
   }
   function setAllAutoFireArmed(on) {
@@ -3761,7 +3758,7 @@
                    : live   ? 'AUTO: LIVE — TAP TO STOP'
                    :          'AUTO: DRY — TAP TO STOP';
     const oneTapBtn = `<button onclick="setAllAutoFireArmed(${!armed})" style="width:100%;background:${armed?'linear-gradient(180deg,#e05d5d 0%,#b03030 100%)':'linear-gradient(180deg,#5cb88a 0%,#3a9468 100%)'};border:none;color:#fff;padding:14px 18px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;box-shadow:0 2px 8px ${armed?'rgba(224,93,93,0.4)':'rgba(92,184,138,0.3)'};margin-bottom:10px;">${btnLabel}</button>`;
-    const oneTapNote = `<div style="font-size:10px;color:var(--text-mute);margin-bottom:14px;line-height:1.5;font-family:'JetBrains Mono',monospace;">${!armed?'Tap to arm. After arming you will be prompted to type LIVE to enable real orders; cancel keeps dry-run.':(live?'Real orders firing · \$0.20/fire.':'Dry-run only — no real orders. Re-tap and confirm to go live.')} Floating AUTO button (bottom-right) mirrors this.</div>`;
+    const oneTapNote = `<div style="font-size:10px;color:var(--text-mute);margin-bottom:14px;line-height:1.5;font-family:'JetBrains Mono',monospace;">${!armed?'Tap to arm. A yes/no confirm decides live vs dry-run.':(live?'Real orders firing · \$0.20/fire.':'Dry-run only — no real orders. Re-tap and confirm OK to go live.')} Floating AUTO button (bottom-right) mirrors this.</div>`;
     // One-tap margin preset row — the value most users set wrong. Quick presets
     // cover the $50 trial range; the input lets advanced users override.
     const presetBtn = (n) => {
