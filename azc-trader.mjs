@@ -551,7 +551,7 @@ process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 // ──────────────────────────────────────────────────────────────────
 // Main loop
 // ──────────────────────────────────────────────────────────────────
-log('[start] AZC trader online · symbols=' + SYMBOLS.join(',') + ' · lev=' + LEVERAGE + ' · risk/trade=' + (RISK_PCT*100) + '% · daily cap $' + DAILY_LOSS_CAP_USD);
+log(`[start] AZC trader online · symbols=${SYMBOLS.join(',')} · lev=${LEVERAGE}× · risk=${RISK_PCT_DEFAULT*100}/${RISK_PCT_TOP_2*100}/${RISK_PCT_BEST*100}% (def/top2/best) · halt after ${MAX_CONSECUTIVE_LOSSES} consec losses`);
 await mkdir(LEARN_ROOT, { recursive: true }).catch(() => {});
 await mkdir(STATE_DIR, { recursive: true }).catch(() => {});
 
