@@ -3954,33 +3954,9 @@
   // orders — MEXC returns a "not cancellable" code which we swallow.
   async function _cancelMexcOrder(symbol, orderId) {
     if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
-    const apiKey = getMexcApiKey();
-    const apiSecret = getMexcApiSecret();
-    const workerUrl = getMexcWorkerUrl();
-    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
-    if (!workerUrl) return { sent: false, reason: 'no-worker' };
-    const reqTime = String(Date.now());
     // MEXC v1 contract cancel takes a JSON array of orderId strings.
-    const paramJson = JSON.stringify([String(orderId)]);
-    let signature;
-    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson); }
-    catch (e) { return { sent: false, reason: 'sign-failed', error: String((e && e.message) || e) }; }
-    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/cancel';
-    try {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'ApiKey': apiKey,
-          'Request-Time': reqTime,
-          'Signature': signature,
-        },
-        body: paramJson,
-      });
-      return { sent: resp.ok, status: resp.status };
-    } catch (e) {
-      return { sent: false, reason: 'network', error: String((e && e.message) || e) };
-    }
+    const r = await _callMexcSigned({ path: '/api/v1/private/order/cancel', method: 'POST', body: [String(orderId)] });
+    return { sent: !!r.sent, status: r.status, reason: r.reason, error: r.error };
   }
 
   // Read-only sanity check. Hits the signed account-assets endpoint
@@ -4030,28 +4006,12 @@
   }
 
   async function testMexcConnection() {
-    const apiKey = getMexcApiKey();
-    const apiSecret = getMexcApiSecret();
-    const workerUrl = getMexcWorkerUrl();
-    if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
-    if (!workerUrl) return { ok: false, error: 'no-worker' };
-    const reqTime = String(Date.now());
-    let signature;
-    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, ''); }
-    catch (e) { return { ok: false, error: 'sign-failed', detail: String((e && e.message) || e) }; }
-    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/account/assets';
-    try {
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature },
-      });
-      const txt = await resp.text();
-      let json; try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
-      const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
-      return { ok, status: resp.status, response: json };
-    } catch (e) {
-      return { ok: false, error: 'network', detail: String((e && e.message) || e) };
-    }
+    const r = await _callMexcSigned({ path: '/api/v1/private/account/assets', method: 'GET' });
+    if (r.reason) return { ok: false, error: r.reason };
+    if (r.error) return { ok: false, error: 'network', detail: r.error };
+    let json; try { json = JSON.parse(r.text); } catch (e) { json = { raw: r.text }; }
+    const ok = !!(r.sent && (json.success === true || json.code === 0 || json.code === 200));
+    return { ok, status: r.status, response: json };
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -4130,11 +4090,16 @@
   //   (realized PnL for close orders), createTime, updateTime
   async function fetchMexcPositionHistory(opts) {
     opts = opts || {};
-    const apiKey    = getMexcApiKey();
-    const apiSecret = getMexcApiSecret();
-    const workerUrl = getMexcWorkerUrl();
-    if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
-    if (!workerUrl)            return { ok: false, error: 'no-worker' };
+    // Fast-fail when browser-signing mode is missing keys/worker. In server-
+    // signing mode the pre-check is skipped because the relay has the keys;
+    // _callMexcSigned handles the per-call routing.
+    if (!isMexcServerSigning()) {
+      const apiKey    = getMexcApiKey();
+      const apiSecret = getMexcApiSecret();
+      const workerUrl = getMexcWorkerUrl();
+      if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
+      if (!workerUrl)            return { ok: false, error: 'no-worker' };
+    }
     const days = Number(opts.days) > 0 ? Number(opts.days) : 7;
     const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
     const pageSize = Number(opts.pageSize) > 0 ? Number(opts.pageSize) : 100;
@@ -4148,25 +4113,15 @@
     const errors = [];
     for (const sym of symbols) {
       for (let page = 1; page <= 10; page++) {
-        const reqTime = String(Date.now());
-        // Params sorted alphabetically: page_num, page_size, start_time, symbol
-        const paramStr = `page_num=${page}&page_size=${pageSize}&start_time=${cutoffMs}&symbol=${sym}`;
-        let signature;
-        try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramStr); }
-        catch (e) { errors.push({ symbol: sym, page, error: 'sign-failed', detail: String((e && e.message) || e) }); break; }
-        const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/list/history_orders?' + paramStr;
-        let resp, json;
-        try {
-          resp = await fetch(url, {
-            method: 'GET',
-            headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature },
-          });
-          const txt = await resp.text();
-          try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
-        } catch (e) {
-          errors.push({ symbol: sym, page, error: 'network', detail: String((e && e.message) || e) });
-          break;
-        }
+        const r = await _callMexcSigned({
+          path: '/api/v1/private/order/list/history_orders',
+          method: 'GET',
+          params: { page_num: page, page_size: pageSize, start_time: cutoffMs, symbol: sym },
+        });
+        if (r.reason) { errors.push({ symbol: sym, page, error: r.reason }); break; }
+        if (r.error)  { errors.push({ symbol: sym, page, error: 'network', detail: r.error }); break; }
+        let json; try { json = JSON.parse(r.text); } catch (e) { json = { raw: r.text }; }
+        const resp = { ok: !!r.sent, status: r.status };
         const success = !!(resp.ok && (json.success === true || json.code === 0));
         if (!success) {
           errors.push({ symbol: sym, page, status: resp.status, response: json });
@@ -4318,29 +4273,13 @@
   }
 
   async function fetchMexcOpenPositions() {
-    const apiKey = getMexcApiKey();
-    const apiSecret = getMexcApiSecret();
-    const workerUrl = getMexcWorkerUrl();
-    if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
-    if (!workerUrl) return { ok: false, error: 'no-worker' };
-    const reqTime = String(Date.now());
-    let signature;
-    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, ''); }
-    catch (e) { return { ok: false, error: 'sign-failed', detail: String((e && e.message) || e) }; }
-    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/position/open_positions';
-    try {
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature },
-      });
-      const txt = await resp.text();
-      let json; try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
-      const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
-      const positions = ok && Array.isArray(json.data) ? json.data : [];
-      return { ok, status: resp.status, positions, response: json };
-    } catch (e) {
-      return { ok: false, error: 'network', detail: String((e && e.message) || e) };
-    }
+    const r = await _callMexcSigned({ path: '/api/v1/private/position/open_positions', method: 'GET' });
+    if (r.reason) return { ok: false, error: r.reason };
+    if (r.error)  return { ok: false, error: 'network', detail: r.error };
+    let json; try { json = JSON.parse(r.text); } catch (e) { json = { raw: r.text }; }
+    const ok = !!(r.sent && (json.success === true || json.code === 0 || json.code === 200));
+    const positions = ok && Array.isArray(json.data) ? json.data : [];
+    return { ok, status: r.status, positions, response: json };
   }
 
   // Polling tick — fetches the open-positions list and rebuilds the
@@ -4590,11 +4529,6 @@
   // (positionType in the position object is also 1/2 — we coerce both.)
   async function closeMexcPosition(symbol, vol, currentSide) {
     if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
-    const apiKey = getMexcApiKey();
-    const apiSecret = getMexcApiSecret();
-    const workerUrl = getMexcWorkerUrl();
-    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
-    if (!workerUrl) return { sent: false, reason: 'no-worker' };
     // Resolve the contract name via _resolveSymbols so GOLD/SILVER mapping etc.
     // is handled uniformly with the rest of the futures order path.
     const fake = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
@@ -4629,29 +4563,11 @@
       } catch (err) {}
       return { sent: false, dryRun: true, reason: 'dry-run' };
     }
-    const paramJson = JSON.stringify(body);
-    const reqTime = String(Date.now());
-    let signature;
-    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson); }
-    catch (e) { return { sent: false, reason: 'sign-failed', error: String((e && e.message) || e) }; }
-    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/submit';
-    let resp, json;
-    try {
-      resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'ApiKey': apiKey,
-          'Request-Time': reqTime,
-          'Signature': signature,
-        },
-        body: paramJson,
-      });
-      const txt = await resp.text();
-      try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
-    } catch (e) {
-      return { sent: false, reason: 'network', error: String((e && e.message) || e) };
-    }
+    const r = await _callMexcSigned({ path: '/api/v1/private/order/submit', method: 'POST', body });
+    if (r.reason) return { sent: false, reason: r.reason, error: r.error || r.text };
+    if (r.error)  return { sent: false, reason: 'network', error: r.error };
+    let json; try { json = JSON.parse(r.text); } catch (e) { json = { raw: r.text }; }
+    const resp = { ok: !!r.sent, status: r.status };
     const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
     if (!ok) {
       const code = (json && (json.code != null ? json.code : (json.errorCode != null ? json.errorCode : null)));
