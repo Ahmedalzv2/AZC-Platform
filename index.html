@@ -279,18 +279,25 @@
             <p>Live TradingView chart with full ICT methodology overlay. Pick a timeframe; the decision strip below tracks bias, fire status, and the next action.</p>
           </div>
 
-          <!-- Decision strip — the at-a-glance row above the chart.
-               KPI on the left, action chips on the right. Everything
-               actionable in the first eyeful, no scrolling required. -->
+          <!-- Trade State card — at-a-glance row above the chart.
+               Lane 1: live price KPI + meta. Lane 2: bias + fire chips.
+               Lane 3: primary action + details. Single source of truth
+               for "what state is this trade in right now". -->
           <div class="lc-decision-strip">
             <div class="lc-decision-kpi">
               <div class="kpi-label">Live price</div>
-              <div class="kpi-value is-lg" id="tvLivePrice">—</div>
+              <div class="kpi-value" id="tvLivePrice">—</div>
+              <div class="kpi-meta">
+                <span id="tvLivePriceTimestamp">awaiting feed</span>
+              </div>
             </div>
-            <div class="lc-decision-actions">
+            <div class="lc-decision-state">
+              <span id="tvBiasChip" class="chip is-muted" title="Higher timeframe bias">— bias</span>
               <span id="tvFireStatusBadge"
                     class="chip is-muted"
                     title="Fire status for the selected asset — READY = next tick fires, NEAR = closing in, WAITING = far, BLOCKED = some gate stops it">— pick asset</span>
+            </div>
+            <div class="lc-decision-actions">
               <button id="tvForceFireBtn" class="btn is-primary is-sm"
                       onclick="(function(){const a=ASSETS.find(x=>x.symbol===tvCurrentSymbol);if(a)openSetupModal(a);})()"
                       title="Open the manual trade-plan details">Build trade plan</button>
@@ -317,8 +324,38 @@
             </div>
           </div>
 
-          <!-- Hero chart container — given the room to dominate. -->
-          <div id="tvChartContainer" class="lc-chart-hero"></div>
+          <!-- Hero chart container — given the room to dominate.
+               Wraps a CSS skeleton so the panel never reads as "blank";
+               the skeleton is removed by initTVChart() once TradingView
+               actually mounts. -->
+          <div id="tvChartContainer" class="lc-chart-hero">
+            <div class="chart-skeleton" id="tvChartSkeleton" aria-hidden="true">
+              <div class="cs-pricecol">
+                <span>+0.50%</span><span>—</span><span>—</span><span>—</span><span>-0.50%</span>
+              </div>
+              <div class="cs-canvas">
+                <div class="cs-grid"></div>
+                <div class="cs-candle-row">
+                  <span class="cs-candle is-up"   style="--h:60%;--top:18%"></span>
+                  <span class="cs-candle is-down" style="--h:48%;--top:30%"></span>
+                  <span class="cs-candle is-up"   style="--h:72%;--top:12%"></span>
+                  <span class="cs-candle is-up"   style="--h:64%;--top:20%"></span>
+                  <span class="cs-candle is-down" style="--h:36%;--top:42%"></span>
+                  <span class="cs-candle is-down" style="--h:54%;--top:24%"></span>
+                  <span class="cs-candle is-up"   style="--h:80%;--top:8%"></span>
+                  <span class="cs-candle is-up"   style="--h:66%;--top:14%"></span>
+                  <span class="cs-candle is-down" style="--h:42%;--top:32%"></span>
+                  <span class="cs-candle is-up"   style="--h:70%;--top:18%"></span>
+                  <span class="cs-candle is-down" style="--h:50%;--top:28%"></span>
+                  <span class="cs-candle is-up"   style="--h:78%;--top:10%"></span>
+                </div>
+                <div class="cs-label">Loading chart…</div>
+              </div>
+              <div class="cs-timecol">
+                <span>09:30</span><span>10:00</span><span>10:30</span><span>11:00</span><span>11:30</span>
+              </div>
+            </div>
+          </div>
 
           <!-- ICT Analysis Panel for selected asset -->
           <div class="ap-card full is-accent" style="margin-top: var(--space-5);">
@@ -332,13 +369,13 @@
 
           <!-- ICT Concepts & Graphs — moved here from its own tab. Only visible
                when US100 is the active asset; render lazily on first open. -->
-          <details id="liveChartMethodsBlock" style="display:none;margin-top:18px;background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;">
-            <summary style="cursor:pointer;font-size:14px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono',monospace;list-style:none;display:flex;align-items:center;gap:10px;">
-              <span style="display:inline-block;transition:transform 0.2s;" class="lc-methods-caret">▶</span>
-              📊 ICT Concepts & Graphs
-              <span style="font-size:11px;color:var(--text-mute);font-weight:500;margin-left:auto;">Visual breakdown of every concept</span>
+          <details id="liveChartMethodsBlock" class="lc-methods" style="display:none;">
+            <summary>
+              <span class="lc-methods-caret">›</span>
+              <span>📊 ICT Concepts &amp; Graphs</span>
+              <span class="lc-methods-hint">Visual breakdown of every concept</span>
             </summary>
-            <div style="margin-top:14px;">
+            <div class="lc-methods-body">
               <div class="methods-grid" id="methodsGrid"></div>
             </div>
           </details>
@@ -5233,25 +5270,25 @@
         </div>`
       : '';
     const btn = d.actionKind === 'force'
-      ? `<button onclick="_onClickForceFire('${sym}')" style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
+      ? `<button onclick="_onClickForceFire('${sym}')" class="btn is-danger is-sm">${d.actionLabel}</button>`
       : d.actionKind === 'live'
-        ? `<button onclick="openLiveTradingModal()" style="background:rgba(201,169,97,0.16);border:1px solid var(--gold);color:var(--gold);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
+        ? `<button onclick="openLiveTradingModal()" class="btn is-primary is-sm">${d.actionLabel}</button>`
         : d.actionKind === 'plan'
-          ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${sym}');if(a)openSetupModal(a);})()" style="background:rgba(201,169,97,0.16);border:1px solid var(--gold);color:var(--gold);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
+          ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${sym}');if(a)openSetupModal(a);})()" class="btn is-primary is-sm">${d.actionLabel}</button>`
         : d.actionKind === 'details'
-          ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${sym}');if(a)openSetupModal(a);})()" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${d.actionLabel}</button>`
+          ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${sym}');if(a)openSetupModal(a);})()" class="btn is-ghost is-sm">${d.actionLabel}</button>`
           : '';
     return `
-      <div style="background:var(--bg);border:1px solid ${d.color};border-radius:10px;padding:14px;margin-bottom:14px;">
-        <div style="display:flex;align-items:flex-start;gap:12px;justify-content:space-between;flex-wrap:wrap;">
-          <div style="min-width:220px;flex:1;">
-            <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;margin-bottom:6px;">Now</div>
-            <div style="font-size:18px;color:${d.color};font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1.2;">${d.label}</div>
+      <div class="lc-now-card" style="--state-color:${d.color}">
+        <div class="lc-now-head">
+          <div>
+            <div class="lc-now-eyebrow">Now</div>
+            <div class="lc-now-label">${d.label}</div>
           </div>
-          <div style="display:flex;gap:8px;align-items:center;">${btn}</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${btn}</div>
         </div>
-        <div style="margin-top:10px;font-size:12px;color:var(--text-dim);line-height:1.6;">${d.reason}</div>
-        <div style="margin-top:8px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">${d.riskLine}</div>
+        <div class="lc-now-reason">${d.reason}</div>
+        <div class="lc-now-risk">${d.riskLine}</div>
         ${rows}
       </div>`;
   }
@@ -10872,8 +10909,6 @@
     const container = document.getElementById('tvChartContainer');
     if (!container) return;
 
-    container.innerHTML = '';
-
     if (!tvChartLoaded) {
       const script = document.createElement('script');
       script.src = 'https://s3.tradingview.com/tv.js';
@@ -11273,18 +11308,33 @@
   function updateTVAnalysis(symbol) {
     const a = ASSETS.find(x => x.symbol === symbol);
     // ICT Concepts dropdown lives at the end of the US100 live chart only.
-    // Hide it for every other asset so the page doesn't carry the methods
-    // grid as dead weight. Lazy-render is wired via the toggle listener in
-    // _initLiveChartMethodsDropdown.
     try {
       const methodsBlock = document.getElementById('liveChartMethodsBlock');
       if (methodsBlock) methodsBlock.style.display = (symbol === 'US100') ? '' : 'none';
     } catch (e) {}
-    // Update live price badge in chart header
+    // Trade State card — live price + bias + timestamp.
     const priceTag = document.getElementById('tvLivePrice');
     if (priceTag && a) {
       priceTag.textContent = '$' + (a.price || '--').toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-      priceTag.style.color = a.bias === 'BEARISH' ? '#e05d5d' : a.bias === 'BULLISH' ? '#5cb88a' : '#c9a961';
+      priceTag.classList.remove('is-bull','is-bear');
+      if (a.bias === 'BULLISH') priceTag.classList.add('is-bull');
+      else if (a.bias === 'BEARISH') priceTag.classList.add('is-bear');
+      priceTag.style.color = '';
+    }
+    const biasChip = document.getElementById('tvBiasChip');
+    if (biasChip && a) {
+      const biasMap = { BULLISH: { v: 'is-bull', t: 'Bullish bias' },
+                        BEARISH: { v: 'is-bear', t: 'Bearish bias' },
+                        NEUTRAL: { v: 'is-muted', t: 'Neutral' } };
+      const conf = biasMap[a.bias] || { v: 'is-muted', t: '— bias' };
+      biasChip.className = 'chip ' + conf.v;
+      biasChip.textContent = conf.t;
+    }
+    const tsTag = document.getElementById('tvLivePriceTimestamp');
+    if (tsTag && a) {
+      tsTag.textContent = a.lastUpdated
+        ? 'updated ' + new Date(a.lastUpdated).toISOString().slice(11,19) + ' UTC'
+        : 'awaiting feed';
     }
     const asset = ASSETS.find(a => a.symbol === symbol);
     if (!asset) return;
@@ -11366,47 +11416,42 @@
     const decisionCenter = (typeof _renderLiveChartDecisionCenter === 'function') ? _renderLiveChartDecisionCenter(asset) : '';
     const tfReadiness = (typeof _renderTfReadinessHTML === 'function') ? _renderTfReadinessHTML(asset) : '';
     const focusedTFCard = _renderSelectedTFCard(asset, typeof tvCurrentTimeframe !== 'undefined' ? tvCurrentTimeframe : 'W');
-    const summaryCards = _isUs100IctAsset(asset) && !_hasUs100ActivePlan(asset)
-      ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Current Price</div>
-          <div style="font-size:16px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
+    // Plan Details card — was a duplicate of the Trade State card above the
+    // chart (Current Price / Bias) plus the actual plan levels. Strip the
+    // duplicate columns (price, bias, plan-status) since those live in the
+    // Trade State card now. Keep what's unique to a fired/active plan:
+    // Entry, SL, TP, R:R, Grade.
+    let summaryCards = '';
+    if (_isUs100IctAsset(asset) && !_hasUs100ActivePlan(asset)) {
+      summaryCards = '';
+    } else {
+      const stopDist = (asset.entry && asset.sl) ? Math.abs(asset.entry - asset.sl) : 0;
+      const tpVal = asset.tp || asset.tp1;
+      const tpDist = (asset.entry && tpVal) ? Math.abs(tpVal - asset.entry) : 0;
+      const rr = (stopDist > 0 && tpDist > 0) ? (tpDist / stopDist).toFixed(2) : '—';
+      summaryCards = `<div class="plan-details-grid">
+        <div class="plan-cell">
+          <div class="plan-label">Entry</div>
+          <div class="plan-value">$${asset.entry.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
         </div>
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Plan Status</div>
-          <div style="font-size:14px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">WAITING PLAN</div>
+        <div class="plan-cell">
+          <div class="plan-label">Stop loss</div>
+          <div class="plan-value is-bear">$${asset.sl.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
         </div>
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Bias</div>
-          <div style="font-size:14px;font-weight:600;color:var(--text);font-family:'JetBrains Mono',monospace;">${asset.bias||'—'}</div>
+        <div class="plan-cell">
+          <div class="plan-label">Target</div>
+          <div class="plan-value is-bull">$${tpVal.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
         </div>
-      </div>`
-      : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Current Price</div>
-          <div style="font-size:16px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
+        <div class="plan-cell">
+          <div class="plan-label">Risk : Reward</div>
+          <div class="plan-value">1 : ${rr}</div>
         </div>
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Entry</div>
-          <div style="font-size:16px;font-weight:600;color:var(--text);font-family:'JetBrains Mono',monospace;">$${asset.entry.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
-        </div>
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">SL</div>
-          <div style="font-size:16px;font-weight:600;color:var(--bear);font-family:'JetBrains Mono',monospace;">$${asset.sl.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
-        </div>
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">TP</div>
-          <div style="font-size:16px;font-weight:600;color:var(--bull);font-family:'JetBrains Mono',monospace;">$${(asset.tp||asset.tp1).toLocaleString(undefined,{maximumFractionDigits:4})}</div>
-        </div>
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Grade</div>
-          <div style="font-size:16px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">${asset.grade}</div>
-        </div>
-        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
-          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Bias</div>
-          <div style="font-size:14px;font-weight:600;color:${(asset.bias||'').toUpperCase().includes('BULL')?'var(--bull)':'var(--bear)'};font-family:'JetBrains Mono',monospace;">${(asset.bias||'').substring(0,4)}</div>
+        <div class="plan-cell">
+          <div class="plan-label">Grade</div>
+          <div class="plan-value is-gold">${asset.grade}</div>
         </div>
       </div>`;
+    }
 
     analysisPanel.innerHTML = `
       ${decisionCenter}

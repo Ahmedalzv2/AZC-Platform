@@ -1972,23 +1972,72 @@
    visual hero; everything else recedes into supporting detail.
 ═══════════════════════════════════════════════════════════════════ */
 
+/* Trade State card — the dominant at-a-glance row above the chart.
+   Three lanes: (1) huge live price + meta, (2) bias + plan-status chips,
+   (3) primary + secondary actions. Calmer surface than a plain card —
+   subtle gradient + accent ring on the left edge to read as "primary
+   information." */
 .lc-decision-strip {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
   align-items: center;
-  gap: var(--space-5);
-  background: var(--bg-elevated);
+  gap: var(--space-6);
+  background:
+    linear-gradient(135deg, rgba(107,138,253,0.04) 0%, transparent 40%),
+    var(--bg-elevated);
   border: 1px solid var(--border-soft);
   border-radius: var(--r-card);
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-5) var(--space-6);
   margin-bottom: var(--space-4);
   box-shadow: var(--shadow-card);
+  position: relative;
+  overflow: hidden;
 }
-.lc-decision-kpi { min-width: 0; }
+.lc-decision-strip::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 16px; bottom: 16px;
+  width: 3px;
+  background: linear-gradient(180deg, var(--accent-strong), rgba(107,138,253,0.18));
+  border-radius: 0 2px 2px 0;
+}
+
+.lc-decision-kpi { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.lc-decision-kpi .kpi-label {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+}
 .lc-decision-kpi .kpi-value {
-  color: var(--gold);
-  letter-spacing: -0.01em;
+  font-size: 38px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
 }
+.lc-decision-kpi .kpi-value.is-bull { color: var(--bull); }
+.lc-decision-kpi .kpi-value.is-bear { color: var(--bear); }
+.lc-decision-kpi .kpi-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  margin-top: 2px;
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Middle lane: bias + plan status chips, stacked. */
+.lc-decision-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  min-width: 140px;
+}
+.lc-decision-state .chip { font-size: 11px; }
+
 .lc-decision-actions {
   display: flex;
   gap: var(--space-2);
@@ -1996,14 +2045,23 @@
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+
+@media (max-width: 1100px) {
+  .lc-decision-strip {
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto;
+  }
+  .lc-decision-state { grid-column: 1 / -1; flex-direction: row; }
+  .lc-decision-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
 @media (max-width: 900px) {
   .lc-decision-strip {
     grid-template-columns: 1fr;
     gap: var(--space-3);
+    padding: var(--space-4);
   }
-  .lc-decision-actions {
-    justify-content: flex-start;
-  }
+  .lc-decision-kpi .kpi-value { font-size: 28px; }
+  .lc-decision-actions { justify-content: flex-start; }
 }
 
 .lc-toolbar {
@@ -2097,3 +2155,268 @@
   0%, 100% { box-shadow: 0 0 0 0 rgba(226,100,100,0.45); }
   50%      { box-shadow: 0 0 0 6px rgba(226,100,100,0); }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   CHART SKELETON — premium loading state inside .lc-chart-hero
+   Resembles an actual chart shell (price axis + grid + ghost candles)
+   so the panel never reads as broken. JS replaces this with the real
+   TradingView widget on first asset click.
+═══════════════════════════════════════════════════════════════════ */
+.chart-skeleton {
+  width: 100%; height: 100%;
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  grid-template-rows: 1fr 28px;
+  grid-template-areas:
+    "price canvas"
+    "price time";
+  background:
+    radial-gradient(800px 400px at 60% 30%, rgba(107,138,253,0.04), transparent 70%),
+    var(--bg-surface);
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  position: relative;
+}
+.chart-skeleton .cs-pricecol {
+  grid-area: price;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 14px 10px 14px 0;
+  font-size: 10px;
+  border-right: 1px solid var(--border-soft);
+  letter-spacing: 0.04em;
+}
+.chart-skeleton .cs-timecol {
+  grid-area: time;
+  grid-column: 2 / 3;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 14px;
+  font-size: 10px;
+  border-top: 1px solid var(--border-soft);
+  letter-spacing: 0.04em;
+}
+.chart-skeleton .cs-canvas {
+  grid-area: canvas;
+  position: relative;
+  overflow: hidden;
+}
+.chart-skeleton .cs-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(255,255,255,0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.025) 1px, transparent 1px);
+  background-size: 80px 60px;
+  background-position: 0 0;
+  mask-image: linear-gradient(180deg, rgba(0,0,0,0.7), rgba(0,0,0,0.3));
+}
+.chart-skeleton .cs-candle-row {
+  position: absolute;
+  inset: 24px 24px 24px 24px;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+}
+.chart-skeleton .cs-candle {
+  position: relative;
+  flex: 1;
+  height: var(--h, 50%);
+  top: var(--top, 25%);
+  border-radius: 2px;
+  opacity: 0.18;
+  background: linear-gradient(180deg,
+    var(--bg-hot) 0%,
+    var(--bull) 50%,
+    var(--bg-hot) 100%);
+  animation: cs-shimmer 2.4s ease-in-out infinite;
+  animation-delay: calc(var(--h) * 1ms);
+}
+.chart-skeleton .cs-candle.is-up   { background: linear-gradient(180deg, rgba(78,195,138,0.55), rgba(78,195,138,0.15)); }
+.chart-skeleton .cs-candle.is-down { background: linear-gradient(180deg, rgba(226,100,100,0.55), rgba(226,100,100,0.15)); }
+.chart-skeleton .cs-candle::before {
+  /* Wick line */
+  content: '';
+  position: absolute;
+  left: 50%; top: -10%; bottom: -10%;
+  width: 1px;
+  background: currentColor;
+  opacity: 0.4;
+  transform: translateX(-50%);
+}
+.chart-skeleton .cs-label {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: var(--fs-meta);
+  color: var(--text-mute);
+  background: rgba(10,11,14,0.7);
+  border: 1px solid var(--border-soft);
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  backdrop-filter: blur(6px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+.chart-skeleton .cs-label::before {
+  content: '';
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  margin-right: 8px;
+  vertical-align: 1px;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes cs-shimmer {
+  0%, 100% { opacity: 0.14; transform: translateY(0); }
+  50%      { opacity: 0.32; transform: translateY(-2px); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PLAN DETAILS CARD — the only deep card under the chart now.
+   No price / bias / plan-status duplication with the Trade State card.
+═══════════════════════════════════════════════════════════════════ */
+.plan-details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.plan-cell {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-btn);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plan-cell .plan-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 500;
+}
+.plan-cell .plan-value {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  font-variant-numeric: tabular-nums;
+}
+.plan-cell .plan-value.is-bull { color: var(--bull); }
+.plan-cell .plan-value.is-bear { color: var(--bear); }
+.plan-cell .plan-value.is-gold { color: var(--gold); }
+
+/* "Now" / decision-center card — was a one-off mess of inline styles. Use
+   the design tokens; let the state color cascade from a single CSS var so
+   the border stays semantic without us inlining hex colors. */
+.lc-now-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-card);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
+  box-shadow: var(--shadow-card);
+  position: relative;
+}
+.lc-now-card::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 14px; bottom: 14px;
+  width: 3px;
+  background: var(--state-color, var(--accent-strong));
+  border-radius: 0 2px 2px 0;
+  opacity: 0.7;
+}
+.lc-now-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.lc-now-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.lc-now-label {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--state-color, var(--text));
+  letter-spacing: -0.005em;
+  line-height: 1.15;
+}
+.lc-now-reason {
+  margin-top: var(--space-3);
+  font-size: var(--fs-body);
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.lc-now-risk {
+  margin-top: 6px;
+  font-size: var(--fs-meta);
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+}
+
+/* ICT Methods dropdown — was inline-styled. Token it. Header is text, not
+   gold, since the gold treatment was load-bearing elsewhere. */
+.lc-methods {
+  margin-top: var(--space-5);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-card);
+  overflow: hidden;
+}
+.lc-methods > summary {
+  cursor: pointer;
+  padding: var(--space-4) var(--space-5);
+  font-family: var(--font-mono);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  letter-spacing: 0.02em;
+}
+.lc-methods > summary::-webkit-details-marker { display: none; }
+.lc-methods > summary:hover { background: var(--bg-elevated); }
+.lc-methods .lc-methods-caret {
+  display: inline-block;
+  transition: transform var(--t-base) var(--ease);
+  font-size: 18px;
+  color: var(--text-mute);
+  line-height: 1;
+}
+.lc-methods[open] .lc-methods-caret { transform: rotate(90deg); color: var(--accent-strong); }
+.lc-methods .lc-methods-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-weight: 500;
+  margin-left: auto;
+  letter-spacing: 0.04em;
+}
+.lc-methods .lc-methods-body {
+  padding: 0 var(--space-5) var(--space-5);
+}
+
+/* Generic de-gold tune-ups — reduce gold by ~35% via these swaps in
+   high-frequency places. Brand logos and explicit "grade" indicators keep
+   their gold; everything frequent moves to neutral or accent. */
