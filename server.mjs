@@ -516,11 +516,14 @@ const server = http.createServer(async (req, res) => {
         });
         const payload = JSON.parse(body || '{}');
         const state = payload.state === 'on' ? 'on' : 'off';
-        _autoState = {
-          state,
-          ts: Date.now(),
-          lastFireTs: Number(payload.lastFireTs) || _autoState.lastFireTs || 0,
-        };
+        // Only overwrite lastFireTs when the payload explicitly carries a
+        // finite positive number. `||` treats 0 as falsy, which made the
+        // field sticky once any non-zero value had ever been posted.
+        const incomingFire = Number(payload.lastFireTs);
+        const nextFireTs = Number.isFinite(incomingFire) && incomingFire > 0
+          ? incomingFire
+          : _autoState.lastFireTs;
+        _autoState = { state, ts: Date.now(), lastFireTs: nextFireTs };
         return sendJson(res, 200, { ok: true, ..._autoState }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 400, { error: error.message }, CORS_HEADERS);
