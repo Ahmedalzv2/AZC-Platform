@@ -1,4 +1,4 @@
-# ICT AutoPilot
+# AZC Platform
 
 Single-page trading dashboard centered on a US100 ICT cockpit plus a
 separate Spot Watch lane for crypto accumulation/distribution context.

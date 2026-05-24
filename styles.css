@@ -330,47 +330,40 @@
     .side-nav-toggle.expanded::after { transform: rotate(90deg); opacity: 1; }
     .side-nav-children {
       display: none;
-      margin: 0 var(--space-2) var(--space-2);
+      margin: 0 var(--space-3) var(--space-2) var(--space-3);
       padding: var(--space-2) 0 var(--space-2) var(--space-3);
       border-left: 1px solid var(--border-soft);
-      margin-left: 18px;
     }
     .side-nav-children.expanded { display: block; }
 
-    /* Compact toolbar inside dropdown */
-    .side-toolbar {
-      display: flex;
-      gap: 4px;
-      padding: 0 0 8px 10px;
-      margin-bottom: 6px;
-      border-bottom: 1px dashed var(--border);
-    }
-    /* Override .side-nav button cascade for compact toolbar buttons */
-    .side-nav .side-toolbar-btn {
-      flex: 1;
-      width: auto;
-      margin: 0;
-      padding: 6px 0;
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      color: var(--text-dim);
-      font-size: 13px;
-      line-height: 1;
-      text-align: center;
+    /* Standalone "+ Add asset" — replaces the old 4-icon toolbar inside the
+       Live Chart dropdown. One clear action, no clutter. */
+    .side-add-asset {
+      display: block;
+      width: 100%;
+      margin: 0 0 var(--space-2);
+      padding: 7px 10px;
+      background: var(--accent-soft);
+      border: 1px dashed var(--accent-line);
+      border-radius: var(--r-btn);
+      color: var(--accent-strong);
+      font-family: var(--font-mono);
+      font-size: var(--fs-meta);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-align: left;
       cursor: pointer;
-      transition: all 0.15s;
+      transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
     }
-    .side-nav .side-toolbar-btn:hover {
-      background: rgba(201,169,97,0.08);
-      color: var(--gold);
-      border-color: rgba(201,169,97,0.4);
+    .side-add-asset:hover {
+      background: rgba(107,138,253,0.22);
+      border-color: var(--accent-strong);
     }
 
     /* Asset row in sidebar dropdown — scoped under .side-nav to override the
        broad .side-nav button cascade. */
     .side-nav .side-asset-group {
-      margin: 12px 0 5px 10px;
+      margin: 12px 0 5px 0;
       color: var(--text-mute);
       font-family: 'JetBrains Mono', monospace;
       font-size: 9px;
@@ -383,8 +376,8 @@
       align-items: center;
       justify-content: space-between;
       gap: 6px;
-      width: calc(100% - 10px);
-      margin: 0 0 2px 10px;
+      width: 100%;
+      margin: 0 0 2px 0;
       padding: 7px 10px;
       background: transparent;
       border: 1px solid transparent;

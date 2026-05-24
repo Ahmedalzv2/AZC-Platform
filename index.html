@@ -9,8 +9,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="ICT AutoPilot" />
-  <title>Ahmad · ICT AutoPilot v21</title>
+  <meta name="apple-mobile-web-app-title" content="AZC Platform" />
+  <title>AZC Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500;600&family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -50,8 +50,8 @@
   <!-- ═══ AUTOPILOT TOP BAR ═══ -->
   <div class="autopilot-bar">
     <div class="ap-brand">
-      <div class="logo">ICT AutoPilot</div>
-      <div class="v">v21 · Ahmad</div>
+      <div class="logo">AZC</div>
+      <div class="v">PLATFORM · v21</div>
     </div>
     <div class="ap-segment">
       <div class="sync-dot" id="syncDot"></div>
@@ -75,20 +75,15 @@
   <div class="shell">
     <nav class="side">
       <div class="brand">
-        <div class="logo">Ahmad<br><em style="color:var(--gold-soft);font-size:15px;">AutoPilot</em></div>
+        <div class="logo">AZC<br><em style="color:var(--text-dim);font-size:13px;font-style:normal;letter-spacing:0.18em;">PLATFORM</em></div>
         <div class="sub">ICT · v21</div>
       </div>
       <div class="side-nav">
-        <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Top Setup</button>
+        <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Dashboard</button>
         <div class="side-nav-section">
           <button class="nav-btn side-nav-toggle expanded" onclick="onLiveChartNavClick(this)">📈 Live Chart</button>
           <div class="side-nav-children expanded" id="sideAssetsList">
-            <div class="side-toolbar">
-              <button class="side-toolbar-btn" onclick="event.stopPropagation();syncBinance()" title="Sync now">⚡</button>
-              <button class="side-toolbar-btn" onclick="event.stopPropagation();pasteCSV()" title="Paste CSV">📋</button>
-              <button class="side-toolbar-btn" onclick="event.stopPropagation();openSharedSheet()" title="Shared sheet">👥</button>
-              <button class="side-toolbar-btn" onclick="event.stopPropagation();showAddAssetModal()" title="Add asset" style="color:var(--gold);border-color:rgba(201,169,97,0.4);">＋</button>
-            </div>
+            <button class="side-add-asset" onclick="event.stopPropagation();showAddAssetModal()" title="Add a new asset to the watchlist">＋ Add asset</button>
             <div id="sideAssetsRows"></div>
           </div>
         </div>
@@ -13293,7 +13288,7 @@
       pollTVAlerts();
       setInterval(pollTVAlerts, 30000);
     }
-    console.log('%c⚡ ICT AutoPilot v21 ready · open DevTools console (F12) to see any ❌ crash labels', 'color:#c9a961;font-family:monospace');
+    console.log('%c⚡ AZC Platform v21 ready · open DevTools console (F12) to see any ❌ crash labels', 'color:#c9a961;font-family:monospace');
   };
 </script>
 
@@ -13301,8 +13296,8 @@
 <nav class="mobile-bottom-nav" id="mobileBottomNav">
   <div class="mob-nav-items">
     <button class="mob-nav-btn active" id="mobBtn-autopilot" onclick="switchTab('autopilot',this)">
-      <span class="mob-icon">⚡</span>
-      <span class="mob-label">AutoPilot</span>
+      <span class="mob-icon">⭐</span>
+      <span class="mob-label">Dashboard</span>
     </button>
     <button class="mob-nav-btn" id="mobBtn-live-chart" onclick="switchTab('live-chart',this)">
       <span class="mob-icon">📈</span>
