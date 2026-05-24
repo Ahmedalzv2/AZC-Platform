@@ -333,8 +333,19 @@
       margin: 0 var(--space-3) var(--space-2) var(--space-3);
       padding: var(--space-2) 0 var(--space-2) var(--space-3);
       border-left: 1px solid var(--border-soft);
+      max-height: 320px;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(107,138,253,0.18) transparent;
     }
     .side-nav-children.expanded { display: block; }
+    .side-nav-children::-webkit-scrollbar { width: 5px; }
+    .side-nav-children::-webkit-scrollbar-track { background: transparent; }
+    .side-nav-children::-webkit-scrollbar-thumb {
+      background: rgba(107,138,253,0.18);
+      border-radius: 3px;
+    }
+    .side-nav-children::-webkit-scrollbar-thumb:hover { background: rgba(107,138,253,0.4); }
 
     /* Standalone "+ Add asset" — replaces the old 4-icon toolbar inside the
        Live Chart dropdown. One clear action, no clutter. */
