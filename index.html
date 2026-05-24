@@ -10564,7 +10564,12 @@
           if (j?.price && j.price > 0) { price = j.price; sourceUsed = 'worker:' + (j.source || 'NQ1!'); }
         }
       } catch(e) {}
-      if (!(price > 0)) try {
+      // Same-origin /api/us100-price only exists when the dashboard is served
+      // by server.mjs (npm start). On github.io it always fails with
+      // TypeError. Skip the call entirely on github.io to stop the noisy
+      // console errors + wasted RTT — public-relay below covers that case.
+      const onGithubPages = (typeof location !== 'undefined') && /\.github\.io$/i.test(location.hostname);
+      if (!(price > 0) && !onGithubPages) try {
         const r = await fetch('/api/us100-price', {cache:'no-store', signal:sig()});
         if (r.ok) {
           const j = await r.json();
@@ -12930,6 +12935,12 @@
   }
 
   function initUS100LiveStream() {
+    // TV's data WS rejects the github.io origin (403 on handshake), so this
+    // path immediately closes and the backoff loop spins forever — wasted
+    // bandwidth + console noise. Skip the WS entirely on github.io; the
+    // /us100/bars polling path covers the streaming need.
+    const onGithubPages = (typeof location !== 'undefined') && /\.github\.io$/i.test(location.hostname);
+    if (onGithubPages) return;
     const SYMBOL = 'FPMARKETS:US100';
     const url = 'wss://data.tradingview.com/socket.io/websocket';
     let heartbeats = 0;
@@ -13109,7 +13120,12 @@
     _try('rebuildTVSymbolSelect', rebuildTVSymbolSelect);
     _try('loadLevels', loadLevels);
     _try('loadTradeModes', loadTradeModes);
+    // Same-origin seed only works under npm start. On github.io the call
+    // 404s and clutters the console; the public-relay fallback below covers
+    // both cases.
     await (async () => {
+      const onGithubPages = (typeof location !== 'undefined') && /\.github\.io$/i.test(location.hostname);
+      if (onGithubPages) return;
       try {
         const r = await fetch('/api/us100-price', {cache:'no-store'});
         if (!r.ok) return;
