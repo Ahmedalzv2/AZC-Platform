@@ -21,6 +21,7 @@ services:
       - HOST=0.0.0.0
     volumes:
       - ./trade-learnings:/app/trade-learnings
+      - ./.trader-state:/app/.trader-state
     expose:
       - "3002"
     labels:

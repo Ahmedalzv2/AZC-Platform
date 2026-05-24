@@ -1,0 +1,21 @@
+[Unit]
+Description=AZC Platform autonomous trader (server-side MEXC execution)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/apps/ict-autopilot
+EnvironmentFile=/root/apps/ict-autopilot/relay.env
+ExecStart=/usr/bin/node /root/apps/ict-autopilot/azc-trader.mjs
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/azc-trader.log
+StandardError=append:/var/log/azc-trader.log
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

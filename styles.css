@@ -534,6 +534,44 @@
       50%      { box-shadow: 0 6px 36px rgba(224,93,93,0.95); }
     }
 
+    /* Server-side AZC trader kill switch — sits above the browser AUTO toggle. */
+    #azcTraderSwitch {
+      position: fixed;
+      right: 16px;
+      bottom: 64px;
+      z-index: 5000;
+      padding: 8px 16px;
+      border-radius: 999px;
+      border: 2px solid var(--text-mute);
+      background: rgba(106,110,124,0.18);
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+      user-select: none;
+      transition: transform 0.12s ease, background 0.12s ease;
+    }
+    #azcTraderSwitch:hover { transform: translateY(-2px); }
+    #azcTraderSwitch.trader-on {
+      background: rgba(78,195,138,0.18);
+      border-color: var(--bull);
+      color: var(--bull);
+    }
+    #azcTraderSwitch.trader-position {
+      background: rgba(107,138,253,0.22);
+      border-color: var(--accent-strong);
+      color: var(--accent-strong);
+      box-shadow: 0 6px 28px rgba(107,138,253,0.45);
+    }
+    #azcTraderSwitch.trader-stopped {
+      background: rgba(226,100,100,0.18);
+      border-color: var(--bear);
+      color: var(--bear);
+    }
+
     /* Mobile-only asset picker (horizontal scroll chips on live-chart tab) */
     .mobile-asset-picker {
       display: none;

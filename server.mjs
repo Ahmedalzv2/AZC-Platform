@@ -614,6 +614,49 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 500, { error: error.message }, CORS_HEADERS);
       }
     }
+    // Trader state — read the JSON the azc-trader.mjs process writes to
+    // /app/.trader-state/state.json (bind-mounted from host
+    // .trader-state/). Public GET so the dashboard can poll without
+    // sending the token.
+    if (url.pathname === '/trader-state' && req.method === 'GET') {
+      try {
+        const text = await import('node:fs/promises').then(m => m.readFile('/app/.trader-state/state.json', 'utf8'));
+        const data = JSON.parse(text);
+        const stopFlag = await import('node:fs/promises').then(m => m.access('/app/.trader-state/stop.flag').then(() => true).catch(() => false));
+        return sendJson(res, 200, { ok: true, stopFlag, ...data }, CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 200, { ok: false, running: false, reason: 'no-state-file' }, CORS_HEADERS);
+      }
+    }
+
+    // Trader stop — creates the stop.flag file. The trader checks for it
+    // each tick and exits gracefully. Auth-required (write endpoint).
+    if (url.pathname === '/trader-stop' && req.method === 'POST') {
+      if (!authedWrite(req)) return denyAuth(res);
+      try {
+        const fs = await import('node:fs/promises');
+        await fs.mkdir('/app/.trader-state', { recursive: true });
+        await fs.writeFile('/app/.trader-state/stop.flag', new Date().toISOString());
+        return sendJson(res, 200, { ok: true, stopped: true }, CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 500, { error: error.message }, CORS_HEADERS);
+      }
+    }
+
+    // Trader start — removes stop.flag so systemd's auto-restart can bring
+    // the trader back up. The trader process must already be enabled in
+    // systemd; this just clears the brake.
+    if (url.pathname === '/trader-start' && req.method === 'POST') {
+      if (!authedWrite(req)) return denyAuth(res);
+      try {
+        const fs = await import('node:fs/promises');
+        await fs.unlink('/app/.trader-state/stop.flag').catch(() => {});
+        return sendJson(res, 200, { ok: true, cleared: true }, CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 500, { error: error.message }, CORS_HEADERS);
+      }
+    }
+
     if (url.pathname === '/notify' && req.method === 'POST') {
       if (!authedWrite(req)) return denyAuth(res);
       // Read body, expect { text }. Cap at 2KB so a stuck client can't flood us.
