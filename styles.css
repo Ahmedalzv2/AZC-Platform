@@ -1,18 +1,92 @@
     :root {
-      --bg: #08080a;
-      --bg-surface: #0f0f12;
-      --bg-elevated: #16161b;
-      --bg-hot: #1a1a20;
-      --border: #1e1e24;
-      --text: #e8e8ea;
-      --text-dim: #a0a0a8;
-      --text-mute: #65656d;
-      --gold: #c9a961;
-      --gold-soft: #d4bc87;
-      --bull: #5cb88a;
-      --bear: #e05d5d;
-      --liq: #f2b33d;
-      --warn: #f2b33d;
+      /* ── Surfaces ─ four-layer system, calmer contrast steps ────────── */
+      --bg:           #0a0b0e;
+      --bg-surface:   #101116;
+      --bg-elevated:  #15171d;
+      --bg-hot:       #1b1d25;
+      --bg-overlay:   rgba(10,11,14,0.72);
+
+      /* ── Borders ─ subtle by default, strong only when truly needed ── */
+      --border:        #1d1f27;
+      --border-soft:   #16181f;
+      --border-strong: #2a2d38;
+
+      /* ── Text ─ tighter contrast ladder ─────────────────────────────── */
+      --text:        #ecedf1;
+      --text-dim:    #a8abb6;
+      --text-mute:   #6a6e7c;
+      --text-faint:  #45495a;
+
+      /* ── Accent ─ premium institutional blue. Gold reserved for KPI
+            value emphasis (account balance, PnL, etc.) — NOT for chrome. */
+      --accent:        #6b8afd;
+      --accent-soft:   rgba(107,138,253,0.14);
+      --accent-line:   rgba(107,138,253,0.28);
+      --accent-strong: #8aa3ff;
+
+      --gold:        #d4b86a;
+      --gold-soft:   rgba(212,184,106,0.12);
+
+      /* ── Semantic ─ bullish / bearish / warn / info ─────────────────── */
+      --bull:        #4ec38a;
+      --bull-soft:   rgba(78,195,138,0.12);
+      --bull-line:   rgba(78,195,138,0.28);
+      --bear:        #e26464;
+      --bear-soft:   rgba(226,100,100,0.12);
+      --bear-line:   rgba(226,100,100,0.28);
+      --warn:        #f2b341;
+      --warn-soft:   rgba(242,179,65,0.12);
+      --warn-line:   rgba(242,179,65,0.28);
+      --liq:         var(--warn);
+      --info:        var(--accent);
+      --info-soft:   var(--accent-soft);
+
+      /* ── Spacing scale ──────────────────────────────────────────────── */
+      --space-1:  4px;
+      --space-2:  8px;
+      --space-3:  12px;
+      --space-4:  16px;
+      --space-5:  20px;
+      --space-6:  24px;
+      --space-8:  32px;
+      --space-10: 40px;
+      --space-12: 56px;
+
+      /* ── Radii ─ one radius for cards, one for chips, one for buttons ─ */
+      --r-chip:    6px;
+      --r-btn:     8px;
+      --r-card:    12px;
+      --r-hero:    16px;
+      --r-pill:    999px;
+
+      /* ── Shadows ─ very soft, layered ───────────────────────────────── */
+      --shadow-card:  0 1px 0 rgba(255,255,255,0.02) inset, 0 8px 24px rgba(0,0,0,0.25);
+      --shadow-hero:  0 1px 0 rgba(255,255,255,0.03) inset, 0 16px 48px rgba(0,0,0,0.35);
+      --shadow-pop:   0 12px 36px rgba(0,0,0,0.45);
+
+      /* ── Type scale ─────────────────────────────────────────────────── */
+      --fs-display:  32px;   /* page hero */
+      --fs-title:    22px;   /* section title */
+      --fs-h3:       16px;   /* card title (display) */
+      --fs-body:     14px;   /* default body */
+      --fs-meta:     12px;   /* helper / metadata */
+      --fs-micro:    10px;   /* uppercase tracked labels */
+      --fs-kpi-lg:   28px;   /* primary KPI value */
+      --fs-kpi:      18px;   /* secondary KPI value */
+
+      --lh-tight:   1.2;
+      --lh-snug:    1.4;
+      --lh-normal:  1.55;
+
+      --font-display: 'Instrument Serif', serif;
+      --font-ui:      'Geist', system-ui, sans-serif;
+      --font-mono:    'JetBrains Mono', ui-monospace, monospace;
+
+      /* ── Motion ─────────────────────────────────────────────────────── */
+      --t-fast:   120ms;
+      --t-base:   180ms;
+      --t-slow:   260ms;
+      --ease:     cubic-bezier(0.2, 0.7, 0.2, 1);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -20,11 +94,27 @@
     body {
       background: var(--bg);
       color: var(--text);
-      font-family: 'Geist', system-ui, sans-serif;
-      font-size: 14px;
-      line-height: 1.6;
-      font-weight: 300;
+      font-family: var(--font-ui);
+      font-size: var(--fs-body);
+      line-height: var(--lh-normal);
+      font-weight: 400;
+      font-feature-settings: 'ss01','ss02','cv11';
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
+
+    /* Layered ambient background — extremely subtle radial wash so the
+       page doesn't feel like a flat black wall. Doesn't compete with cards. */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(1200px 600px at 80% -10%, rgba(107,138,253,0.05), transparent 60%),
+        radial-gradient(800px 500px at -10% 60%, rgba(212,184,106,0.025), transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .shell, .autopilot-bar { position: relative; z-index: 1; }
 
     /* ═══════════════════════════════════
        AUTOPILOT TOP BAR
@@ -32,156 +122,218 @@
     .autopilot-bar {
       position: fixed;
       top: 0; left: 0; right: 0;
-      height: 52px;
-      background: rgba(8,8,10,0.96);
-      border-bottom: 1px solid var(--border);
+      height: 56px;
+      background: rgba(10,11,14,0.78);
+      border-bottom: 1px solid var(--border-soft);
       display: flex;
       align-items: center;
       gap: 0;
       z-index: 100;
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(18px) saturate(140%);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
     }
 
+    /* Topbar segment — no hard borders, subtle dot dividers between meaningful
+       groups (added via .ap-segment + .ap-segment::before). Calmer, less
+       "cockpit panel". */
     .ap-segment {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 0 20px;
+      gap: var(--space-2);
+      padding: 0 var(--space-5);
       height: 100%;
-      border-right: 1px solid var(--border);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
+      font-family: var(--font-mono);
+      font-size: var(--fs-meta);
+      position: relative;
+    }
+    .ap-segment + .ap-segment::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 50%;
+      width: 1px; height: 22px;
+      background: var(--border-soft);
+      transform: translateY(-50%);
     }
 
     .ap-label {
       color: var(--text-mute);
-      font-size: 10px;
+      font-size: var(--fs-micro);
       text-transform: uppercase;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.12em;
+      font-weight: 500;
     }
 
+    /* Topbar values are NOT gold anymore. Plain text reads cleaner; specific
+       semantic states (PnL up/down) carry the color, not the label itself. */
     .ap-value {
       font-weight: 600;
-      color: var(--gold);
+      color: var(--text);
+      letter-spacing: 0.01em;
     }
+    .ap-value.is-bull { color: var(--bull); }
+    .ap-value.is-bear { color: var(--bear); }
+    .ap-value.is-warn { color: var(--warn); }
+    .ap-value.is-accent { color: var(--accent-strong); }
 
     .session-badge {
-      padding: 3px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      font-family: 'JetBrains Mono', monospace;
+      padding: 4px 10px;
+      border-radius: var(--r-chip);
+      font-size: var(--fs-micro);
+      font-weight: 600;
+      font-family: var(--font-mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      border: 1px solid transparent;
     }
 
     .sync-dot {
       width: 7px; height: 7px;
       border-radius: 50%;
       background: var(--bull);
+      box-shadow: 0 0 0 3px rgba(78,195,138,0.16);
       animation: pulse 2s infinite;
     }
     @keyframes pulse {
       0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+      50% { opacity: 0.35; }
     }
 
     .ap-brand {
       flex: 1;
-      padding: 0 20px;
+      padding: 0 var(--space-5);
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: var(--space-3);
     }
     .ap-brand .logo {
-      font-family: 'Instrument Serif', serif;
-      font-size: 18px;
-      color: var(--gold);
+      font-family: var(--font-display);
+      font-size: 20px;
+      letter-spacing: -0.01em;
+      color: var(--text);
+      background: linear-gradient(180deg, #f3f0e6 0%, #d4b86a 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
-    .ap-brand .v { color: var(--text-mute); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+    .ap-brand .v { color: var(--text-faint); font-size: var(--fs-micro); font-family: var(--font-mono); letter-spacing: 0.08em; }
 
     /* ═══════════════════════════════════
        LAYOUT
     ═══════════════════════════════════ */
-    .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; padding-top: 52px; }
+    .shell { display: grid; grid-template-columns: 248px 1fr; min-height: 100vh; padding-top: 56px; }
 
     nav.side {
-      position: sticky; top: 52px; height: calc(100vh - 52px); overflow-y: auto;
-      background: var(--bg-surface);
-      border-right: 1px solid var(--border);
-      padding: 20px 0;
+      position: sticky; top: 56px; height: calc(100vh - 56px); overflow-y: auto;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.012) 0%, transparent 200px),
+        var(--bg-surface);
+      border-right: 1px solid var(--border-soft);
+      padding: var(--space-5) 0 var(--space-8);
       z-index: 10;
-      /* Hide the bright system scrollbar — it clashes with the dark theme.
-         Firefox uses scrollbar-width/scrollbar-color; WebKit (Chrome / Edge /
-         Safari / Brave) uses ::-webkit-scrollbar pseudos. Both kept the
-         scrolling functional, just visually quiet. */
       scrollbar-width: thin;
-      scrollbar-color: rgba(201,169,97,0.20) transparent;
+      scrollbar-color: rgba(107,138,253,0.18) transparent;
     }
     nav.side::-webkit-scrollbar { width: 6px; }
     nav.side::-webkit-scrollbar-track { background: transparent; }
     nav.side::-webkit-scrollbar-thumb {
-      background: rgba(201,169,97,0.20);
+      background: rgba(107,138,253,0.18);
       border-radius: 3px;
     }
-    nav.side::-webkit-scrollbar-thumb:hover { background: rgba(201,169,97,0.40); }
+    nav.side::-webkit-scrollbar-thumb:hover { background: rgba(107,138,253,0.4); }
 
     .brand {
-      padding: 0 20px 20px;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 12px;
+      padding: 0 var(--space-5) var(--space-5);
+      border-bottom: 1px solid var(--border-soft);
+      margin-bottom: var(--space-4);
     }
     .brand .logo {
-      font-family: 'Instrument Serif', serif;
-      font-size: 22px;
-      color: var(--gold);
+      font-family: var(--font-display);
+      font-size: 24px;
+      letter-spacing: -0.01em;
+      background: linear-gradient(180deg, #f3f0e6 0%, #d4b86a 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
     .brand .sub {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 10px;
-      color: var(--text-mute);
-      margin-top: 4px;
-      letter-spacing: 0.15em;
+      font-family: var(--font-mono);
+      font-size: var(--fs-micro);
+      color: var(--text-faint);
+      margin-top: 6px;
+      letter-spacing: 0.18em;
       text-transform: uppercase;
+      font-weight: 500;
+    }
+
+    /* Visual section group label (e.g. "Navigation", "Watchlist"). Used to
+       break the long sidebar into scannable groups instead of one long list. */
+    .side-group-label {
+      padding: var(--space-4) var(--space-5) var(--space-2);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      font-weight: 500;
     }
 
     .side-nav button {
-      width: calc(100% - 24px);
-      margin: 0 12px 4px;
-      padding: 11px 14px;
+      width: calc(100% - 16px);
+      margin: 0 var(--space-2) 2px;
+      padding: 9px 12px;
       background: transparent;
-      border: 1px solid transparent;
-      border-radius: 6px;
+      border: none;
+      border-radius: var(--r-btn);
       color: var(--text-dim);
+      font-family: var(--font-ui);
       font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.005em;
       text-align: left;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+      position: relative;
     }
     .side-nav button:hover {
       background: var(--bg-hot);
       color: var(--text);
     }
+    /* Active nav uses a left accent bar (institutional pattern), not a
+       gold border box. Background is a soft accent tint, text is full white. */
     .side-nav button.active {
-      background: rgba(201, 169, 97, 0.1);
-      border-color: rgba(201, 169, 97, 0.4);
-      color: var(--gold);
+      background: var(--accent-soft);
+      color: var(--text);
+      font-weight: 600;
+    }
+    .side-nav button.active::before {
+      content: '';
+      position: absolute;
+      left: -2px; top: 8px; bottom: 8px;
+      width: 3px;
+      background: var(--accent-strong);
+      border-radius: 0 2px 2px 0;
     }
 
     /* Expandable Live Chart section in sidebar */
     .side-nav-section { display: block; }
     .side-nav-toggle::after {
-      content: '▸';
+      content: '›';
       float: right;
-      font-size: 10px;
-      opacity: 0.6;
-      transition: transform 0.2s;
-      margin-top: 2px;
+      font-size: 16px;
+      opacity: 0.5;
+      transition: transform var(--t-base) var(--ease);
+      line-height: 1;
+      margin-top: 1px;
     }
-    .side-nav-toggle.expanded::after { transform: rotate(90deg); }
+    .side-nav-toggle.expanded::after { transform: rotate(90deg); opacity: 1; }
     .side-nav-children {
       display: none;
-      margin: 0 12px 8px;
-      padding: 6px 0;
-      border-left: 1px solid var(--border);
+      margin: 0 var(--space-2) var(--space-2);
+      padding: var(--space-2) 0 var(--space-2) var(--space-3);
+      border-left: 1px solid var(--border-soft);
+      margin-left: 18px;
     }
     .side-nav-children.expanded { display: block; }
 
@@ -393,56 +545,75 @@
       .mobile-asset-picker { display: flex; }
     }
 
-    /* Live-chart empty hint state */
+    /* Live-chart empty hint — premium, calmer. No dashed border. */
     .live-chart-empty {
-      background: var(--bg-surface);
-      border: 1px dashed var(--border);
-      border-radius: 12px;
-      padding: 80px 24px;
+      background:
+        radial-gradient(600px 300px at 50% 0%, rgba(107,138,253,0.05), transparent 70%),
+        var(--bg-surface);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-hero);
+      padding: 96px 24px;
       text-align: center;
-      margin-bottom: 20px;
+      margin-bottom: var(--space-5);
+      box-shadow: var(--shadow-hero);
     }
     .live-chart-empty .icon {
-      font-size: 56px;
-      opacity: 0.4;
-      margin-bottom: 16px;
+      font-size: 48px;
+      opacity: 0.28;
+      margin-bottom: var(--space-5);
+      filter: grayscale(0.2);
     }
     .live-chart-empty .title {
-      font-family: 'Instrument Serif', serif;
-      font-size: 22px;
-      color: var(--gold);
-      margin-bottom: 8px;
+      font-family: var(--font-display);
+      font-size: 26px;
+      color: var(--text);
+      margin-bottom: var(--space-2);
+      letter-spacing: -0.015em;
     }
     .live-chart-empty .sub {
-      font-size: 13px;
+      font-size: var(--fs-meta);
       color: var(--text-mute);
-      max-width: 400px;
+      max-width: 440px;
       margin: 0 auto;
-      line-height: 1.6;
+      line-height: var(--lh-normal);
+    }
+    .live-chart-empty .sub strong {
+      color: var(--accent-strong);
+      font-weight: 600;
     }
 
-    main { padding: 32px 36px; overflow-x: hidden; }
+    main { padding: var(--space-8) var(--space-8); overflow-x: hidden; max-width: 1640px; }
 
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
     /* ═══════════════════════════════════
-       SECTION HEADER
+       PAGE HEADER — primary tab title with optional subtitle
     ═══════════════════════════════════ */
     .page-header {
-      margin-bottom: 28px;
-      padding-bottom: 20px;
-      border-bottom: 1px solid var(--border);
+      margin-bottom: var(--space-8);
+      padding-bottom: var(--space-5);
+      border-bottom: 1px solid var(--border-soft);
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-4);
     }
     .page-header h1 {
-      font-family: 'Instrument Serif', serif;
-      font-size: 28px;
-      color: var(--gold);
+      font-family: var(--font-display);
+      font-size: var(--fs-display);
+      color: var(--text);
+      letter-spacing: -0.015em;
+      line-height: var(--lh-tight);
+      font-weight: 400;
     }
     .page-header p {
-      color: var(--text-dim);
-      font-size: 13px;
-      margin-top: 6px;
+      color: var(--text-mute);
+      font-size: var(--fs-meta);
+      margin-top: var(--space-2);
+      line-height: var(--lh-snug);
+      max-width: 720px;
     }
 
     /* ═══════════════════════════════════
@@ -455,23 +626,45 @@
       margin-bottom: 24px;
     }
 
+    /* ── Card system ─ one radius, one padding, soft shadow, subtle border.
+          Accent emphasis is a 2px left bar (via .ap-card.is-accent), NOT a
+          gold border around the whole box. */
     .ap-card {
       background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 20px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-card);
+      padding: var(--space-6);
+      box-shadow: var(--shadow-card);
+      position: relative;
     }
 
     .ap-card.full { grid-column: 1 / -1; }
-    .ap-card.gold-border { border-color: rgba(201,169,97,0.4); }
+
+    /* Backwards-compat: gold-border was the old "emphasis" treatment.
+       Render it as a left accent bar instead of a full gold border so it
+       reads as priority without shouting. */
+    .ap-card.gold-border,
+    .ap-card.is-accent {
+      border-color: var(--border);
+    }
+    .ap-card.gold-border::before,
+    .ap-card.is-accent::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 16px; bottom: 16px;
+      width: 3px;
+      background: linear-gradient(180deg, var(--gold), rgba(212,184,106,0.2));
+      border-radius: 0 2px 2px 0;
+    }
 
     .ap-card-title {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 10px;
+      font-family: var(--font-mono);
+      font-size: var(--fs-micro);
       color: var(--text-mute);
       text-transform: uppercase;
-      letter-spacing: 0.15em;
-      margin-bottom: 14px;
+      letter-spacing: 0.16em;
+      font-weight: 600;
+      margin-bottom: var(--space-4);
     }
 
     /* Sessions timeline */
@@ -564,11 +757,13 @@
       padding: 3px 8px;
       border-radius: 3px;
     }
-    .badge-enter { background: rgba(224,93,93,0.25); color: var(--bear); font-weight:900; letter-spacing:.04em; animation: enterPulse 1.2s infinite; }
-    .badge-armed { background: rgba(92,184,138,0.2); color: var(--bull); }
-    .badge-watch { background: rgba(242,179,61,0.2); color: var(--liq); }
-    .badge-wait { background: rgba(101,101,109,0.2); color: var(--text-mute); }
-    .badge-skip { background: rgba(224,93,93,0.2); color: var(--bear); }
+    /* ── Status chips ─ semantic, no borders. Filled-low-opacity bg with
+          a single dot on the left for "live state" chips. */
+    .badge-enter { background: var(--bear-soft); color: var(--bear); font-weight: 700; letter-spacing: .03em; animation: enterPulse 1.2s infinite; }
+    .badge-armed { background: var(--bull-soft); color: var(--bull); font-weight: 600; }
+    .badge-watch { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+    .badge-wait  { background: rgba(106,110,124,0.16); color: var(--text-dim); font-weight: 600; }
+    .badge-skip  { background: var(--bear-soft); color: var(--bear); font-weight: 600; }
 
     .sig-price {
       font-family: 'JetBrains Mono', monospace;
@@ -822,17 +1017,22 @@
     }
     .method-card {
       background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      border-radius: 10px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--r-card);
       overflow: hidden;
       cursor: pointer;
-      transition: all 0.3s;
+      transition: transform var(--t-base) var(--ease), border-color var(--t-base) var(--ease), box-shadow var(--t-base) var(--ease);
+      box-shadow: var(--shadow-card);
     }
-    .method-card:hover { border-color: var(--gold); transform: translateY(-4px); }
-    .method-visual { height: 130px; background: var(--bg); display: flex; align-items: center; justify-content: center; border-bottom: 1px solid var(--border); padding: 12px; }
-    .method-info { padding: 14px; }
-    .method-info h3 { font-family: 'Instrument Serif', serif; color: var(--gold); font-size: 14px; margin-bottom: 5px; }
-    .method-info p { color: var(--text-dim); font-size: 12px; line-height: 1.5; }
+    .method-card:hover {
+      border-color: var(--accent-line);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-pop);
+    }
+    .method-visual { height: 130px; background: var(--bg-surface); display: flex; align-items: center; justify-content: center; border-bottom: 1px solid var(--border-soft); padding: 12px; }
+    .method-info { padding: var(--space-4) var(--space-4) var(--space-5); }
+    .method-info h3 { font-family: var(--font-display); color: var(--text); font-size: var(--fs-h3); margin-bottom: 6px; letter-spacing: -0.005em; }
+    .method-info p { color: var(--text-dim); font-size: var(--fs-meta); line-height: 1.55; }
 
     /* ═══════════════════════════════════
        RULES TAB
@@ -1567,4 +1767,206 @@
 @keyframes hold-sell-pulse {
   0%, 100% { box-shadow: 0 0 0 2px rgba(201,169,97,0.65); }
   50%      { box-shadow: 0 0 0 4px rgba(201,169,97,0.35); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   REUSABLE UI PRIMITIVES (added in UI redesign pass 1)
+   Small, composable utility classes that any future markup can lean on
+   instead of one-off inline styles. Keep tight, semantic, theme-aware.
+═══════════════════════════════════════════════════════════════════ */
+
+/* Status chip — replaces noisy outlined pills. No border, semantic bg+fg.
+   Use modifier classes for the state: .chip.is-bull, .chip.is-bear, etc. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--r-chip);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.4;
+  background: rgba(106,110,124,0.14);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.chip.is-bull   { background: var(--bull-soft); color: var(--bull); }
+.chip.is-bear   { background: var(--bear-soft); color: var(--bear); }
+.chip.is-warn   { background: var(--warn-soft); color: var(--warn); }
+.chip.is-info,
+.chip.is-accent { background: var(--accent-soft); color: var(--accent-strong); }
+.chip.is-muted  { background: rgba(106,110,124,0.14); color: var(--text-mute); }
+.chip.is-gold   { background: var(--gold-soft); color: var(--gold); }
+.chip .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+/* KPI stack — label above large value, optional delta below.
+   For the topbar's account balance, PnL summary, kill-zone countdown. */
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.kpi-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 500;
+}
+.kpi-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-kpi);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
+}
+.kpi-value.is-lg   { font-size: var(--fs-kpi-lg); }
+.kpi-value.is-bull { color: var(--bull); }
+.kpi-value.is-bear { color: var(--bear); }
+.kpi-value.is-gold { color: var(--gold); }
+.kpi-delta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+.kpi-delta.is-bull { color: var(--bull); }
+.kpi-delta.is-bear { color: var(--bear); }
+
+/* Button family — sharp, minimal. .btn = base, modifiers stack on top.
+   Existing inline-styled buttons throughout the app keep working; this
+   is for any new markup or future refactor. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 8px 14px;
+  border-radius: var(--r-btn);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+  white-space: nowrap;
+  text-decoration: none;
+}
+.btn:hover { background: var(--bg-hot); border-color: var(--border-strong); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn.is-primary {
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent));
+  border-color: transparent;
+  color: #0a0b0e;
+}
+.btn.is-primary:hover { filter: brightness(1.08); }
+
+.btn.is-ghost {
+  background: transparent;
+  border-color: var(--border-soft);
+  color: var(--text-dim);
+}
+.btn.is-ghost:hover { color: var(--text); border-color: var(--border-strong); }
+
+.btn.is-danger {
+  background: var(--bear-soft);
+  border-color: transparent;
+  color: var(--bear);
+}
+.btn.is-danger:hover { background: rgba(226,100,100,0.2); }
+
+.btn.is-sm { padding: 5px 10px; font-size: 11px; }
+
+/* Section header — for sub-sections inside a tab (not the page-header H1).
+   Adds the small all-caps eyebrow + light divider that mature dashboards
+   use to break long pages without resorting to more cards. */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin: var(--space-8) 0 var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-soft);
+}
+.section-head h2 {
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.section-head .eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  margin-bottom: 4px;
+  display: block;
+}
+.section-head .meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-mute);
+}
+
+/* Loading skeleton — for empty/loading panels. Pulse animation. */
+.skeleton {
+  background: linear-gradient(90deg,
+    var(--bg-elevated) 0%,
+    var(--bg-hot) 50%,
+    var(--bg-elevated) 100%);
+  background-size: 200% 100%;
+  border-radius: var(--r-chip);
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* Subtle "data freshness" timestamp pill — for cards that show external feeds.
+   Sits in the top-right of a card header. */
+.freshness {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.freshness::before {
+  content: '';
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--bull);
+  box-shadow: 0 0 0 2px rgba(78,195,138,0.18);
+}
+.freshness.is-stale::before { background: var(--warn); box-shadow: 0 0 0 2px rgba(242,179,65,0.18); }
+.freshness.is-dead::before  { background: var(--bear); box-shadow: 0 0 0 2px rgba(226,100,100,0.18); }
+
+/* Focus-visible — accessibility + makes keyboard nav feel premium */
+:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+  border-radius: var(--r-btn);
 }
