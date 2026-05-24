@@ -321,8 +321,30 @@ async function buildCandidate(symbol) {
   return { symbol, fvg, htfDir, price, entry, sl, tp, sideOpen, stopDistUsdPerContract, meta, distPct };
 }
 
+// Always-on scan — runs every cycle whether or not the bot can actually
+// fire. Surfaces what the bot is looking at to the dashboard so the
+// operator sees continuous activity instead of a silent "outside KZ" log.
+async function scanAllSymbols() {
+  const results = await Promise.all(
+    SYMBOLS.map(s => buildCandidate(s).catch(e => ({ skip: 'err', symbol: s, detail: e.message })))
+  );
+  lastScanSummary = results.map(r => ({
+    symbol: r.symbol,
+    skip: r.skip || null,
+    dir: r.fvg?.dir || null,
+    distPct: r.distPct ?? null,
+    fvgBodyPct: r.fvg ? (r.fvg.body / r.price) : null,
+    detail: r.detail || null,
+    ts: Date.now(),
+  }));
+  return results;
+}
+
 async function tryFire() {
   maybeRollDay();
+  // Always scan — even outside KZ — so the dashboard live feed updates.
+  const results = await scanAllSymbols();
+
   if (haltedAt)                                              return { skip: 'consec-loss-halt', detail: `since ${haltedAt}` };
   if (!inKillzone())                                         return { skip: 'outside-killzone' };
   if (pendingOrder)                                          return { skip: 'pending-order' };
@@ -330,10 +352,6 @@ async function tryFire() {
   const openPositions = await getOpenPositions();
   if (openPositions.length >= MAX_OPEN_POSITIONS)            return { skip: 'in-position' };
 
-  const results = await Promise.all(
-    SYMBOLS.map(s => buildCandidate(s).catch(e => ({ skip: 'err', symbol: s, detail: e.message })))
-  );
-  lastScanSummary = results.map(r => ({ symbol: r.symbol, skip: r.skip || null, dir: r.fvg?.dir, distPct: r.distPct }));
   const valid = results.filter(r => !r.skip);
   if (!valid.length) return { skip: 'no-candidates' };
 
@@ -640,10 +658,13 @@ while (true) {
     }
     if (!pendingOrder && !positionContext) {
       maybeRollDay();
-      const r = await tryFire();
-      if (r.skip && r.skip !== 'no-candidates') {
+      const r = await tryFire();   // always runs scanAllSymbols inside
+      if (r.skip && r.skip !== 'no-candidates' && r.skip !== 'outside-killzone') {
         log(`[skip] ${r.skip}${r.detail ? ' · ' + r.detail : ''}`);
       }
+    } else if (pendingOrder || positionContext) {
+      // Keep the dashboard scan feed alive even when bot can't fire.
+      try { await scanAllSymbols(); } catch (e) {}
     }
     lastError = null;
   } catch (e) {

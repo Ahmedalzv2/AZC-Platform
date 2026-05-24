@@ -122,6 +122,23 @@
           <p>Assets at or approaching new entry zones — ENTER NOW 🔴 means price is within 0.05% of entry (execute trade), ALMOST ENTRY POINT means ICT conditions fully met and close, ALMOST ENTRY means approaching. All 10 assets monitored. Prices auto-sync every 30s.</p>
         </div>
 
+        <!-- AZC autonomous trader — live scan feed. Updates every 5s from
+             the relay's /trader-state endpoint. Shows what the bot is
+             looking at right now, even outside killzones. -->
+        <div class="ap-card full" style="margin-bottom:16px;">
+          <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+            <span>🤖 AZC Trader · Live Scan</span>
+            <span style="display:flex;gap:10px;align-items:center;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--text-mute);">
+              <span id="azcScanCycle">cycle —</span>
+              <span id="azcScanKz">—</span>
+              <span id="azcScanCountdown">—</span>
+            </span>
+          </div>
+          <div id="azcScanGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;">
+            <div style="color:var(--text-mute);padding:12px;text-align:center;font-size:12px;">Awaiting first scan…</div>
+          </div>
+        </div>
+
         <div class="ap-grid">
 
           <!-- Countdown card -->
@@ -2981,6 +2998,67 @@
   // brings the trader back up.
   // ──────────────────────────────────────────────────────────────────
   let _azcTraderState = null;
+
+  // Render the live scan grid on the Dashboard tab.
+  function _renderAzcScanFeed(s) {
+    const grid = document.getElementById('azcScanGrid');
+    const cycleEl = document.getElementById('azcScanCycle');
+    const kzEl = document.getElementById('azcScanKz');
+    const cdEl = document.getElementById('azcScanCountdown');
+    if (!grid) return;
+    if (cycleEl) cycleEl.textContent = `cycle ${s?.cycleCount ?? '—'}`;
+    if (kzEl) {
+      kzEl.textContent = s?.inKillzone ? '✓ KILLZONE OPEN' : 'killzone closed';
+      kzEl.style.color = s?.inKillzone ? 'var(--bull)' : 'var(--text-mute)';
+    }
+    // Countdown to next killzone opening
+    if (cdEl) {
+      const kzs = [[0,0,4,0,'Asia'],[7,0,10,0,'London'],[12,30,16,0,'NY AM'],[18,30,22,0,'Late-NY']];
+      const now = new Date();
+      const cur = now.getUTCHours()*60 + now.getUTCMinutes();
+      let next = null;
+      for (const [sh,sm,eh,em,name] of kzs) {
+        const start = sh*60+sm, end = eh*60+em;
+        if (cur >= start && cur < end) { next = `→ in ${name} (${end-cur}m left)`; break; }
+        if (cur < start) { next = `next: ${name} in ${start-cur}m`; break; }
+      }
+      if (!next) {
+        const [sh,sm,,,name] = kzs[0];
+        const until = (24*60 - cur) + (sh*60+sm);
+        next = `next: ${name} in ${until}m`;
+      }
+      cdEl.textContent = next;
+    }
+    const scan = s?.lastScanSummary || [];
+    if (!scan.length) {
+      grid.innerHTML = '<div style="color:var(--text-mute);padding:12px;text-align:center;font-size:12px;grid-column:1/-1;">Awaiting first scan…</div>';
+      return;
+    }
+    grid.innerHTML = scan.map(c => {
+      const isCand = !c.skip;
+      const skip = c.skip || 'CANDIDATE';
+      const dir = c.dir ? (c.dir === 'bull' ? '🟢 LONG' : '🔴 SHORT') : '—';
+      // Color by skip reason
+      const skipColor = isCand ? 'var(--bull)'
+        : skip === 'far-from-fvg' ? 'var(--text-mute)'
+        : skip === 'fvg-too-small' || skip === 'stop-too-tight' ? 'var(--liq)'
+        : skip === 'no-fvg' || skip === 'htf-disagree' ? 'var(--text-dim)'
+        : skip === 'htf-warmup' || skip === 'no-data' ? 'var(--text-faint)'
+        : 'var(--bear)';
+      const skipBg = isCand ? 'rgba(78,195,138,0.10)' : 'transparent';
+      const dist = (typeof c.distPct === 'number') ? `${(c.distPct*100).toFixed(3)}%` : '—';
+      const fvgPct = (typeof c.fvgBodyPct === 'number') ? `${(c.fvgBodyPct*100).toFixed(2)}%` : null;
+      return `<div style="background:${skipBg};border:1px solid var(--border-soft,var(--border));border-radius:8px;padding:10px 12px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+          <span style="font-weight:700;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--text);">${c.symbol}</span>
+          <span style="font-size:10px;color:${skipColor};font-weight:700;text-transform:uppercase;letter-spacing:0.06em;font-family:'JetBrains Mono',monospace;">${skip}</span>
+        </div>
+        <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.5;">
+          dir: ${dir} · dist ${dist}${fvgPct ? ' · fvg ' + fvgPct : ''}
+        </div>
+      </div>`;
+    }).join('');
+  }
   async function refreshAzcTraderState() {
     try {
       const r = await fetch(TG_RELAY_BASE + '/trader-state', { cache: 'no-store' });
@@ -2988,6 +3066,7 @@
     } catch (e) {
       _azcTraderState = { ok: false, running: false, reason: 'fetch-failed' };
     }
+    _renderAzcScanFeed(_azcTraderState);
     const btn = document.getElementById('azcTraderSwitch');
     if (!btn) return;
     btn.classList.remove('trader-on', 'trader-position', 'trader-stopped');
