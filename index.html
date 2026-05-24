@@ -2998,8 +2998,11 @@
       btn.classList.add('trader-stopped');
     } else if (!s.ok || stale) {
       btn.textContent = 'TRADER: OFFLINE';
-    } else if (s.pendingOrder || (s.positionContext && s.positionContext.posId)) {
-      btn.textContent = 'TRADER: IN-TRADE';
+    } else if (s.positionContext && s.positionContext.posId) {
+      btn.textContent = `TRADER: IN-TRADE · ${s.positionContext.symbol}`;
+      btn.classList.add('trader-position');
+    } else if (s.pendingOrder) {
+      btn.textContent = `TRADER: PENDING · ${s.pendingOrder.symbol}`;
       btn.classList.add('trader-position');
     } else {
       const trades = s.tradesToday || 0;

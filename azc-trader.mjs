@@ -62,6 +62,8 @@ const POSITION_POLL_MS = 5_000;
 const MAKER_ORDER_TTL_MS = 180_000;
 const FVG_BUFFER_PCT = 0.10;
 const TOUCH_TOLERANCE_PCT = 0.0008;   // proximity gate, 0.08% of price
+const MIN_FVG_BODY_PCT = 0.0010;      // FVG body must be ≥ 0.10% of price (skip micro-gaps)
+const MIN_STOP_PCT     = 0.0020;      // stop distance must be ≥ 0.20% of price (else stop is hunt-bait)
 
 // Killzone gate — only fire during real liquidity windows. Outside these
 // hours, FVGs are algo chop with low follow-through. Hours are UTC.
@@ -281,19 +283,37 @@ async function buildCandidate(symbol) {
   if (fvg.dir !== htfDir) return { skip: 'htf-disagree', symbol };
 
   const price = ticker.lastPrice;
+
+  // Minimum FVG size — gaps smaller than 0.10% of price are micro-noise
+  // (1-bar wicks, not real displacement). Stop sitting at the FVG edge
+  // is hunt-bait when the body is this small.
+  const fvgBodyPct = fvg.body / price;
+  if (fvgBodyPct < MIN_FVG_BODY_PCT) return { skip: 'fvg-too-small', symbol, fvgBodyPct };
+
   const distPct = Math.abs((price - fvg.mid) / fvg.mid);
   if (distPct > TOUCH_TOLERANCE_PCT) return { skip: 'far-from-fvg', symbol, distPct };
 
   const sideOpen = fvg.dir === 'bull' ? 1 : 3;
   const farEdge  = fvg.dir === 'bull' ? fvg.lo : fvg.hi;
   const slDir    = fvg.dir === 'bull' ? -1 : 1;
-  const sl       = farEdge + slDir * (fvg.body * FVG_BUFFER_PCT);
-  const stopDist = Math.abs(price - sl);
+
+  // Entry is the FVG mid. SL and TP must be computed FROM THE ENTRY, not
+  // from ticker price — earlier code mixed those references which made
+  // the math drift (e.g. SL on the wrong side of entry on a small FVG).
+  // The entry-anchored math also makes the FVG-edge buffer + min-stop
+  // floor work correctly together.
+  const entry    = fvg.mid;
+  const slRaw    = farEdge + slDir * (fvg.body * FVG_BUFFER_PCT);
+  const slMinFloor = entry + slDir * (price * MIN_STOP_PCT);  // floor: at least MIN_STOP_PCT away
+  const sl       = fvg.dir === 'bull' ? Math.min(slRaw, slMinFloor) : Math.max(slRaw, slMinFloor);
+  const stopDist = Math.abs(entry - sl);
   if (!isFinite(stopDist) || stopDist <= 0) return { skip: 'invalid-stop', symbol };
-  const tp = fvg.dir === 'bull' ? price + stopDist * RR : price - stopDist * RR;
+  if (stopDist / price < MIN_STOP_PCT) return { skip: 'stop-too-tight', symbol };
+
+  const tp = fvg.dir === 'bull' ? entry + stopDist * RR : entry - stopDist * RR;
   const stopDistUsdPerContract = meta.contractSize * stopDist;
 
-  return { symbol, fvg, htfDir, price, sl, tp, sideOpen, stopDistUsdPerContract, meta, distPct };
+  return { symbol, fvg, htfDir, price, entry, sl, tp, sideOpen, stopDistUsdPerContract, meta, distPct };
 }
 
 async function tryFire() {
@@ -340,7 +360,7 @@ async function tryFire() {
   if (qty > maxQtyByMargin && maxQtyByMargin > 0) qty = maxQtyByMargin;
 
   const snap = v => Math.round(v / pick.meta.priceUnit) * pick.meta.priceUnit;
-  const entry  = snap(pick.fvg.mid);
+  const entry  = snap(pick.entry);
   const slSnap = snap(pick.sl);
   const tpSnap = snap(pick.tp);
 
@@ -562,6 +582,23 @@ if (await stopFlagExists()) {
   await writeState({ refusedStart: true });
   process.exit(0);
 }
+
+// Clean up any stale unfilled limit orders on the account before
+// resuming. A previous crash could have left margin frozen behind a
+// pending order that's no longer in our local pendingOrder state.
+try {
+  const r = await mexcSigned({ path: '/api/v1/private/order/list/open_orders', method: 'GET' });
+  const open = Array.isArray(r.json?.data) ? r.json.data : [];
+  if (open.length) {
+    log(`[startup-cleanup] ${open.length} stale open order(s) — cancelling`);
+    for (const o of open) {
+      try {
+        const c = await cancelOrder(o.orderId);
+        log(`[startup-cleanup] cancel ${o.symbol} #${o.orderId} → ${JSON.stringify(c.json||{}).slice(0,120)}`);
+      } catch (e) { log(`[startup-cleanup] cancel-err ${o.orderId} ${e.message}`); }
+    }
+  }
+} catch (e) { log('[startup-cleanup-err]', e.message); }
 
 while (true) {
   cycleCount += 1;
