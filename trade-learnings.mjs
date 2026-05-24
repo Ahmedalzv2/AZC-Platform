@@ -58,7 +58,15 @@ export function formatLearningMarkdown(p) {
   lines.push(`- Fill price: ${f(p?.priceAtCall)}`);
   if (Number.isFinite(Number(p?.exitPrice))) lines.push(`- Exit price: ${f(p.exitPrice)}`);
   lines.push(`- Outcome:    ${String(p?.outcome || '?').toUpperCase()}`);
-  lines.push(`- Realised:   ${fu(p?.realizedUsd)}  ${fr(p?.rMultiple)}`);
+  lines.push(`- Realised:   ${fu(p?.realizedUsd)}  ${fr(p?.rMultiple)}  (after fees + funding)`);
+  if (p?.accounting) {
+    const a = p.accounting;
+    const holdH = a.holdMs > 0 ? (a.holdMs / 3600000).toFixed(1) + 'h' : '—';
+    lines.push(`- Gross:      ${fu(a.grossUsd)}  (directional P/L only)`);
+    lines.push(`- Fee open:   ${fu(a.feeUsdOpen)}`);
+    lines.push(`- Fee close:  ${fu(a.feeUsdClose)}`);
+    lines.push(`- Funding:    ${fu(a.fundingUsd)}  (${a.windowsCrossed} × 8h windows · held ${holdH})`);
+  }
   if (p?.outcomeChecks && Object.keys(p.outcomeChecks).length) {
     lines.push(`- Path:       ${Object.entries(p.outcomeChecks).map(([m,px]) => `${m}m=${f(px)}`).join(' · ')}`);
   }

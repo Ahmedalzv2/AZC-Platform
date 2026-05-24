@@ -53,6 +53,25 @@ describe('trade-learnings (pure)', () => {
     assert.match(md, /Path:\s+30m=2\.3900.*60m=2\.4200/);
   });
 
+  test('formatLearningMarkdown renders fee + funding accounting block when present', () => {
+    const md = formatLearningMarkdown({
+      timestamp: Date.UTC(2026, 4, 24, 8, 30),
+      symbol: 'XRP', side: 'long', outcome: 'win',
+      entry: 2.34, sl: 2.30, tp: 2.42,
+      priceAtCall: 2.34, exitPrice: 2.42,
+      realizedUsd: 0.0794,
+      accounting: {
+        grossUsd: 0.0800, feeUsdOpen: 0.0002, feeUsdClose: 0.0002,
+        fundingUsd: 0.0002, windowsCrossed: 2, holdMs: 16 * 3600 * 1000,
+        netUsd: 0.0794,
+      },
+    });
+    assert.match(md, /Realised:\s+\+0\.0794 USD\s+—\s+\(after fees \+ funding\)/);
+    assert.match(md, /Gross:\s+\+0\.0800 USD/);
+    assert.match(md, /Fee open:\s+\+0\.0002 USD/);
+    assert.match(md, /Funding:\s+\+0\.0002 USD\s+\(2 × 8h windows · held 16\.0h\)/);
+  });
+
   test('formatLearningMarkdown tolerates missing optional fields', () => {
     const md = formatLearningMarkdown({
       timestamp: Date.UTC(2026, 4, 24, 8, 30),
