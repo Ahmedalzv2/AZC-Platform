@@ -72,7 +72,8 @@ describe('_mexcContractSymbol — any asset with a MEXC contract is eligible', (
     assert.equal(app._mexcContractSymbol({ symbol: 'BNB' }),    'BNB_USDT');
     assert.equal(app._mexcContractSymbol({ symbol: 'XRP' }),    'XRP_USDT');
     assert.equal(app._mexcContractSymbol({ symbol: 'SUI' }),    'SUI_USDT');
-    assert.equal(app._mexcContractSymbol({ symbol: 'ASTR' }),   'ASTR_USDT');
+    // ASTR (dashboard label) routes to ASTER_USDT — MEXC's real contract symbol.
+    assert.equal(app._mexcContractSymbol({ symbol: 'ASTR' }),   'ASTER_USDT');
   });
 
   test('GOLD maps to XAUT_USDT on MEXC (Tether Gold perp)', () => {

@@ -10001,9 +10001,13 @@
     // the same scale (~$4500), safe as a fallback.
     // GOLD trades on MEXC as XAUT_USDT (Tether Gold perpetual). The label
     // "GOLD" is just our UI alias.
-    if (asset.symbol === 'GOLD')   return { binance:null, mexc:'XAUT_USDT',   mexcSpot:'XAUTUSDT', binanceFallback:null };
-    if (asset.symbol === 'SILVER') return { binance:null, mexc:'SILVER_USDT', mexcSpot:null,       binanceFallback:null };
-    if (asset.symbol === 'US100')  return { binance:null, mexc:null,          mexcSpot:null,       binanceFallback:null }; // CFD-only
+    if (asset.symbol === 'GOLD')   return { binance:null, mexc:'XAUT_USDT',   mexcSpot:'XAUTUSDT',  binanceFallback:null };
+    if (asset.symbol === 'SILVER') return { binance:null, mexc:'SILVER_USDT', mexcSpot:null,        binanceFallback:null };
+    if (asset.symbol === 'US100')  return { binance:null, mexc:null,          mexcSpot:null,        binanceFallback:null }; // CFD-only
+    // ASTR (dashboard label, legacy) is ASTER on MEXC/Binance. The naive
+    // fallback would emit ASTR_USDT which has no MEXC contract → orders
+    // silently reject after the chip-grid surfaces ASTR as a tap target.
+    if (asset.symbol === 'ASTR')   return { binance:'ASTERUSDT', mexc:'ASTER_USDT', mexcSpot:'ASTERUSDT', binanceFallback:null };
     const base = asset.symbol + 'USDT';
     return { binance: base, mexc: (MEXC_PERP_MAP[base] || asset.symbol + '_USDT'), mexcSpot: base, binanceFallback: null };
   }
