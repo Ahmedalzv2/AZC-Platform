@@ -11,7 +11,7 @@ scalp configuration. Live execution controls remain for supported manual
 futures lanes only; US100 never routes through them.
 
 Hosted on GitHub Pages — open `index.html` directly or visit the live
-URL: <https://ahmedalzv2.github.io/ict-autopilot/>.
+URL: <https://ahmedalzv2.github.io/AZC-Platform/>.
 
 ## Files
 
