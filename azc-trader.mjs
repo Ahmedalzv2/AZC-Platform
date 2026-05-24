@@ -29,20 +29,33 @@ if (!API_KEY || !API_SECRET) {
   console.error('FATAL: MEXC_API_KEY / MEXC_API_SECRET not set'); process.exit(2);
 }
 
-// Three-symbol concentrated watchlist. BTC/ETH/SOL have the deepest books
-// and tightest spreads on MEXC perpetuals — micro-capital can't afford to
-// chase low-liquidity pairs.
-const SYMBOLS = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT'];
-const TF_MIN = 5;                     // 5m for FVG entry detection
-const HTF_MIN = 60;                   // 1H for trend filter
-const LOOKBACK_BARS = 40;             // ~3.3h of 5m context
-const HTF_LOOKBACK = 24;              // 24h of 1H context
-const HTF_SMA = 20;                   // 1H SMA(20) for trend filter
+// Expanded watchlist of liquid USDT perps. SOL excluded — its 1-contract
+// min size ($200 notional) + $0.08 roundtrip fee make it negative-EV at
+// $50 capital. The rest have small enough contracts that 1.5%/trade risk
+// math survives min-size rounding.
+const SYMBOLS = [
+  'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'XRP_USDT',
+  'DOGE_USDT', 'AVAX_USDT', 'LINK_USDT',
+];
+const TF_MIN = 5;
+const HTF_MIN = 60;
+const LOOKBACK_BARS = 40;
+const HTF_LOOKBACK = 24;
+const HTF_SMA = 20;
 const LEVERAGE = 10;
-const RISK_PCT = 0.015;               // 1.5% of equity per trade ($0.75 @ $50)
-const DAILY_LOSS_CAP_USD = 10.0;      // 20% of $50 — "bad day, stop trading" cut
+
+// Graduated sizing — sizes to conviction. Quality score from the scanner
+// determines the bucket: top-1 by wide margin (the "best of best"), top-2
+// (a strong candidate), or default. No daily $ cap — replaced by the
+// consecutive-loss halt below.
+const RISK_PCT_DEFAULT = 0.02;   // 2% base ($1 @ $50)
+const RISK_PCT_TOP_2    = 0.03;   // 3% for top-2 picks ($1.50 @ $50)
+const RISK_PCT_BEST     = 0.05;   // 5% for stand-out best candidate ($2.50)
+
 const MAX_OPEN_POSITIONS = 1;
 const COOLDOWN_MS = 15 * 60 * 1000;
+const MAX_CONSECUTIVE_LOSSES = 3;   // halt for human review after 3 losses in a row
+const MAX_HOLD_MS = 60 * 60 * 1000; // force-close after 60 min to avoid funding window crossings
 const RR = 1.5;
 const TICK_MS = 30_000;
 const POSITION_POLL_MS = 5_000;
@@ -70,6 +83,7 @@ const LEARN_ROOT = path.resolve('./trade-learnings');
 const STATE_DIR  = path.resolve('./.trader-state');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 const STOP_FLAG  = path.join(STATE_DIR, 'stop.flag');
+const HALT_CLEAR = path.join(STATE_DIR, 'halt-cleared');
 
 // ──────────────────────────────────────────────────────────────────
 // Runtime state
@@ -78,6 +92,8 @@ const cooldownUntil = new Map();      // symbol → ts ms when cooldown expires
 const metaCache = new Map();          // symbol → { contractSize, minVol, priceUnit } (cached)
 let tradesToday = 0;
 let dailyPnlUsd = 0;
+let consecutiveLosses = 0;       // resets on a win or break-even, halts at MAX_CONSECUTIVE_LOSSES
+let haltedAt = null;             // ISO timestamp set when consec-loss halt fires
 let dailyResetAt = nextUtcMidnight();
 let pendingOrder = null;              // { symbol, orderId, expiresAt }
 let lastError = null;
@@ -113,8 +129,9 @@ async function writeState(extra = {}) {
     tradesToday,
     dailyPnlUsd: Number(dailyPnlUsd.toFixed(6)),
     dailyResetAt,
-    riskPct: RISK_PCT,
-    dailyCapUsd: DAILY_LOSS_CAP_USD,
+    consecutiveLosses,
+    haltedAt,
+    riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
     positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp } : null,
@@ -281,8 +298,8 @@ async function buildCandidate(symbol) {
 
 async function tryFire() {
   maybeRollDay();
+  if (haltedAt)                                              return { skip: 'consec-loss-halt', detail: `since ${haltedAt}` };
   if (!inKillzone())                                         return { skip: 'outside-killzone' };
-  if (dailyPnlUsd <= -DAILY_LOSS_CAP_USD)                    return { skip: 'daily-loss-cap', detail: `pnl=$${dailyPnlUsd.toFixed(2)}` };
   if (pendingOrder)                                          return { skip: 'pending-order' };
 
   const openPositions = await getOpenPositions();
@@ -295,12 +312,28 @@ async function tryFire() {
   const valid = results.filter(r => !r.skip);
   if (!valid.length) return { skip: 'no-candidates' };
 
-  // Closest to FVG mid wins — most actionable right now.
+  // Rank by quality. Closer to FVG mid AND HTF-agreement strength both
+  // matter — we score each candidate and pick the top. Graduated risk %
+  // depends on the candidate's rank in this scan.
   valid.sort((a, b) => a.distPct - b.distPct);
+
+  // Quality buckets:
+  //   "best" = top-1 AND its distPct is meaningfully better than #2 (margin)
+  //   "top2" = ranks #1 or #2 (or sole candidate when only one survives)
+  //   default = anything else (shouldn't happen — we only fire top-2)
   const pick = valid[0];
+  let tier;
+  if (valid.length === 1) {
+    tier = 'top2';
+  } else if ((valid[1].distPct - pick.distPct) / Math.max(pick.distPct, 1e-9) > 0.5) {
+    tier = 'best';
+  } else {
+    tier = 'top2';
+  }
+  const riskPct = tier === 'best' ? RISK_PCT_BEST : tier === 'top2' ? RISK_PCT_TOP_2 : RISK_PCT_DEFAULT;
 
   const equity = await getAccountUsdt();
-  const riskUsd = equity * RISK_PCT;
+  const riskUsd = equity * riskPct;
   let qty = Math.floor(riskUsd / pick.stopDistUsdPerContract);
   if (qty < pick.meta.minVol) qty = pick.meta.minVol;
   const maxQtyByMargin = Math.floor((equity * 0.5 * LEVERAGE) / (pick.meta.contractSize * pick.price));
@@ -322,7 +355,7 @@ async function tryFire() {
     stopLossPrice: slSnap,
     takeProfitPrice: tpSnap,
   };
-  log(`[fire] ${pick.symbol} ${pick.fvg.dir.toUpperCase()} htf=${pick.htfDir} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${(pick.stopDistUsdPerContract*qty).toFixed(3)} cand=${valid.length}/${SYMBOLS.length}`);
+  log(`[fire] ${pick.symbol} ${pick.fvg.dir.toUpperCase()} tier=${tier} htf=${pick.htfDir} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${(pick.stopDistUsdPerContract*qty).toFixed(3)} (${(riskPct*100).toFixed(1)}%) cand=${valid.length}/${SYMBOLS.length}`);
   const r = await placeOrder(body);
   if (!r.json || r.json.success !== true) {
     return { skip: 'mexc-rejected', detail: JSON.stringify(r.json || r.raw).slice(0, 200), symbol: pick.symbol };
@@ -354,7 +387,65 @@ async function watchPendingOrder() {
     positionContext.posId = pos.positionId;
     positionContext.filledAt = Date.now();
     pendingOrder = null;
+
+    // SURVIVAL: verify the exchange-side SL is actually attached to this
+    // position. MEXC's order/submit takes stopLossPrice as a hint that it
+    // turns into a plan-order; if the precision is wrong, or there's a
+    // race, it can silently fail to attach. A naked position at 10x is
+    // the fastest way to lose $50. If SL/TP missing, we panic-close.
+    try {
+      await verifyExchangeStopOrPanicClose(pos, positionContext);
+    } catch (e) {
+      log(`[stop-verify-err] ${e.message} — closing position to be safe`);
+      try { await panicCloseLong(positionContext); } catch (e2) { log('[panic-close-fail]', e2.message); }
+    }
   }
+}
+
+// Confirm the position has an attached stop. MEXC exposes per-position
+// plan-orders via /api/v1/private/stoporder/list/orders (a.k.a. plan
+// orders). If the response doesn't show a stop tied to this positionId,
+// market-close immediately.
+async function verifyExchangeStopOrPanicClose(pos, ctx) {
+  const r = await mexcSigned({
+    path: '/api/v1/private/stoporder/list/orders',
+    method: 'GET',
+    params: { symbol: ctx.symbol, page_num: 1, page_size: 20 },
+  });
+  const plans = Array.isArray(r.json?.data?.resultList) ? r.json.data.resultList
+              : Array.isArray(r.json?.data) ? r.json.data : [];
+  // We want at least one plan order on this symbol whose trigger is in
+  // the right direction (long: trigger BELOW entry; short: trigger ABOVE).
+  const hasGuard = plans.some(p => {
+    const trig = +p.triggerPrice;
+    if (!isFinite(trig)) return false;
+    return ctx.dir === 'bull' ? trig < ctx.entry : trig > ctx.entry;
+  });
+  if (hasGuard) {
+    log(`[stop-verify-ok] ${ctx.symbol} — ${plans.length} plan order(s) found, guard present`);
+    return;
+  }
+  log(`[stop-verify-FAIL] ${ctx.symbol} pos=${ctx.posId} — no attached stop. PANIC CLOSE.`);
+  await panicCloseLong(ctx);
+}
+
+async function panicCloseLong(ctx) {
+  // Market-close. Side 4 = close long, side 2 = close short.
+  const closeSide = ctx.dir === 'bull' ? 4 : 2;
+  const ticker = await fetchTicker(ctx.symbol);
+  const px = ctx.dir === 'bull' ? ticker.bid1 - ctx.meta?.priceUnit * 5 : ticker.ask1 + ctx.meta?.priceUnit * 5;
+  const snapPx = ctx.meta ? Math.round(px / ctx.meta.priceUnit) * ctx.meta.priceUnit : px;
+  const body = {
+    symbol: ctx.symbol,
+    price: snapPx,
+    vol: ctx.qty,
+    leverage: ctx.lev,
+    side: closeSide,
+    type: 1,            // plain limit, fills as taker immediately
+    openType: 1,
+  };
+  const r = await placeOrder(body);
+  log(`[panic-close] ${ctx.symbol} side=${closeSide} qty=${ctx.qty} -> ${r.status} ${JSON.stringify(r.json || {}).slice(0,140)}`);
 }
 
 // Once a position is open, MEXC manages the SL/TP. When the position
@@ -396,6 +487,18 @@ async function reconcileClosedPosition() {
   const rMultiple = stopDist > 0 ? (pnlPriceMove / stopDist) : 0;
   const outcome = pnlUsd > 0.001 ? 'win' : pnlUsd < -0.001 ? 'loss' : 'be';
   log(`[close] ${ctx.symbol} ${ctx.dir} fill=${fillPx} pnl=$${pnlUsd.toFixed(4)} r=${rMultiple.toFixed(2)}R outcome=${outcome}`);
+
+  // Update consecutive-loss counter — the survival gate that replaced the
+  // daily $ cap. Win or BE resets; loss increments. Hit MAX → halt.
+  if (outcome === 'loss') {
+    consecutiveLosses += 1;
+    if (consecutiveLosses >= MAX_CONSECUTIVE_LOSSES) {
+      haltedAt = new Date().toISOString();
+      log(`[HALT] ${consecutiveLosses} consecutive losses — bot will stop firing. Human review required. Touch ${STATE_DIR}/halt-cleared to resume.`);
+    }
+  } else {
+    consecutiveLosses = 0;
+  }
 
   try {
     await writeLearningFile({
@@ -463,14 +566,31 @@ if (await stopFlagExists()) {
 while (true) {
   cycleCount += 1;
   lastCycleAt = Date.now();
-  // Check kill switch every cycle. gracefulShutdown calls process.exit
-  // so control never returns here, but if it ever did, break the loop.
+  // Check kill switch every cycle.
   if (await stopFlagExists()) {
     await gracefulShutdown('stop-flag');
     break;
   }
+  // Check halt-clear flag — if operator created it after a consec-loss
+  // halt and reviewed the trades, this resumes the bot.
+  if (haltedAt) {
+    try {
+      await access(HALT_CLEAR, fsConst.F_OK);
+      log(`[halt-cleared] resuming after operator review (was halted ${haltedAt})`);
+      haltedAt = null;
+      consecutiveLosses = 0;
+      try { await import('node:fs/promises').then(m => m.unlink(HALT_CLEAR)); } catch (e) {}
+    } catch { /* halt-cleared not present, stay halted */ }
+  }
   try {
     if (positionContext?.posId) {
+      // Max-hold guard: market-close before next funding window if a
+      // position is sitting too long. 60-min cap covers most funding
+      // crossings (00/08/16 UTC) at our trade cadence.
+      if (positionContext.filledAt && (Date.now() - positionContext.filledAt) > MAX_HOLD_MS) {
+        log(`[max-hold] ${positionContext.symbol} held ${Math.round((Date.now()-positionContext.filledAt)/1000/60)}m — closing`);
+        try { await panicCloseLong(positionContext); } catch (e) { log('[max-hold-close-err]', e.message); }
+      }
       await reconcileClosedPosition();
     }
     if (pendingOrder) {
