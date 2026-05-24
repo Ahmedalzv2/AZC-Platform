@@ -65,13 +65,18 @@ const TOUCH_TOLERANCE_PCT = 0.0008;   // proximity gate, 0.08% of price
 const MIN_FVG_BODY_PCT = 0.0010;      // FVG body must be ≥ 0.10% of price (skip micro-gaps)
 const MIN_STOP_PCT     = 0.0020;      // stop distance must be ≥ 0.20% of price (else stop is hunt-bait)
 
-// Killzone gate — only fire during real liquidity windows. Outside these
-// hours, FVGs are algo chop with low follow-through. Hours are UTC.
-//   London KZ: 07:00-10:00 UTC (= 11:00-14:00 GST)
-//   NY AM KZ:  12:30-16:00 UTC (= 16:30-20:00 GST)
+// Killzone gate — crypto-specific liquidity windows (not forex). Outside
+// these hours, FVGs are algo chop with low follow-through. Hours UTC.
+//   Asia:     00:00-04:00 UTC (Tokyo/HK desks; BTC moves often originate)
+//   London:   07:00-10:00 UTC (institutional open)
+//   NY AM:    12:30-16:00 UTC (peak global volume)
+//   Late-NY:  18:30-22:00 UTC (NY close → Asia roll-over)
+// Total: 14h/day active vs 7.5h with forex-only sessions.
 const KILLZONES_UTC = [
+  { startH: 0,  startM: 0,  endH: 4,  endM: 0 },
   { startH: 7,  startM: 0,  endH: 10, endM: 0 },
   { startH: 12, startM: 30, endH: 16, endM: 0 },
+  { startH: 18, startM: 30, endH: 22, endM: 0 },
 ];
 function inKillzone(now = new Date()) {
   const m = now.getUTCHours() * 60 + now.getUTCMinutes();
