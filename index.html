@@ -42,9 +42,9 @@
        button text + colour are driven by _updateLiveTradingBadge below
        (single source of truth with the toolbar badge). -->
   <button id="liveKillSwitch"
-          onclick="toggleLiveTradingKillSwitch()"
-          title="Live trading master switch — tap to STOP/START live order access">
-    ▶ LIVE OFF
+          onclick="setAllAutoFireArmed(!isAutoFireFullyArmed())"
+          title="Auto-fire master arm — one tap arms/disarms everything">
+    🚀 ARM AUTO-FIRE
   </button>
 
   <!-- ═══ AUTOPILOT TOP BAR ═══ -->
@@ -2992,17 +2992,18 @@
       el.textContent = s.icon;
       el.title = `Live trading: ${s.label} (tap to configure)`;
     }
-    // Floating kill-switch — same source of truth, separate styling.
+    // Floating arm button — reflects full armed state, not just master switch.
     const kill = document.getElementById('liveKillSwitch');
     if (kill) {
-      if (_liveTradingEnabled) {
+      const armed = isAutoFireFullyArmed();
+      if (armed) {
         kill.classList.add('live-on');
-        kill.textContent = '🛑 STOP LIVE';
-        kill.title = 'Live trading is ON — manual orders can be sent. Tap to STOP everything.';
+        kill.textContent = '🔴 AUTO-FIRING · STOP';
+        kill.title = 'Auto-fire is ARMED — live orders active. Tap to disarm everything.';
       } else {
         kill.classList.remove('live-on');
-        kill.textContent = '▶ LIVE OFF';
-        kill.title = 'Live trading is OFF — no live orders. Tap to START.';
+        kill.textContent = '🚀 ARM AUTO-FIRE';
+        kill.title = 'Auto-fire is OFF. Tap to arm: master ON, dry-run OFF, lane+armed, SW auto-fire ON.';
       }
     }
   }
@@ -3566,6 +3567,7 @@
       try { showToast('🛡 DISARMED · all safe', 'ok'); } catch (e) {}
     }
     try { if (document.getElementById('liveTradingModal')) openLiveTradingModal(); } catch (e) {}
+    try { _updateLiveTradingBadge(); } catch (e) {}
     return true;
   }
 
