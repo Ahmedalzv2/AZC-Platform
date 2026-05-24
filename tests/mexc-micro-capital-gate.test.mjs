@@ -31,15 +31,26 @@ describe('MEXC micro-capital safety gate ($50 trial lane)', () => {
     assert.equal(d.maxTradesPerDay, undefined, 'count cap intentionally removed — loss cap is the real safety');
   });
 
-  test('lane OFF → gate is a pass-through (existing surfaces undisturbed)', () => {
+  test('lane OFF + dry-run → pass-through (research lane stays frictionless)', () => {
     const { app } = loadApp();
     app.journal = [];
     const r = app.checkMicroCapitalGate({
-      symbol: 'BTC', dryRun: false, riskUsd: 5_000_000, balanceUsd: 50,
+      symbol: 'BTC', dryRun: true, riskUsd: 5_000_000, balanceUsd: 50,
       openPositionCount: 99, nowMs: todayMs(12),
     });
     assert.equal(r.allow, true);
     assert.equal(r.audit.laneEnabled, false);
+  });
+
+  test('lane OFF + LIVE → BLOCKED with reason "lane-disabled"', () => {
+    const { app } = loadApp();
+    app.journal = [];
+    const r = app.checkMicroCapitalGate({
+      symbol: 'BTC', dryRun: false, riskUsd: 0.20, balanceUsd: 50,
+      openPositionCount: 0, nowMs: todayMs(12),
+    });
+    assert.equal(r.allow, false, 'a live MEXC order must not bypass the gate by simply having the lane toggle off');
+    assert.equal(r.reason, 'lane-disabled');
   });
 
   test('lane ON + dry-run: allowed by default, audits the snapshot, does NOT require armed', () => {
