@@ -3083,6 +3083,10 @@
     } else if (s.pendingOrder) {
       btn.textContent = `TRADER: PENDING · ${s.pendingOrder.symbol}`;
       btn.classList.add('trader-position');
+    } else if (s.haltedAt) {
+      const losses = s.consecutiveLosses || 0;
+      btn.textContent = `TRADER: HALTED · ${losses}/3 losses · scans only`;
+      btn.classList.add('trader-stopped');
     } else {
       const trades = s.tradesToday || 0;
       const pnl    = s.dailyPnlUsd || 0;

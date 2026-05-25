@@ -1,8 +1,8 @@
 // AZC autonomous trader — server-side execution for the $50 micro-capital lane.
 //
 // Honours the user's existing safety envelope:
-//   $50 balance · 0.5% risk/trade · $1 daily loss cap · 1 position max
-//   3 trades/day max · 15-min per-symbol cooldown · futures-only · isolated 10×
+//   $50 micro-capital · one position max · 15-min per-symbol cooldown
+//   consecutive-loss halt · futures-only · isolated 10×
 //
 // Strategy: 5m FVG retest. Detect the last unmitigated 5m fair-value gap.
 // When price retraces into the gap mid, fire in the gap's direction with
@@ -54,10 +54,16 @@ const RISK_PCT_BEST     = 0.05;   // 5% for stand-out best candidate ($2.50)
 
 const MAX_OPEN_POSITIONS = 1;
 const COOLDOWN_MS = 15 * 60 * 1000;
-const MAX_CONSECUTIVE_LOSSES = 3;   // halt for human review after 3 losses in a row
-const MAX_HOLD_MS = 60 * 60 * 1000; // force-close after 60 min to avoid funding window crossings
+// 90d backtest (tests/backtest-azc-trader.mjs) at 5L tolerance ≈ 1-in-18
+// halt probability at the methodology's 50% win rate — a real signal, not
+// noise. 3L was 1-in-8, fired constantly on variance.
+const MAX_CONSECUTIVE_LOSSES = 5;
+// 60m force-close was leaving 6pp of win rate on the table — 70 trades
+// over 90d hit TP only after the cap. 120m captures them while still
+// staying inside a single funding window most of the time.
+const MAX_HOLD_MS = 120 * 60 * 1000;
 const RR = 1.5;
-const TICK_MS = 30_000;
+const TICK_MS = 15_000;
 const POSITION_POLL_MS = 5_000;
 const MAKER_ORDER_TTL_MS = 180_000;
 const FVG_BUFFER_PCT = 0.10;
@@ -115,9 +121,11 @@ function nextUtcMidnight() {
 
 function maybeRollDay() {
   if (Date.now() >= dailyResetAt) {
-    log(`[day-roll] resetting daily counters (was trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)})`);
+    log(`[day-roll] resetting daily counters (was trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} losses=${consecutiveLosses} halted=${haltedAt ? 'yes' : 'no'})`);
     tradesToday = 0;
     dailyPnlUsd = 0;
+    consecutiveLosses = 0;
+    haltedAt = null;
     dailyResetAt = nextUtcMidnight();
   }
 }

@@ -16,6 +16,11 @@
 
 ## Trade-mode policy (v8 — US100 manual, MEXC micro-capital separate)
 
+This repo is the AZC Platform codebase. Ahmed's public review surface is
+`https://ahmedalzv2.github.io/AZC-Platform/`: news, market read, signals,
+trade state, and execution reasoning. Do not turn the UI back into a
+per-asset settings console.
+
 User correction 2026-05-23: **US100/NASDAQ is manual-trigger ICT decision support.** Do not build autonomous US100 execution unless explicitly asked later.
 
 A separate **~$50 MEXC micro-capital lane** is allowed for crypto/asset experimentation because MEXC zero-fee trading can be an edge. Keep this separate from US100.
@@ -24,9 +29,9 @@ Resulting policy:
 
 - **US100**: manual ICT/futures prompts only. Session-driven, decision-support, Telegram/card/outcome flow. No autonomous execution.
 - **MEXC crypto/assets**: guarded micro-capital experimentation only. Start dry-run, then paper/shadow, then live only behind hard safety gates.
-- **Safety gates before live MEXC**: server-side secrets only, dry-run default ON, explicit live-mode arming, hard daily loss cap, max trades/day, one open position max, tiny fixed risk, no martingale, no revenge trading, no re-entry spam, visible kill switch, full audit journal.
+- **Safety gates before live MEXC**: server-side secrets only, dry-run default ON, explicit live-mode arming, hard daily loss cap, one open position max, tiny fixed risk, no martingale, no revenge trading, no re-entry spam, visible kill switch, full audit journal. Do not restore a MEXC daily trade-count cap unless Ahmed explicitly asks; the loss cap is the real safety and every resolved trade feeds learning files.
 - **Everything not explicitly in the MEXC test lane**: Spot Watch only. HTF buy/sell zones, accumulate low, distribute high. No leverage/scalp alerts by default.
-- **Auto-fire**: globally disabled by default. Any live MEXC execution must be deliberately armed and protected by the safety gates above.
+- **Auto-fire**: live MEXC execution must be deliberately armed and protected by the safety gates above. The floating one-tap AUTO button is the intended user control for arm/disarm; avoid adding more per-asset arming controls.
 - **Leverage spec / IN-POSITION gates / per-asset cooldowns** remain in code for users who manually flip an asset to futures mode via `setTradeMode(symbol, 'futures')`; nothing fires by default.
 
 ## Communication style

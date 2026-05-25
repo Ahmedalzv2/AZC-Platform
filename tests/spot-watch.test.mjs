@@ -215,7 +215,7 @@ describe('checkSpotZones: transition-only toast (quiet, no overlay/sound)', () =
     app.showToast = spy.fn;
     app.loadTradeModes();
     const silver = app.ASSETS.find(x => x.symbol === 'SILVER');
-    Object.assign(silver, { entry: 75, tp1: 76, price: 75.0, sl: 74.5 });
+    Object.assign(silver, { tradeMode: 'futures', entry: 75, tp1: 76, price: 75.0, sl: 74.5 });
     muteOtherSpot(app, 'SILVER');
     app.prevSpotZoneMap = {};
     app.checkSpotZones(new Date());
