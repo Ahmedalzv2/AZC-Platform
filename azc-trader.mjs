@@ -19,6 +19,7 @@ import { constants as fsConst } from 'node:fs';
 import path from 'node:path';
 import { callMexcSigned } from './mexc-signer.mjs';
 import { writeLearningFile } from './trade-learnings.mjs';
+import { loadTraderStateFromDisk } from './trader-state.mjs';
 
 // ──────────────────────────────────────────────────────────────────
 // Config
@@ -724,6 +725,23 @@ process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 log(`[start] AZC trader online · symbols=${SYMBOLS.join(',')} · lev=${LEVERAGE}× · risk=${RISK_PCT_DEFAULT*100}/${RISK_PCT_TOP_2*100}/${RISK_PCT_BEST*100}% (def/top2/best) · halt after ${MAX_CONSECUTIVE_LOSSES} consec losses`);
 await mkdir(LEARN_ROOT, { recursive: true }).catch(() => {});
 await mkdir(STATE_DIR, { recursive: true }).catch(() => {});
+
+// Restore daily safety counters from the previous run. Without this, a
+// systemd restart silently clears the 5-loss halt, the daily P&L count,
+// per-symbol cooldowns, and trades-today — defeating every safety gate
+// that depends on cross-cycle memory.
+try {
+  const r = await loadTraderStateFromDisk(STATE_FILE);
+  if (r) {
+    tradesToday       = r.tradesToday;
+    dailyPnlUsd       = r.dailyPnlUsd;
+    consecutiveLosses = r.consecutiveLosses;
+    haltedAt          = r.haltedAt;
+    dailyResetAt      = r.dailyResetAt;
+    for (const [sym, ts] of Object.entries(r.cooldownUntil)) cooldownUntil.set(sym, ts);
+    log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} consecLoss=${consecutiveLosses} halted=${haltedAt ? 'yes' : 'no'} cooldowns=${cooldownUntil.size}`);
+  }
+} catch (e) { log('[restore-err]', e.message); }
 
 // If the stop flag is set at startup, refuse to launch — operator must
 // clear it via the dashboard's start button (POST /trader-start).
