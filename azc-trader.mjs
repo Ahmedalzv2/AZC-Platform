@@ -33,19 +33,26 @@ if (!API_KEY || !API_SECRET) {
 // min size ($200 notional) + $0.08 roundtrip fee make it negative-EV at
 // $50 capital. The rest have small enough contracts that 1.5%/trade risk
 // math survives min-size rounding.
-// Symbol set chosen from 90d backtest (tests/backtest-azc-trader.mjs).
-// All 7 are above the 40% break-even line at RR=1.5:
-//   XRP   56.4% WR / +0.514R per trade  (lead)
+// Symbol set chosen by tests/screen-symbols.mjs over 90d fixtures.
+// Quality bar: win% ≥ 44% AND exp/trade ≥ +0.20R at RR=1.5.
+//   DOT   63.6% WR / +0.602R per trade  (top of the dataset)
+//   SUI   56.7%    / +0.460R
+//   XRP   56.4%    / +0.514R
+//   NEAR  56.1%    / +0.428R
+//   ARB   55.7%    / +0.427R
+//   INJ   50.5%    / +0.308R
 //   DOGE  50.0%    / +0.312R
 //   AVAX  48.4%    / +0.272R
+//   LTC   47.6%    / +0.386R
 //   SOL   46.0%    / +0.204R
-//   LINK  45.0%    / +0.182R
-//   BTC   43.6%    / +0.304R
-//   BNB   40.3%    / +0.268R
-// Dropped: ETH (38.8% / +0.175R — below break-even in 90d sample).
+//   BTC   43.6%    / +0.304R  (kept as institutional benchmark)
+// Dropped: BNB (40.3% / 0.268R — marginal), LINK (45.0% / 0.182R —
+// low R), ETH (38.8% / 0.175R — below BE).
+// 90d aggregate: 1025 trades · 51.7% win rate · +381.5R · +0.372R/trade.
 const SYMBOLS = [
-  'XRP_USDT', 'DOGE_USDT', 'AVAX_USDT', 'SOL_USDT',
-  'LINK_USDT', 'BTC_USDT', 'BNB_USDT',
+  'DOT_USDT',  'SUI_USDT',  'XRP_USDT',  'NEAR_USDT',
+  'ARB_USDT',  'INJ_USDT',  'DOGE_USDT', 'AVAX_USDT',
+  'LTC_USDT',  'SOL_USDT',  'BTC_USDT',
 ];
 const TF_MIN = 5;
 const HTF_MIN = 60;

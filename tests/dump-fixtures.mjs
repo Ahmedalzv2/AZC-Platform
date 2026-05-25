@@ -40,6 +40,7 @@ if (!INTERVAL_MIN) {
 const FORCE = Boolean(args.force);
 
 const ALL_ASSETS = {
+  // Validated live-trader symbols
   SILVER: 'SILVER_USDT',
   GOLD:   'XAUT_USDT',
   SOL:    'SOL_USDT',
@@ -50,6 +51,17 @@ const ALL_ASSETS = {
   DOGE:   'DOGE_USDT',
   AVAX:   'AVAX_USDT',
   LINK:   'LINK_USDT',
+  // Screening candidates — liquid MEXC USDT perps with FVG-friendly
+  // volatility. Skipping meme coins (PEPE/SHIB) for now — their wick
+  // patterns over-trigger the MIN_STOP_PCT floor.
+  ADA:    'ADA_USDT',
+  DOT:    'DOT_USDT',
+  LTC:    'LTC_USDT',
+  ARB:    'ARB_USDT',
+  OP:     'OP_USDT',
+  SUI:    'SUI_USDT',
+  NEAR:   'NEAR_USDT',
+  INJ:    'INJ_USDT',
 };
 const requested = args.assets
   ? String(args.assets).split(',').map((s) => s.trim().toUpperCase())
