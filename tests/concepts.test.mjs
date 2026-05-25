@@ -16,8 +16,15 @@ describe('ICT data invariants — these protect your trading rules from drift', 
     assert.equal(app.CHECK_LABELS.length, checksLen);
   });
 
-  test('every asset has entry, sl, and a TP', () => {
+  // An asset with entry/sl/tp1 all zero is in the explicit "no active plan"
+  // state — the dashboard shows WAITING PLAN and the user builds fresh
+  // levels from the cockpit. The level-shape invariants only apply once
+  // a plan exists.
+  const hasPlan = (a) => Number(a.entry) > 0 || Number(a.sl) > 0 || Number(a.tp1 || a.tp) > 0;
+
+  test('every asset with an active plan has entry, sl, and a TP', () => {
     for (const a of [...app.ASSETS]) {
+      if (!hasPlan(a)) continue;
       assert.ok(a.entry > 0, `${a.symbol}: entry must be positive`);
       assert.ok(a.sl > 0, `${a.symbol}: sl must be positive`);
       assert.ok(a.tp1 > 0 || a.tp > 0, `${a.symbol}: needs tp1 or tp`);
@@ -30,6 +37,7 @@ describe('ICT data invariants — these protect your trading rules from drift', 
     // invariant we *can* enforce is that SL and TP1 are never on the same
     // side of entry (which would be a broken/illogical setup).
     for (const a of [...app.ASSETS]) {
+      if (!hasPlan(a)) continue;
       const tp = a.tp1 || a.tp;
       const slBelow = a.sl < a.entry;
       const tpAbove = tp > a.entry;
@@ -44,6 +52,7 @@ describe('ICT data invariants — these protect your trading rules from drift', 
 
   test('TP and SL are at meaningfully different prices from entry', () => {
     for (const a of [...app.ASSETS]) {
+      if (!hasPlan(a)) continue;
       const tp = a.tp1 || a.tp;
       assert.notEqual(a.sl, a.entry, `${a.symbol}: SL equals entry`);
       assert.notEqual(tp, a.entry, `${a.symbol}: TP1 equals entry`);
