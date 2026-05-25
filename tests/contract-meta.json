@@ -1,0 +1,16 @@
+{
+  "BTC":  { "contractSize": 0.0001, "minVol": 1, "makerFeeRate": 0.0000, "takerFeeRate": 0.0001 },
+  "ETH":  { "contractSize": 0.01,   "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "SOL":  { "contractSize": 0.1,    "minVol": 1, "makerFeeRate": 0.0000, "takerFeeRate": 0.0000 },
+  "BNB":  { "contractSize": 0.01,   "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "XRP":  { "contractSize": 1,      "minVol": 1, "makerFeeRate": 0.0000, "takerFeeRate": 0.0000 },
+  "DOGE": { "contractSize": 100,    "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "AVAX": { "contractSize": 0.1,    "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "LINK": { "contractSize": 0.1,    "minVol": 1, "makerFeeRate": 0.0000, "takerFeeRate": 0.0000 },
+  "DOT":  { "contractSize": 0.1,    "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "ARB":  { "contractSize": 1,      "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "NEAR": { "contractSize": 1,      "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "SUI":  { "contractSize": 1,      "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "INJ":  { "contractSize": 1,      "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 },
+  "LTC":  { "contractSize": 0.01,   "minVol": 1, "makerFeeRate": 0.0001, "takerFeeRate": 0.0004 }
+}

@@ -41,6 +41,33 @@ const RR                  = Number(args.rr || 1.5);
 const COOLDOWN_MS         = (Number(args.cooldown ?? 15)) * 60 * 1000;
 const MAX_HOLD_MS         = (Number(args['max-hold'] ?? 60)) * 60 * 1000;
 const KILLZONES_ENABLED   = !args['no-killzone'];
+// Dynamic fee model — fees are computed PER TRADE from the actual balance,
+// risk-sized qty, notional, and per-symbol MEXC fee rates. No more
+// hardcoded 0.24%-of-everything assumption.
+//
+// Inputs the user controls:
+//   --balance=N       starting account USDT (default 50)
+//   --risk=N          risk fraction per trade (default 0.03 → 3%)
+//   --lev=N           leverage (default 10)
+//   --min-fee=N       MEXC's per-close fee floor in USDT (empirical 0.025)
+//   --funding=N       per 8h boundary funding rate (default 0.0001 = 0.01%)
+//   --no-fees         disable fee subtraction (for sanity checks)
+//
+// Per-symbol rates come from tests/contract-meta.json (snapshot of the
+// /api/v1/contract/detail endpoint — SOL/XRP/LINK are zero-fee, others
+// 0.01% maker / 0.04% taker).
+// Entry is POST_ONLY maker → cost depends on symbol's maker rate.
+// TP-win is closed via separate limit-maker order → maker rate.
+// SL-loss is closed by MEXC's stop plan → taker rate.
+// BE-timeout is closed by market order → taker rate.
+import { readFileSync as _readFile } from 'node:fs';
+const CONTRACT_META = JSON.parse(_readFile(path.join(__dirname, 'contract-meta.json'), 'utf8'));
+const BALANCE             = Number(args.balance ?? 50);
+const RISK_PCT            = Number(args.risk    ?? 0.03);
+const LEVERAGE            = Number(args.lev     ?? 10);
+const MIN_FEE_USD         = Number(args['min-fee'] ?? 0.025);
+const FUNDING_PCT_PER_WIN = Number(args.funding ?? 0.0001);
+const FEES_ENABLED        = !args['no-fees'];
 
 const KILLZONES_UTC = [
   { startH: 0,  startM: 0,  endH: 4,  endM: 0 },
@@ -159,7 +186,23 @@ function resolve(bars5, dir, entry, sl, tp, startIdx) {
   return { outcome: 'be', exitPrice: bars5[bars5.length - 1].c, exitTs: bars5[bars5.length - 1].t, holdBars: bars5.length - startIdx };
 }
 
+// Compute the qty the live trader would size at given balance, mirroring
+// azc-trader.mjs's tryFire() math. Returns the qty + the resulting notional.
+function sizeTrade(meta, entry, stopDist, balance, riskPct = RISK_PCT) {
+  const stopDistUsdPerContract = meta.contractSize * stopDist;
+  const riskUsd = balance * riskPct;
+  let qty = Math.floor(riskUsd / stopDistUsdPerContract);
+  if (qty < meta.minVol) qty = meta.minVol;
+  const maxQtyByMargin = Math.floor((balance * 0.5 * LEVERAGE) / (meta.contractSize * entry));
+  if (qty > maxQtyByMargin && maxQtyByMargin > 0) qty = maxQtyByMargin;
+  const notional = qty * meta.contractSize * entry;
+  return { qty, notional };
+}
+
 function backtestAsset(symbol, bars5) {
+  const symKey = symbol.replace(/_USDT$/, '');
+  const meta = CONTRACT_META[symKey];
+  if (!meta) return null;  // unknown symbol — skip rather than crash
   const bars1h = to1h(bars5);
   // Map each 5m bar to "how many fully-closed 1h bars precede it" so the
   // rolling SMA only ever sees data the live trader would have had.
@@ -182,10 +225,32 @@ function backtestAsset(symbol, bars5) {
     const cand = buildCandidate(bars5, htfClosedAt(b.t), i, b.c);
     if (cand.skip) { i++; continue; }
     const res = resolve(bars5, cand.dir, cand.entry, cand.sl, cand.tp, i);
-    const rMultiple =
+    // Size the trade against current balance — matches live trader sizing
+    const { qty, notional } = sizeTrade(meta, cand.entry, cand.stopDist, BALANCE);
+    // 1R in $ — what one stop-distance worth of price movement is worth
+    // against this position
+    const oneR_usd = cand.stopDist * meta.contractSize * qty;
+    const grossR =
       res.outcome === 'win'  ?  RR :
       res.outcome === 'loss' ? -1.0 :
       ((cand.dir === 'bull' ? (res.exitPrice - cand.entry) : (cand.entry - res.exitPrice)) / cand.stopDist);
+    const grossUsd = grossR * oneR_usd;
+    // Fee per side — entry maker, close depends on outcome.
+    //   TP win  → limit-maker close → maker rate
+    //   SL loss → MEXC stop plan triggers market → taker rate
+    //   BE      → market-close timeout → taker rate
+    //   Each side has a min-fee floor (empirical $0.025 from DOGE).
+    const calcFee = (notional, rate) => Math.max(notional * rate, rate > 0 ? MIN_FEE_USD : 0);
+    const feeOpen  = calcFee(notional, meta.makerFeeRate);
+    const closeRate = res.outcome === 'win' ? meta.makerFeeRate : meta.takerFeeRate;
+    const feeClose = calcFee(notional, closeRate);
+    const startWindow = Math.floor(b.t / (8 * 3600 * 1000));
+    const endWindow   = Math.floor(res.exitTs / (8 * 3600 * 1000));
+    const windowsCrossed = Math.max(0, endWindow - startWindow);
+    const fundingUsd = FUNDING_PCT_PER_WIN * windowsCrossed * notional;
+    const totalFeeUsd = FEES_ENABLED ? (feeOpen + feeClose + fundingUsd) : 0;
+    const netUsd = grossUsd - totalFeeUsd;
+    const rMultiple = oneR_usd > 0 ? netUsd / oneR_usd : 0;
     trades.push({
       ts: b.t,
       dir: cand.dir,
@@ -193,6 +258,10 @@ function backtestAsset(symbol, bars5) {
       sl: cand.sl,
       tp: cand.tp,
       ...res,
+      qty, notional,
+      grossR, grossUsd,
+      feeOpen, feeClose, fundingUsd, totalFeeUsd,
+      netUsd,
       rMultiple,
       session: sessionAt(b.t),
     });
@@ -218,9 +287,13 @@ function summarize(symbol, trades) {
   const bes    = trades.filter(t => t.outcome === 'be').length;
   const n = trades.length;
   const totalR = trades.reduce((a, t) => a + t.rMultiple, 0);
+  const totalUsd = trades.reduce((a, t) => a + t.netUsd, 0);
+  const totalFees = trades.reduce((a, t) => a + t.totalFeeUsd, 0);
+  const avgNotional = n ? trades.reduce((a, t) => a + t.notional, 0) / n : 0;
   const winRate = n ? (wins / n) : 0;
   const expR = n ? (totalR / n) : 0;
-  return { symbol, n, wins, losses, bes, winRate, totalR, expR };
+  const expUsd = n ? (totalUsd / n) : 0;
+  return { symbol, n, wins, losses, bes, winRate, totalR, expR, totalUsd, expUsd, totalFees, avgNotional };
 }
 
 const onlyAsset = args.asset ? String(args.asset).toUpperCase() : null;
@@ -233,36 +306,40 @@ if (!files.length) {
   process.exit(1);
 }
 
-console.log(`AZC trader backtest · 90d 5m fixtures`);
-console.log(`Rules: HTF=${HTF_MIN}m SMA(${HTF_SMA_LEN}), MIN_FVG_BODY=${(MIN_FVG_BODY_PCT*100).toFixed(2)}%, MIN_STOP=${(MIN_STOP_PCT*100).toFixed(2)}%, RR=${RR}, FVG_BUFFER=${FVG_BUFFER_PCT}, TOUCH=${(TOUCH_TOLERANCE_PCT*100).toFixed(2)}%, COOLDOWN=${COOLDOWN_MS/60000}m, MAX_HOLD=${MAX_HOLD_MS/60000}m`);
+console.log(`AZC trader backtest · 90d 5m fixtures · BALANCE=$${BALANCE} risk=${(RISK_PCT*100).toFixed(1)}% lev=${LEVERAGE}x`);
+console.log(`Rules: HTF=${HTF_MIN}m SMA(${HTF_SMA_LEN}), MIN_FVG_BODY=${(MIN_FVG_BODY_PCT*100).toFixed(2)}%, MIN_STOP=${(MIN_STOP_PCT*100).toFixed(2)}%, RR=${RR}, TOUCH=${(TOUCH_TOLERANCE_PCT*100).toFixed(2)}%, COOLDOWN=${COOLDOWN_MS/60000}m, MAX_HOLD=${MAX_HOLD_MS/60000}m, killzone=${KILLZONES_ENABLED}, fees=${FEES_ENABLED}, min-fee=$${MIN_FEE_USD}`);
 console.log('');
-console.log('symbol   trades   wins  losses    BE    win%    totalR    exp/trade');
-console.log('-------  -------  ----  ------  ----   -----  --------    ---------');
+console.log('symbol   trades   wins  loss   BE    win%    netUSD     $/trade    notional    fees%gross');
+console.log('-------  -------  ----  ----  ----  -----   --------   --------   ---------   ----------');
 
 const rows = [];
 for (const f of files) {
   const symbol = f.split('-')[0];
   const bars5 = JSON.parse(readFileSync(path.join(FIX_DIR, f), 'utf8'));
   const trades = backtestAsset(symbol, bars5);
+  if (!trades) { continue; }  // no contract meta — skip
   const s = summarize(symbol, trades);
   rows.push(s);
+  const grossUsd = trades.reduce((a, t) => a + t.grossUsd, 0);
+  const feePctOfGross = grossUsd > 0 ? (s.totalFees / grossUsd * 100).toFixed(0) + '%' : '—';
   console.log(
-    `${symbol.padEnd(7)}  ${String(s.n).padStart(7)}  ${String(s.wins).padStart(4)}  ${String(s.losses).padStart(6)}  ${String(s.bes).padStart(4)}   ${(s.winRate*100).toFixed(1).padStart(5)}%  ${s.totalR.toFixed(2).padStart(8)}R   ${s.expR.toFixed(3).padStart(7)}R`
+    `${symbol.padEnd(7)}  ${String(s.n).padStart(7)}  ${String(s.wins).padStart(4)}  ${String(s.losses).padStart(4)}  ${String(s.bes).padStart(4)}  ${(s.winRate*100).toFixed(1).padStart(5)}%  $${s.totalUsd.toFixed(2).padStart(8)}  $${s.expUsd.toFixed(4).padStart(8)}   $${s.avgNotional.toFixed(0).padStart(7)}   ${feePctOfGross.padStart(9)}`
   );
 }
 
 const agg = rows.reduce((a, r) => ({
-  n: a.n + r.n, wins: a.wins + r.wins, losses: a.losses + r.losses, bes: a.bes + r.bes, totalR: a.totalR + r.totalR,
-}), { n: 0, wins: 0, losses: 0, bes: 0, totalR: 0 });
+  n: a.n + r.n, wins: a.wins + r.wins, losses: a.losses + r.losses, bes: a.bes + r.bes,
+  totalR: a.totalR + r.totalR, totalUsd: a.totalUsd + r.totalUsd, totalFees: a.totalFees + r.totalFees,
+}), { n: 0, wins: 0, losses: 0, bes: 0, totalR: 0, totalUsd: 0, totalFees: 0 });
 const aggWin = agg.n ? agg.wins / agg.n : 0;
-const aggExp = agg.n ? agg.totalR / agg.n : 0;
-console.log('-------  -------  ----  ------  ----   -----  --------    ---------');
+const aggExpUsd = agg.n ? agg.totalUsd / agg.n : 0;
+const aggExpR   = agg.n ? agg.totalR / agg.n : 0;
+console.log('-------  -------  ----  ----  ----  -----   --------   --------   ---------   ----------');
 console.log(
-  `${'TOTAL'.padEnd(7)}  ${String(agg.n).padStart(7)}  ${String(agg.wins).padStart(4)}  ${String(agg.losses).padStart(6)}  ${String(agg.bes).padStart(4)}   ${(aggWin*100).toFixed(1).padStart(5)}%  ${agg.totalR.toFixed(2).padStart(8)}R   ${aggExp.toFixed(3).padStart(7)}R`
+  `${'TOTAL'.padEnd(7)}  ${String(agg.n).padStart(7)}  ${String(agg.wins).padStart(4)}  ${String(agg.losses).padStart(4)}  ${String(agg.bes).padStart(4)}  ${(aggWin*100).toFixed(1).padStart(5)}%  $${agg.totalUsd.toFixed(2).padStart(8)}  $${aggExpUsd.toFixed(4).padStart(8)}`
 );
 console.log('');
-
-// Break-even win rate at this RR is 1/(1+RR). Compare actual vs that.
-const beWinRate = 1 / (1 + RR);
-console.log(`Break-even win rate at RR=${RR}: ${(beWinRate*100).toFixed(1)}%`);
-console.log(`Status: ${aggWin > beWinRate ? '✅ above BE' : '❌ below BE — losing methodology'}`);
+console.log(`Net $ on $${BALANCE} starting: $${agg.totalUsd.toFixed(2)} after 90d (${((agg.totalUsd/BALANCE)*100).toFixed(1)}% return on bankroll)`);
+console.log(`Per-trade R after fees: ${aggExpR.toFixed(3)}R · Win rate: ${(aggWin*100).toFixed(1)}% (BE at RR=${RR} is ${(100/(1+RR)).toFixed(1)}%)`);
+console.log(`Total fees paid: $${agg.totalFees.toFixed(2)}`);
+console.log(`Status: ${agg.totalUsd > 0 ? '✅ NET POSITIVE' : '❌ net negative'}`);
