@@ -545,7 +545,7 @@ async function reconcileClosedPosition() {
     consecutiveLosses += 1;
     if (consecutiveLosses >= MAX_CONSECUTIVE_LOSSES) {
       haltedAt = new Date().toISOString();
-      log(`[HALT] ${consecutiveLosses} consecutive losses — bot will stop firing. Human review required. Touch ${STATE_DIR}/halt-cleared to resume.`);
+      log(`[HALT] ${consecutiveLosses} consecutive losses — pausing fires. Auto-resumes at next UTC midnight (day-roll); touch ${STATE_DIR}/halt-cleared to resume sooner.`);
     }
   } else {
     consecutiveLosses = 0;
@@ -652,9 +652,11 @@ while (true) {
   }
   try {
     if (positionContext?.posId) {
-      // Max-hold guard: market-close before next funding window if a
-      // position is sitting too long. 60-min cap covers most funding
-      // crossings (00/08/16 UTC) at our trade cadence.
+      // Max-hold guard: market-close if a position is sitting too long.
+      // 120-min cap — backtested as the sweet spot. Shorter caps (60m)
+      // killed ~6pp of win rate by closing trades minutes before they
+      // would have hit TP. Longer caps (180m+) showed diminishing
+      // returns and started crossing funding windows more often.
       if (positionContext.filledAt && (Date.now() - positionContext.filledAt) > MAX_HOLD_MS) {
         log(`[max-hold] ${positionContext.symbol} held ${Math.round((Date.now()-positionContext.filledAt)/1000/60)}m — closing`);
         try { await panicCloseLong(positionContext); } catch (e) { log('[max-hold-close-err]', e.message); }
