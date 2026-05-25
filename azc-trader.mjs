@@ -426,7 +426,11 @@ async function tryFire() {
   const maxQtyByMargin = Math.floor((equity * 0.5 * LEVERAGE) / (pick.meta.contractSize * pick.price));
   if (qty > maxQtyByMargin && maxQtyByMargin > 0) qty = maxQtyByMargin;
 
-  const snap = v => Math.round(v / pick.meta.priceUnit) * pick.meta.priceUnit;
+  // Snap to MEXC's priceUnit grid and strip JS-float junk digits.
+  // Without the .toFixed(decimals) MEXC rejects with code 2015 (e.g.
+  // 0.10965 → 0.10965000000000001 after the round/multiply round-trip).
+  const priceDecimals = (String(pick.meta.priceUnit).split('.')[1] || '').length;
+  const snap = v => Number((Math.round(v / pick.meta.priceUnit) * pick.meta.priceUnit).toFixed(priceDecimals));
   const entry  = snap(pick.entry);
   const slSnap = snap(pick.sl);
   const tpSnap = snap(pick.tp);
@@ -565,7 +569,8 @@ async function panicCloseLong(ctx) {
     return;
   }
   const px = ctx.dir === 'bull' ? ticker.bid1 - priceUnit * 5 : ticker.ask1 + priceUnit * 5;
-  const snapPx = Math.round(px / priceUnit) * priceUnit;
+  const decimals = (String(priceUnit).split('.')[1] || '').length;
+  const snapPx = Number((Math.round(px / priceUnit) * priceUnit).toFixed(decimals));
   const body = {
     symbol: ctx.symbol,
     price: snapPx,
