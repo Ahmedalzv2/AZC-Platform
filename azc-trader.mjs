@@ -33,26 +33,30 @@ if (!API_KEY || !API_SECRET) {
 // min size ($200 notional) + $0.08 roundtrip fee make it negative-EV at
 // $50 capital. The rest have small enough contracts that 1.5%/trade risk
 // math survives min-size rounding.
-// Symbol set chosen by tests/screen-symbols.mjs over 90d fixtures.
-// Quality bar: win% ≥ 44% AND exp/trade ≥ +0.20R at RR=1.5.
-//   DOT   63.6% WR / +0.602R per trade  (top of the dataset)
-//   SUI   56.7%    / +0.460R
-//   XRP   56.4%    / +0.514R
-//   NEAR  56.1%    / +0.428R
-//   ARB   55.7%    / +0.427R
-//   INJ   50.5%    / +0.308R
-//   DOGE  50.0%    / +0.312R
-//   AVAX  48.4%    / +0.272R
-//   LTC   47.6%    / +0.386R
-//   SOL   46.0%    / +0.204R
-//   BTC   43.6%    / +0.304R  (kept as institutional benchmark)
-// Dropped: BNB (40.3% / 0.268R — marginal), LINK (45.0% / 0.182R —
-// low R), ETH (38.8% / 0.175R — below BE).
-// 90d aggregate: 1025 trades · 51.7% win rate · +381.5R · +0.372R/trade.
+// Symbol set chosen by tests/screen-symbols.mjs over 90d fixtures,
+// re-scored in 24/7 mode (no killzone gate) since the live trader now
+// fires around the clock.
+//   ARB   59.8% WR / +0.515R per trade  (top of the 24/7 dataset)
+//   DOT   57.6%    / +0.447R
+//   NEAR  55.4%    / +0.413R
+//   SUI   53.7%    / +0.385R
+//   XRP   50.8%    / +0.389R
+//   LTC   47.4%    / +0.395R
+//   AVAX  50.7%    / +0.331R
+//   DOGE  50.3%    / +0.326R
+//   SOL   47.0%    / +0.282R
+//   BTC   41.7%    / +0.276R  (institutional benchmark; marginal)
+// Dropped vs killzone-gated set: INJ (0.308R → 0.198R in 24/7 — falls
+// below the +0.20R bar). Stays dropped: BNB, LINK, ETH (also marginal
+// or below BE in 24/7 mode).
+// 90d aggregate (24/7, 10 symbols): 1844 trades · 45.7% WR · +614R
+// total · +0.333R/trade. Versus killzone-gated 11-symbol set (1025
+// trades / +382R total / +0.372R/trade): +80% trade volume, +61% total
+// R, -14% per-trade quality. Volume + total return wins.
 const SYMBOLS = [
-  'DOT_USDT',  'SUI_USDT',  'XRP_USDT',  'NEAR_USDT',
-  'ARB_USDT',  'INJ_USDT',  'DOGE_USDT', 'AVAX_USDT',
-  'LTC_USDT',  'SOL_USDT',  'BTC_USDT',
+  'ARB_USDT',  'DOT_USDT',  'NEAR_USDT', 'SUI_USDT',
+  'XRP_USDT',  'LTC_USDT',  'AVAX_USDT', 'DOGE_USDT',
+  'SOL_USDT',  'BTC_USDT',
 ];
 const TF_MIN = 5;
 const HTF_MIN = 60;
@@ -88,13 +92,14 @@ const TOUCH_TOLERANCE_PCT = 0.0008;   // proximity gate, 0.08% of price
 const MIN_FVG_BODY_PCT = 0.0010;      // FVG body must be ≥ 0.10% of price (skip micro-gaps)
 const MIN_STOP_PCT     = 0.0020;      // stop distance must be ≥ 0.20% of price (else stop is hunt-bait)
 
-// Killzone gate — crypto-specific liquidity windows (not forex). Outside
-// these hours, FVGs are algo chop with low follow-through. Hours UTC.
+// Killzone metadata — these UTC windows are *not* a gate (24/7 trading
+// is enabled). They're kept so every fire's post-mortem records which
+// session it happened in (currentKillzoneName() in the close payload).
 //   Asia:     00:00-04:00 UTC (Tokyo/HK desks; BTC moves often originate)
 //   London:   07:00-10:00 UTC (institutional open)
 //   NY AM:    12:30-16:00 UTC (peak global volume)
 //   Late-NY:  18:30-22:00 UTC (NY close → Asia roll-over)
-// Total: 14h/day active vs 7.5h with forex-only sessions.
+// Outside these windows session is reported as null on the postmortem.
 const KILLZONES_UTC = [
   { startH: 0,  startM: 0,  endH: 4,  endM: 0 },
   { startH: 7,  startM: 0,  endH: 10, endM: 0 },
@@ -379,11 +384,13 @@ async function scanAllSymbols() {
 
 async function tryFire() {
   maybeRollDay();
-  // Always scan — even outside KZ — so the dashboard live feed updates.
   const results = await scanAllSymbols();
 
   if (haltedAt)                                              return { skip: 'consec-loss-halt', detail: `since ${haltedAt}` };
-  if (!inKillzone())                                         return { skip: 'outside-killzone' };
+  // No killzone gate — backtest comparison showed 24/7 firing gives ~+80%
+  // more trades and +61% more total R over 90d vs killzone-gated, at the
+  // cost of 6pp lower win rate. Volume wins. The killzone label is still
+  // recorded on every fire (session field in the postmortem) for analysis.
   if (pendingOrder)                                          return { skip: 'pending-order' };
 
   const openPositions = await getOpenPositions();
@@ -737,7 +744,7 @@ while (true) {
     if (!pendingOrder && !positionContext) {
       maybeRollDay();
       const r = await tryFire();   // always runs scanAllSymbols inside
-      if (r.skip && r.skip !== 'no-candidates' && r.skip !== 'outside-killzone') {
+      if (r.skip && r.skip !== 'no-candidates') {
         log(`[skip] ${r.skip}${r.detail ? ' · ' + r.detail : ''}`);
       }
     } else if (pendingOrder || positionContext) {

@@ -40,6 +40,7 @@ const MIN_STOP_PCT        = Number(args['min-stop'] || 0.0020);
 const RR                  = Number(args.rr || 1.5);
 const COOLDOWN_MS         = (Number(args.cooldown ?? 15)) * 60 * 1000;
 const MAX_HOLD_MS         = (Number(args['max-hold'] ?? 60)) * 60 * 1000;
+const KILLZONES_ENABLED   = !args['no-killzone'];
 
 const KILLZONES_UTC = [
   { startH: 0,  startM: 0,  endH: 4,  endM: 0 },
@@ -177,7 +178,7 @@ function backtestAsset(symbol, bars5) {
   while (i < bars5.length) {
     const b = bars5[i];
     if (b.t < cooldownUntil) { i++; continue; }
-    if (!inKillzone(b.t))    { i++; continue; }
+    if (KILLZONES_ENABLED && !inKillzone(b.t))    { i++; continue; }
     const cand = buildCandidate(bars5, htfClosedAt(b.t), i, b.c);
     if (cand.skip) { i++; continue; }
     const res = resolve(bars5, cand.dir, cand.entry, cand.sl, cand.tp, i);
