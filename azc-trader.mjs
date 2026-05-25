@@ -452,6 +452,10 @@ async function tryFire() {
   positionContext = {
     symbol: pick.symbol, dir: pick.fvg.dir, side: pick.sideOpen, entry, sl: slSnap, tp: tpSnap,
     qty, lev: LEVERAGE, contractSize: pick.meta.contractSize, openedAt: Date.now(),
+    // Carry the full contract meta — panicCloseLong needs priceUnit to
+    // snap its limit price; without it the close goes out as NaN and
+    // MEXC rejects with code 2007 "Order price error".
+    meta: pick.meta,
     orderId, fvgFormedAt: pick.fvg.formedAt, htfDir: pick.htfDir,
     // Snapshot the full decision context at fire-time so the post-mortem
     // file written on close has the WHY of the trade, not just the WHAT.
@@ -465,8 +469,25 @@ async function tryFire() {
 async function watchPendingOrder() {
   if (!pendingOrder) return;
   if (Date.now() >= pendingOrder.expiresAt) {
-    log(`[ttl] cancelling unfilled order ${pendingOrder.orderId} for ${pendingOrder.symbol}`);
-    try { await cancelOrder(pendingOrder.orderId); } catch (e) { /* swallow */ }
+    const expiredSymbol = pendingOrder.symbol;
+    const expiredOrderId = pendingOrder.orderId;
+    log(`[ttl] cancelling unfilled order ${expiredOrderId} for ${expiredSymbol}`);
+    try { await cancelOrder(expiredOrderId); } catch (e) { /* swallow */ }
+    // Cancel race — MEXC's "cancel succeeded" response doesn't prove the
+    // order didn't fill in flight. Check open positions before clearing
+    // context, otherwise we end up with an orphan position the bot
+    // doesn't monitor (happened to SUI on 2026-05-25).
+    try {
+      const ps = await getOpenPositions();
+      const pos = ps.find(p => p.symbol === expiredSymbol);
+      if (pos && positionContext && positionContext.orderId === expiredOrderId) {
+        log(`[ttl-race] order ${expiredOrderId} filled during cancel — promoting ${expiredSymbol} pos=${pos.positionId} (avgPx=${pos.holdAvgPrice})`);
+        positionContext.posId = pos.positionId;
+        positionContext.filledAt = Date.now();
+        pendingOrder = null;
+        return;  // hand off to normal monitoring loop
+      }
+    } catch (e) { log('[ttl-race-check-fail]', e.message); }
     pendingOrder = null;
     positionContext = null;
     return;
@@ -498,26 +519,34 @@ async function watchPendingOrder() {
 // plan-orders via /api/v1/private/stoporder/list/orders (a.k.a. plan
 // orders). If the response doesn't show a stop tied to this positionId,
 // market-close immediately.
-async function verifyExchangeStopOrPanicClose(pos, ctx) {
-  const r = await mexcSigned({
-    path: '/api/v1/private/stoporder/list/orders',
-    method: 'GET',
-    params: { symbol: ctx.symbol, page_num: 1, page_size: 20 },
-  });
-  const plans = Array.isArray(r.json?.data?.resultList) ? r.json.data.resultList
-              : Array.isArray(r.json?.data) ? r.json.data : [];
-  // We want at least one plan order on this symbol whose trigger is in
-  // the right direction (long: trigger BELOW entry; short: trigger ABOVE).
-  const hasGuard = plans.some(p => {
-    const trig = +p.triggerPrice;
-    if (!isFinite(trig)) return false;
-    return ctx.dir === 'bull' ? trig < ctx.entry : trig > ctx.entry;
-  });
-  if (hasGuard) {
-    log(`[stop-verify-ok] ${ctx.symbol} — ${plans.length} plan order(s) found, guard present`);
-    return;
+//
+// Retries: the plan-order endpoint can lag the fill by a couple of
+// seconds — observed on 2026-05-25 where every fill triggered a false
+// panic-close attempt because the plan list hadn't propagated yet. Poll
+// up to 5×2s before giving up.
+async function verifyExchangeStopOrPanicClose(pos, ctx, retries = 5, delayMs = 2000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const r = await mexcSigned({
+      path: '/api/v1/private/stoporder/list/orders',
+      method: 'GET',
+      params: { symbol: ctx.symbol, page_num: 1, page_size: 20 },
+    });
+    const plans = Array.isArray(r.json?.data?.resultList) ? r.json.data.resultList
+                : Array.isArray(r.json?.data) ? r.json.data : [];
+    const hasGuard = plans.some(p => {
+      const trig = +p.triggerPrice;
+      if (!isFinite(trig)) return false;
+      return ctx.dir === 'bull' ? trig < ctx.entry : trig > ctx.entry;
+    });
+    if (hasGuard) {
+      log(`[stop-verify-ok] ${ctx.symbol} — ${plans.length} plan(s), guard present (attempt ${attempt}/${retries})`);
+      return;
+    }
+    if (attempt < retries) {
+      await sleep(delayMs);
+    }
   }
-  log(`[stop-verify-FAIL] ${ctx.symbol} pos=${ctx.posId} — no attached stop. PANIC CLOSE.`);
+  log(`[stop-verify-FAIL] ${ctx.symbol} pos=${ctx.posId} — no attached stop after ${retries} attempts. PANIC CLOSE.`);
   await panicCloseLong(ctx);
 }
 
@@ -525,8 +554,18 @@ async function panicCloseLong(ctx) {
   // Market-close. Side 4 = close long, side 2 = close short.
   const closeSide = ctx.dir === 'bull' ? 4 : 2;
   const ticker = await fetchTicker(ctx.symbol);
-  const px = ctx.dir === 'bull' ? ticker.bid1 - ctx.meta?.priceUnit * 5 : ticker.ask1 + ctx.meta?.priceUnit * 5;
-  const snapPx = ctx.meta ? Math.round(px / ctx.meta.priceUnit) * ctx.meta.priceUnit : px;
+  // priceUnit defensively pulled from ctx.meta OR a fresh meta fetch —
+  // ctx.meta is now stashed at fire-time, but if anything ever leaves
+  // it undefined again we want a real number, not NaN.
+  const priceUnit = ctx.meta?.priceUnit
+    || metaCache.get(ctx.symbol)?.priceUnit
+    || (await fetchContractMeta(ctx.symbol).catch(() => null))?.priceUnit;
+  if (!isFinite(+priceUnit) || +priceUnit <= 0) {
+    log(`[panic-close-abort] ${ctx.symbol} — cannot resolve priceUnit, leaving position to MEXC plan SL/TP`);
+    return;
+  }
+  const px = ctx.dir === 'bull' ? ticker.bid1 - priceUnit * 5 : ticker.ask1 + priceUnit * 5;
+  const snapPx = Math.round(px / priceUnit) * priceUnit;
   const body = {
     symbol: ctx.symbol,
     price: snapPx,
