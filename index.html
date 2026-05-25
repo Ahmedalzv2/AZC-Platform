@@ -880,12 +880,17 @@
     },
     {
       symbol: 'US100', platform: 'FP Markets CFD', type: 'FUTURES',
-      entry: 26800, sl: 26950, tp1: 26000, tp2: 25500,
+      // No baked-in entry/SL/TP — user builds a fresh plan via the ICT
+      // Cockpit's "⇣ Apply [TF] levels" button, which sets `entryTf` and
+      // these fields together. The old hardcoded 26800/26950 short seed
+      // was stale by ~3k points; left in place it triggered a false
+      // "🚫 INVALIDATED" badge against live price ~30k.
+      entry: 0, sl: 0, tp1: 0, tp2: 0,
       grade: 'a', armed: false, price: 29660.00, change24h: 0,
       bias: 'IN FLUX', dol: 'Weekly close decides', invalidation: 'Daily close < $26,400',
-      remarks: 'Testing weekly bear OB. 3 scenarios active. Weekly close is the key.',
-      watch: '(A) Break > 26,902 → 27,500. (B) Rejection + 4H CHoCH → short 26,000. (C) Close > 27K = BULLISH.',
-      levels: null, checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — outside KZ, await weekly confirmation'
+      remarks: 'No fresh ICT plan applied. Build entry/SL/TP from the live chart via the cockpit.',
+      watch: 'Use the ICT Cockpit to mark sweep / MSS / FVG and apply fresh levels.',
+      levels: null, checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — awaiting fresh ICT plan'
     },
     {
       symbol: 'GOLD', platform: 'MEXC SPOT', type: 'SPOT',
@@ -1711,6 +1716,15 @@
   function loadLevels() {
     try {
       const saved = JSON.parse(localStorage.getItem('ict_levels') || '{}');
+      // Migrate away from the old hardcoded US100 short seed (26800/26950/
+      // 26000). Without this, a browser that ran a pre-clear version of
+      // the dashboard will rehydrate the stale numbers and the card will
+      // keep flashing INVALIDATED against live price.
+      const us100 = saved.US100;
+      if (us100 && Number(us100.entry) === 26800 && Number(us100.sl) === 26950 && Number(us100.tp1) === 26000) {
+        delete saved.US100;
+        try { localStorage.setItem('ict_levels', JSON.stringify(saved)); } catch(e) {}
+      }
       ASSETS.forEach(a => {
         const lv = saved[a.symbol];
         if (!lv) return;
