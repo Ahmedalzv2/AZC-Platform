@@ -33,9 +33,15 @@ if (!API_KEY || !API_SECRET) {
 // min size ($200 notional) + $0.08 roundtrip fee make it negative-EV at
 // $50 capital. The rest have small enough contracts that 1.5%/trade risk
 // math survives min-size rounding.
+// Symbol set narrowed from 90d backtest (tests/backtest-azc-trader.mjs):
+// - XRP (lead): 56.4% WR / +0.514R per trade — the standout edge
+// - BTC, BNB, SOL: all above break-even at RR=1.5
+// - DOGE kept as a lower-tier scout (no backtest fixture; live data builds it)
+// Dropped:
+// - ETH (38.8% WR / +0.175R — below the 40% break-even line)
+// - AVAX, LINK (no fixture, no validated edge — re-add after backtest)
 const SYMBOLS = [
-  'BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'XRP_USDT',
-  'DOGE_USDT', 'AVAX_USDT', 'LINK_USDT',
+  'XRP_USDT', 'BTC_USDT', 'BNB_USDT', 'SOL_USDT', 'DOGE_USDT',
 ];
 const TF_MIN = 5;
 const HTF_MIN = 60;
