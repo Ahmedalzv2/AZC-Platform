@@ -33,15 +33,19 @@ if (!API_KEY || !API_SECRET) {
 // min size ($200 notional) + $0.08 roundtrip fee make it negative-EV at
 // $50 capital. The rest have small enough contracts that 1.5%/trade risk
 // math survives min-size rounding.
-// Symbol set narrowed from 90d backtest (tests/backtest-azc-trader.mjs):
-// - XRP (lead): 56.4% WR / +0.514R per trade — the standout edge
-// - BTC, BNB, SOL: all above break-even at RR=1.5
-// - DOGE kept as a lower-tier scout (no backtest fixture; live data builds it)
-// Dropped:
-// - ETH (38.8% WR / +0.175R — below the 40% break-even line)
-// - AVAX, LINK (no fixture, no validated edge — re-add after backtest)
+// Symbol set chosen from 90d backtest (tests/backtest-azc-trader.mjs).
+// All 7 are above the 40% break-even line at RR=1.5:
+//   XRP   56.4% WR / +0.514R per trade  (lead)
+//   DOGE  50.0%    / +0.312R
+//   AVAX  48.4%    / +0.272R
+//   SOL   46.0%    / +0.204R
+//   LINK  45.0%    / +0.182R
+//   BTC   43.6%    / +0.304R
+//   BNB   40.3%    / +0.268R
+// Dropped: ETH (38.8% / +0.175R — below break-even in 90d sample).
 const SYMBOLS = [
-  'XRP_USDT', 'BTC_USDT', 'BNB_USDT', 'SOL_USDT', 'DOGE_USDT',
+  'XRP_USDT', 'DOGE_USDT', 'AVAX_USDT', 'SOL_USDT',
+  'LINK_USDT', 'BTC_USDT', 'BNB_USDT',
 ];
 const TF_MIN = 5;
 const HTF_MIN = 60;
@@ -97,6 +101,17 @@ function inKillzone(now = new Date()) {
     const e = z.endH * 60 + z.endM;
     return m >= s && m < e;
   });
+}
+function currentKillzoneName(now = new Date()) {
+  const m = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const names = ['asia', 'london', 'ny-am', 'late-ny'];
+  for (let i = 0; i < KILLZONES_UTC.length; i++) {
+    const z = KILLZONES_UTC[i];
+    const s = z.startH * 60 + z.startM;
+    const e = z.endH * 60 + z.endM;
+    if (m >= s && m < e) return names[i];
+  }
+  return null;
 }
 const LEARN_ROOT = path.resolve('./trade-learnings');
 const STATE_DIR  = path.resolve('./.trader-state');
@@ -424,6 +439,11 @@ async function tryFire() {
     symbol: pick.symbol, dir: pick.fvg.dir, side: pick.sideOpen, entry, sl: slSnap, tp: tpSnap,
     qty, lev: LEVERAGE, contractSize: pick.meta.contractSize, openedAt: Date.now(),
     orderId, fvgFormedAt: pick.fvg.formedAt, htfDir: pick.htfDir,
+    // Snapshot the full decision context at fire-time so the post-mortem
+    // file written on close has the WHY of the trade, not just the WHAT.
+    tier, riskPct, priceAtCall: pick.price,
+    distPct: pick.distPct, fvgBody: pick.fvg.body, fvgBodyPct: pick.fvg.body / pick.price,
+    session: currentKillzoneName(),
   };
   return { fired: true, orderId, symbol: pick.symbol, entry, sl: slSnap, tp: tpSnap };
 }
@@ -533,13 +553,23 @@ async function reconcileClosedPosition() {
   const openOrder  = orders.find(o => String(o.orderId) === String(ctx.orderId));
   const fillPx = closeOrder ? +closeOrder.dealAvgPrice : null;
   const openPx = openOrder ? +openOrder.dealAvgPrice : ctx.entry;
-  const fees   = (+closeOrder?.takerFee || +closeOrder?.fee || 0) + (+openOrder?.takerFee || +openOrder?.fee || 0);
+  const feeOpen  = +openOrder?.takerFee  || +openOrder?.fee  || 0;
+  const feeClose = +closeOrder?.takerFee || +closeOrder?.fee || 0;
+  const fees = feeOpen + feeClose;
 
   const pnlPriceMove = fillPx != null
     ? (ctx.dir === 'bull' ? (fillPx - openPx) : (openPx - fillPx))
     : 0;
-  const pnlUsd = (pnlPriceMove * ctx.contractSize * ctx.qty) - fees;
+  const grossUsd = pnlPriceMove * ctx.contractSize * ctx.qty;
+  const pnlUsd = grossUsd - fees;
   dailyPnlUsd += pnlUsd;
+
+  // Hold-time + funding-window crossings (8h boundaries, UTC). The trader
+  // doesn't track funding payments directly, but the windows-crossed count
+  // is what we need to tell whether funding likely affected this trade.
+  const filledAt = ctx.filledAt || ctx.openedAt || Date.now();
+  const holdMs = Date.now() - filledAt;
+  const windowsCrossed = Math.floor(Date.now() / (8 * 3600 * 1000)) - Math.floor(filledAt / (8 * 3600 * 1000));
 
   const stopDist = Math.abs(ctx.entry - ctx.sl);
   const rMultiple = stopDist > 0 ? (pnlPriceMove / stopDist) : 0;
@@ -559,6 +589,20 @@ async function reconcileClosedPosition() {
   }
 
   try {
+    const confluences = [];
+    if (ctx.htfDir) confluences.push(`htf-agree:${ctx.htfDir}`);
+    if (ctx.tier)   confluences.push(`tier:${ctx.tier}`);
+    if (ctx.session) confluences.push(`kz:${ctx.session}`);
+    if (Number.isFinite(ctx.fvgBodyPct)) confluences.push(`fvg-body:${(ctx.fvgBodyPct*100).toFixed(2)}%`);
+    if (Number.isFinite(ctx.distPct))    confluences.push(`fvg-dist:${(ctx.distPct*100).toFixed(3)}%`);
+
+    const analysis = [
+      `Fired in ${ctx.session || 'no-killzone'} killzone at 5m FVG mid retest.`,
+      `HTF(${HTF_MIN}m SMA${HTF_SMA}) bias = ${ctx.htfDir}, quality tier = ${ctx.tier} (${(ctx.riskPct*100).toFixed(1)}% risk).`,
+      `FVG body = ${(ctx.fvgBodyPct*100).toFixed(2)}% of price · entry was ${(ctx.distPct*100).toFixed(3)}% from FVG mid.`,
+      `Stop = far-edge + ${(FVG_BUFFER_PCT*100).toFixed(0)}% buffer (floored to ${(MIN_STOP_PCT*100).toFixed(2)}% min). TP at ${RR}R.`,
+    ].join(' ');
+
     await writeLearningFile({
       timestamp: Date.now(),
       symbol: ctx.symbol,
@@ -567,13 +611,23 @@ async function reconcileClosedPosition() {
       entry: openPx,
       sl: ctx.sl,
       tp: ctx.tp,
-      exit: fillPx,
+      exitPrice: fillPx,
+      priceAtCall: ctx.priceAtCall,
       qty: ctx.qty,
       leverage: ctx.lev,
-      pnlUsd,
+      realizedUsd: pnlUsd,
       rMultiple,
       fees,
-      grade: 'auto',
+      grade: ctx.tier || 'auto',
+      bias: ctx.htfDir || null,
+      session: ctx.session || null,
+      confluences,
+      analysis,
+      accounting: {
+        grossUsd, feeUsdOpen: feeOpen, feeUsdClose: feeClose, fundingUsd: 0,
+        windowsCrossed, holdMs, netUsd: pnlUsd,
+      },
+      orderId: ctx.orderId,
       notes: 'AZC autonomous trader · 5m FVG retest · POST_ONLY maker · isolated 10x.',
     }, LEARN_ROOT);
   } catch (e) {
