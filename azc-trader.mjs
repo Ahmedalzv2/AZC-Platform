@@ -151,6 +151,7 @@ async function writeState(extra = {}) {
     dailyPnlUsd: Number(dailyPnlUsd.toFixed(6)),
     dailyResetAt,
     consecutiveLosses,
+    maxConsecutiveLosses: MAX_CONSECUTIVE_LOSSES,
     haltedAt,
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),

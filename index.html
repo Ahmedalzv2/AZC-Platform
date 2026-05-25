@@ -3085,14 +3085,16 @@
       btn.classList.add('trader-position');
     } else if (s.haltedAt) {
       const losses = s.consecutiveLosses || 0;
-      btn.textContent = `TRADER: HALTED · ${losses}/3 losses · scans only`;
+      const maxLosses = s.maxConsecutiveLosses || 5;
+      btn.textContent = `TRADER: HALTED · ${losses}/${maxLosses} losses · scans only`;
       btn.classList.add('trader-stopped');
     } else {
       const trades = s.tradesToday || 0;
       const pnl    = s.dailyPnlUsd || 0;
-      const losses = s.consecutiveLosses || 0;
       const pnlSign = pnl >= 0 ? '+' : '';
-      btn.textContent = `TRADER: ON · ${trades} trades · ${pnlSign}$${pnl.toFixed(2)} · ${losses}/3 losses`;
+      const losses = s.consecutiveLosses || 0;
+      const maxLosses = s.maxConsecutiveLosses || 5;
+      btn.textContent = `TRADER: ON · ${trades} trades · ${pnlSign}$${pnl.toFixed(2)} · ${losses}/${maxLosses} losses`;
       btn.classList.add('trader-on');
     }
   }
