@@ -47,6 +47,9 @@ const ALL_ASSETS = {
   ETH:    'ETH_USDT',
   BNB:    'BNB_USDT',
   XRP:    'XRP_USDT',
+  DOGE:   'DOGE_USDT',
+  AVAX:   'AVAX_USDT',
+  LINK:   'LINK_USDT',
 };
 const requested = args.assets
   ? String(args.assets).split(',').map((s) => s.trim().toUpperCase())
