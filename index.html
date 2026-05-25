@@ -123,19 +123,66 @@
         </div>
 
         <!-- AZC autonomous trader — live scan feed. Updates every 5s from
-             the relay's /trader-state endpoint. Shows what the bot is
-             looking at right now, even outside killzones. -->
-        <div class="ap-card full" style="margin-bottom:16px;">
-          <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-            <span>🤖 AZC Trader · Live Scan</span>
-            <span style="display:flex;gap:10px;align-items:center;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--text-mute);">
-              <span id="azcScanCycle">cycle —</span>
-              <span id="azcScanKz">—</span>
-              <span id="azcScanCountdown">—</span>
-            </span>
+             the relay's /trader-state endpoint. The bot fires 24/7 so the
+             session label is informational only (no longer gates trades). -->
+        <style>
+          .azc-scan { background:linear-gradient(180deg,rgba(255,255,255,0.02) 0%,rgba(0,0,0,0.04) 100%);
+                      border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:16px; }
+          .azc-scan-header { display:flex;justify-content:space-between;align-items:center;
+                             gap:12px;flex-wrap:wrap;margin-bottom:14px; }
+          .azc-scan-title { display:flex;align-items:center;gap:10px;font-size:14px;font-weight:700;letter-spacing:0.02em; }
+          .azc-scan-pulse { display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--bull);
+                            box-shadow:0 0 0 0 var(--bull);animation:azcPulse 1.5s infinite; }
+          .azc-scan-pulse.stale { background:var(--text-mute);animation:none;box-shadow:none; }
+          @keyframes azcPulse { 0% { box-shadow:0 0 0 0 rgba(92,184,138,0.55); }
+                                 70% { box-shadow:0 0 0 9px rgba(92,184,138,0); }
+                                 100% { box-shadow:0 0 0 0 rgba(92,184,138,0); } }
+          .azc-scan-stats { display:flex;gap:14px;font-family:'JetBrains Mono',monospace;
+                            font-size:11px;color:var(--text-mute);flex-wrap:wrap; }
+          .azc-scan-stat { display:flex;align-items:center;gap:5px; }
+          .azc-scan-stat b { color:var(--text);font-weight:600; }
+          .azc-scan-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:10px; }
+          .azc-tile { background:var(--bg);border:1px solid var(--border);border-radius:10px;
+                      padding:11px 13px;transition:border-color .2s,background .2s; }
+          .azc-tile.ready { border-color:var(--bull);background:rgba(92,184,138,0.07); }
+          .azc-tile.close { border-color:var(--liq);background:rgba(242,179,61,0.04); }
+          .azc-tile-top { display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px; }
+          .azc-tile-sym { font-weight:700;font-size:14px;font-family:'JetBrains Mono',monospace;
+                          color:var(--text);letter-spacing:0.02em; }
+          .azc-tile-dir { font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;
+                          padding:2px 7px;border-radius:4px;letter-spacing:0.06em; }
+          .azc-tile-dir.bull { color:var(--bull);background:rgba(92,184,138,0.14); }
+          .azc-tile-dir.bear { color:var(--bear);background:rgba(224,93,93,0.14); }
+          .azc-tile-status { font-size:11px;color:var(--text-dim);margin-bottom:8px;line-height:1.4;min-height:30px; }
+          .azc-tile-status .ready { color:var(--bull);font-weight:700;text-transform:uppercase;letter-spacing:0.08em; }
+          .azc-tile-bar { position:relative;height:5px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden; }
+          .azc-tile-bar-fill { position:absolute;left:0;top:0;bottom:0;border-radius:3px;
+                               transition:width .4s,background .4s; }
+          .azc-tile-bar-fill.ready { background:var(--bull); }
+          .azc-tile-bar-fill.close { background:var(--liq); }
+          .azc-tile-bar-fill.far { background:var(--text-mute); }
+          .azc-tile-meta { display:flex;justify-content:space-between;font-size:10px;
+                           color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:7px; }
+          .azc-tile-meta span b { color:var(--text-dim);font-weight:500; }
+        </style>
+        <div class="azc-scan">
+          <div class="azc-scan-header">
+            <div class="azc-scan-title">
+              <span class="azc-scan-pulse" id="azcScanPulse"></span>
+              <span>🤖 AZC Trader · Live Scan</span>
+            </div>
+            <div class="azc-scan-stats">
+              <div class="azc-scan-stat" id="azcStatStatus">— <b>idle</b></div>
+              <div class="azc-scan-stat">cycle <b id="azcStatCycle">—</b></div>
+              <div class="azc-scan-stat">ready <b id="azcStatReady">0/0</b></div>
+              <div class="azc-scan-stat">today <b id="azcStatToday">0</b></div>
+              <div class="azc-scan-stat" id="azcStatSession">session <b>—</b></div>
+            </div>
           </div>
-          <div id="azcScanGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;">
-            <div style="color:var(--text-mute);padding:12px;text-align:center;font-size:12px;">Awaiting first scan…</div>
+          <div class="azc-scan-grid" id="azcScanGrid">
+            <div style="color:var(--text-mute);padding:14px;text-align:center;font-size:12px;grid-column:1/-1;">
+              Awaiting first scan…
+            </div>
           </div>
         </div>
 
@@ -3014,62 +3061,126 @@
   let _azcTraderState = null;
 
   // Render the live scan grid on the Dashboard tab.
-  function _renderAzcScanFeed(s) {
-    const grid = document.getElementById('azcScanGrid');
-    const cycleEl = document.getElementById('azcScanCycle');
-    const kzEl = document.getElementById('azcScanKz');
-    const cdEl = document.getElementById('azcScanCountdown');
-    if (!grid) return;
-    if (cycleEl) cycleEl.textContent = `cycle ${s?.cycleCount ?? '—'}`;
-    if (kzEl) {
-      kzEl.textContent = s?.inKillzone ? '✓ KILLZONE OPEN' : 'killzone closed';
-      kzEl.style.color = s?.inKillzone ? 'var(--bull)' : 'var(--text-mute)';
+  // Live constants — kept in sync with azc-trader.mjs. Used for the
+  // readiness bar so the dashboard scores each candidate the same way
+  // the bot does (distance to FVG vs TOUCH_TOLERANCE_PCT etc).
+  const AZC_TOUCH_TOLERANCE_PCT = 0.0008;
+  const AZC_MIN_FVG_BODY_PCT    = 0.0010;
+  const AZC_SCAN_LABELS = {
+    'CANDIDATE':       { text: 'READY TO FIRE',       tier: 'ready' },
+    'no-fvg':          { text: 'Watching for FVG',    tier: 'far'   },
+    'fvg-too-small':   { text: 'FVG too small',       tier: 'far'   },
+    'htf-disagree':    { text: 'HTF bias mismatch',   tier: 'far'   },
+    'far-from-fvg':    { text: 'Approaching FVG',     tier: 'close' },
+    'stop-too-tight':  { text: 'Stop too tight',      tier: 'far'   },
+    'invalid-stop':    { text: 'Invalid stop',        tier: 'far'   },
+    'htf-warmup':      { text: 'Loading HTF data',    tier: 'far'   },
+    'no-data':         { text: 'No market data',      tier: 'far'   },
+    'cooldown':        { text: 'Cooling down',        tier: 'far'   },
+    'err':             { text: 'Scan error',          tier: 'far'   },
+  };
+  // Map each scan row to a 0-100 "readiness" score so the dashboard can
+  // sort + color tiles by how close they are to firing. Candidate = 100;
+  // far-from-fvg interpolates by remaining distance; fvg-too-small by
+  // ratio of body to the minimum threshold; everything else gets a
+  // small base score so they're visible but de-prioritised.
+  function _azcReadiness(c) {
+    if (!c.skip) return 100;
+    if (c.skip === 'far-from-fvg' && typeof c.distPct === 'number') {
+      const r = Math.max(0, 1 - (c.distPct / AZC_TOUCH_TOLERANCE_PCT));
+      return 30 + r * 60; // 30-90 band — closer to fire than other skips, never quite 100
     }
-    // Countdown to next killzone opening
-    if (cdEl) {
-      const kzs = [[0,0,4,0,'Asia'],[7,0,10,0,'London'],[12,30,16,0,'NY AM'],[18,30,22,0,'Late-NY']];
+    if (c.skip === 'fvg-too-small' && typeof c.fvgBodyPct === 'number') {
+      return Math.min(28, (c.fvgBodyPct / AZC_MIN_FVG_BODY_PCT) * 28);
+    }
+    if (c.skip === 'htf-disagree')  return 16;
+    if (c.skip === 'no-fvg')        return 12;
+    if (c.skip === 'cooldown')      return 8;
+    return 4;
+  }
+  function _renderAzcScanFeed(s) {
+    const grid     = document.getElementById('azcScanGrid');
+    const pulseEl  = document.getElementById('azcScanPulse');
+    const cycleEl  = document.getElementById('azcStatCycle');
+    const readyEl  = document.getElementById('azcStatReady');
+    const todayEl  = document.getElementById('azcStatToday');
+    const statusEl = document.getElementById('azcStatStatus');
+    const sessEl   = document.getElementById('azcStatSession');
+    if (!grid) return;
+
+    const stale = s?.lastCycleAt ? (Date.now() - s.lastCycleAt) > 60000 : true;
+    if (pulseEl) pulseEl.classList.toggle('stale', !!stale || !s?.ok);
+
+    if (cycleEl)  cycleEl.textContent = s?.cycleCount ?? '—';
+    if (todayEl)  todayEl.textContent = s?.tradesToday ?? 0;
+
+    if (statusEl) {
+      let dot = '🟢', label = 'live';
+      if (s?.stopFlag) { dot = '🛑'; label = 'stopped'; }
+      else if (!s?.ok || stale) { dot = '⚪'; label = 'offline'; }
+      else if (s?.haltedAt) { dot = '🟠'; label = `halted ${(s.consecutiveLosses||0)}/${s.maxConsecutiveLosses||5}`; }
+      else if (s?.positionContext && s.positionContext.posId) { dot = '🔵'; label = `in-trade · ${s.positionContext.symbol.replace('_USDT','')}`; }
+      else if (s?.pendingOrder) { dot = '🟡'; label = `pending · ${s.pendingOrder.symbol.replace('_USDT','')}`; }
+      statusEl.innerHTML = `${dot} <b>${label}</b>`;
+    }
+
+    if (sessEl) {
+      const kzs = [[0,0,4,0,'asia'],[7,0,10,0,'london'],[12,30,16,0,'ny-am'],[18,30,22,0,'late-ny']];
       const now = new Date();
       const cur = now.getUTCHours()*60 + now.getUTCMinutes();
-      let next = null;
+      let cur_name = 'off-hours';
       for (const [sh,sm,eh,em,name] of kzs) {
-        const start = sh*60+sm, end = eh*60+em;
-        if (cur >= start && cur < end) { next = `→ in ${name} (${end-cur}m left)`; break; }
-        if (cur < start) { next = `next: ${name} in ${start-cur}m`; break; }
+        if (cur >= sh*60+sm && cur < eh*60+em) { cur_name = name; break; }
       }
-      if (!next) {
-        const [sh,sm,,,name] = kzs[0];
-        const until = (24*60 - cur) + (sh*60+sm);
-        next = `next: ${name} in ${until}m`;
-      }
-      cdEl.textContent = next;
+      sessEl.innerHTML = `session <b>${cur_name}</b>`;
     }
+
     const scan = s?.lastScanSummary || [];
     if (!scan.length) {
-      grid.innerHTML = '<div style="color:var(--text-mute);padding:12px;text-align:center;font-size:12px;grid-column:1/-1;">Awaiting first scan…</div>';
+      if (readyEl) readyEl.textContent = '0/0';
+      grid.innerHTML = '<div style="color:var(--text-mute);padding:14px;text-align:center;font-size:12px;grid-column:1/-1;">Awaiting first scan…</div>';
       return;
     }
-    grid.innerHTML = scan.map(c => {
-      const isCand = !c.skip;
-      const skip = c.skip || 'CANDIDATE';
-      const dir = c.dir ? (c.dir === 'bull' ? '🟢 LONG' : '🔴 SHORT') : '—';
-      // Color by skip reason
-      const skipColor = isCand ? 'var(--bull)'
-        : skip === 'far-from-fvg' ? 'var(--text-mute)'
-        : skip === 'fvg-too-small' || skip === 'stop-too-tight' ? 'var(--liq)'
-        : skip === 'no-fvg' || skip === 'htf-disagree' ? 'var(--text-dim)'
-        : skip === 'htf-warmup' || skip === 'no-data' ? 'var(--text-faint)'
-        : 'var(--bear)';
-      const skipBg = isCand ? 'rgba(78,195,138,0.10)' : 'transparent';
-      const dist = (typeof c.distPct === 'number') ? `${(c.distPct*100).toFixed(3)}%` : '—';
-      const fvgPct = (typeof c.fvgBodyPct === 'number') ? `${(c.fvgBodyPct*100).toFixed(2)}%` : null;
-      return `<div style="background:${skipBg};border:1px solid var(--border-soft,var(--border));border-radius:8px;padding:10px 12px;">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-          <span style="font-weight:700;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--text);">${c.symbol}</span>
-          <span style="font-size:10px;color:${skipColor};font-weight:700;text-transform:uppercase;letter-spacing:0.06em;font-family:'JetBrains Mono',monospace;">${skip}</span>
+
+    // Score + sort: candidates first, then nearest-to-fire, then far.
+    const scored = scan.map(c => ({ ...c, _score: _azcReadiness(c) }));
+    scored.sort((a, b) => b._score - a._score);
+    const readyCount = scored.filter(c => c._score >= 100).length;
+    if (readyEl) readyEl.textContent = `${readyCount}/${scored.length}`;
+
+    grid.innerHTML = scored.map(c => {
+      const skipKey = c.skip || 'CANDIDATE';
+      const label = AZC_SCAN_LABELS[skipKey] || { text: skipKey, tier: 'far' };
+      const tier = label.tier;  // ready | close | far
+      const tileCls = tier === 'ready' ? 'azc-tile ready' : tier === 'close' ? 'azc-tile close' : 'azc-tile';
+      const barCls  = tier === 'ready' ? 'azc-tile-bar-fill ready' : tier === 'close' ? 'azc-tile-bar-fill close' : 'azc-tile-bar-fill far';
+      const dirEl = c.dir
+        ? `<span class="azc-tile-dir ${c.dir}">${c.dir === 'bull' ? '↑ LONG' : '↓ SHORT'}</span>`
+        : '<span class="azc-tile-dir" style="background:rgba(255,255,255,0.04);color:var(--text-mute);">—</span>';
+
+      // Plain-English status: prepend % when relevant (proximity for far-from-fvg, body% for fvg-too-small)
+      let statusText = label.text;
+      if (skipKey === 'far-from-fvg' && typeof c.distPct === 'number') {
+        statusText += ` · ${(c.distPct*100).toFixed(3)}% away`;
+      } else if (skipKey === 'fvg-too-small' && typeof c.fvgBodyPct === 'number') {
+        statusText += ` · body ${(c.fvgBodyPct*100).toFixed(2)}%`;
+      }
+      const statusHtml = tier === 'ready'
+        ? `<span class="ready">${statusText}</span>`
+        : statusText;
+
+      const distMeta  = (typeof c.distPct === 'number')    ? `<span>dist <b>${(c.distPct*100).toFixed(3)}%</b></span>` : '<span>dist <b>—</b></span>';
+      const fvgMeta   = (typeof c.fvgBodyPct === 'number') ? `<span>body <b>${(c.fvgBodyPct*100).toFixed(2)}%</b></span>` : '<span>body <b>—</b></span>';
+      const symShort = c.symbol.replace('_USDT', '');
+
+      return `<div class="${tileCls}">
+        <div class="azc-tile-top">
+          <span class="azc-tile-sym">${symShort}</span>
+          ${dirEl}
         </div>
-        <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.5;">
-          dir: ${dir} · dist ${dist}${fvgPct ? ' · fvg ' + fvgPct : ''}
-        </div>
+        <div class="azc-tile-status">${statusHtml}</div>
+        <div class="azc-tile-bar"><div class="${barCls}" style="width:${c._score.toFixed(0)}%"></div></div>
+        <div class="azc-tile-meta">${distMeta}${fvgMeta}</div>
       </div>`;
     }).join('');
   }
