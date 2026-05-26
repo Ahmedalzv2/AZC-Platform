@@ -25,6 +25,7 @@ import { collectTrades, summarise } from './trade-stats.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
 import { KILLZONES_UTC, inKillzone, currentKillzoneName, nextKillzoneBoundary } from './trader-killzones.mjs';
 import { buildSetup } from './trader-signal.mjs';
+import { decideGate, groupBySession } from './trader-drift-gate.mjs';
 import {
   HTF_MIN, HTF_SMA, LOOKBACK_BARS,
   RR, MAX_HOLD_MS, COOLDOWN_MS,
@@ -125,6 +126,13 @@ let sideStatus = {
   long:  { n: 0, expR: null, status: 'enabled', reason: 'below min sample — backtest +0.182R/trade' },
   short: { n: 0, expR: null, status: 'enabled', reason: 'below min sample — backtest +0.283R/trade' },
 };
+// Session-aware live drift — same pattern as sideStatus but keyed by
+// killzone session label (asia / london / ny-am / late-ny / off). Acts
+// on the same SIDE_GATE_* thresholds. Backtest references load from
+// tests/baselines/current.json at startup — re-blessing the baseline
+// (npm run eval:bless) keeps the gate's expectations honest. 24/7
+// firing remains the default; this only acts after min-sample drift.
+let sessionStatus = {};
 
 function nextUtcMidnight() {
   const d = new Date();
@@ -150,6 +158,29 @@ function log(...args) {
 // Called on startup and after every trade close so the gate reacts to
 // drift within ~1 close instead of accumulating losses silently. Pure
 // read + group — no exchange calls.
+// Loaded once at startup from tests/baselines/current.json — backtest
+// per-session expectancyR is the reference for "is live drifting?" log
+// lines. Threshold semantics still use the SIDE_GATE_* absolute bands
+// (live expR vs -0.30 / -0.10), matching the side-gate so the two gates
+// share one mental model.
+let backtestSessionRef = {};
+async function loadBacktestSessionRef() {
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const raw = await readFile(path.resolve('./tests/baselines/current.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    backtestSessionRef = parsed.bySession || {};
+  } catch (e) {
+    log('[session-gate-boot] no baseline at tests/baselines/current.json — reason strings will lack backtest refs');
+  }
+}
+
+const GATE_THRESHOLDS = {
+  minSample: SIDE_GATE_MIN_SAMPLE,
+  downshiftR: SIDE_GATE_DOWNSHIFT_R,
+  blockR: SIDE_GATE_BLOCK_R,
+};
+
 async function recomputeSideStatus() {
   let trades;
   try { trades = await collectTrades(LEARN_ROOT); }
@@ -158,28 +189,12 @@ async function recomputeSideStatus() {
   const shortTrades = trades.filter(t => String(t.side).toUpperCase() === 'SHORT');
   const longSum  = summarise(longTrades);
   const shortSum = summarise(shortTrades);
-  const decide = (side, sum, backtestR) => {
-    if (sum.total < SIDE_GATE_MIN_SAMPLE) {
-      return { n: sum.total, expR: sum.expectancyR, status: 'enabled',
-        reason: `below min sample (${sum.total}/${SIDE_GATE_MIN_SAMPLE}) — backtest ${backtestR >= 0 ? '+' : ''}${backtestR.toFixed(3)}R/trade` };
-    }
-    const r = sum.expectancyR ?? 0;
-    if (r < SIDE_GATE_BLOCK_R) {
-      return { n: sum.total, expR: r, status: 'blocked',
-        reason: `live ${r.toFixed(3)}R/trade < block threshold ${SIDE_GATE_BLOCK_R}R after ${sum.total} trades` };
-    }
-    if (r < SIDE_GATE_DOWNSHIFT_R) {
-      return { n: sum.total, expR: r, status: 'downshifted',
-        reason: `live ${r.toFixed(3)}R/trade < downshift threshold ${SIDE_GATE_DOWNSHIFT_R}R after ${sum.total} trades — halving risk` };
-    }
-    return { n: sum.total, expR: r, status: 'enabled',
-      reason: `live ${r >= 0 ? '+' : ''}${r.toFixed(3)}R/trade over ${sum.total} trades` };
-  };
+  const sideRef = { long: 0.182, short: 0.283 };
+  const tagBacktest = (gate, ref) => ({ ...gate, reason: `${gate.reason} (backtest ${ref >= 0 ? '+' : ''}${ref.toFixed(3)}R/trade)` });
   const next = {
-    long:  decide('LONG',  longSum,  0.182),
-    short: decide('SHORT', shortSum, 0.283),
+    long:  tagBacktest(decideGate(longSum,  GATE_THRESHOLDS), sideRef.long),
+    short: tagBacktest(decideGate(shortSum, GATE_THRESHOLDS), sideRef.short),
   };
-  // Log only when status flips so we don't spam every tick.
   if (next.long.status !== sideStatus.long.status) {
     log(`[side-gate] LONG: ${sideStatus.long.status} → ${next.long.status} (${next.long.reason})`);
   }
@@ -187,6 +202,26 @@ async function recomputeSideStatus() {
     log(`[side-gate] SHORT: ${sideStatus.short.status} → ${next.short.status} (${next.short.reason})`);
   }
   sideStatus = next;
+
+  // Same logic, keyed by session label. Buckets the trader writes via
+  // currentKillzoneName(): asia / london / ny-am / late-ny / off.
+  const sessionGroups = groupBySession(trades);
+  const nextSessionStatus = {};
+  for (const [label, group] of Object.entries(sessionGroups)) {
+    const sum = summarise(group);
+    const ref = backtestSessionRef[label]?.expectancyR;
+    const gate = decideGate(sum, GATE_THRESHOLDS);
+    nextSessionStatus[label] = Number.isFinite(ref)
+      ? { ...gate, reason: `${gate.reason} (backtest ${ref >= 0 ? '+' : ''}${ref.toFixed(3)}R/trade)` }
+      : gate;
+  }
+  for (const [label, state] of Object.entries(nextSessionStatus)) {
+    const prev = sessionStatus[label]?.status;
+    if (prev !== state.status) {
+      log(`[session-gate] ${label}: ${prev || '(new)'} → ${state.status} (${state.reason})`);
+    }
+  }
+  sessionStatus = nextSessionStatus;
 }
 
 async function writeState(extra = {}) {
@@ -205,6 +240,7 @@ async function writeState(extra = {}) {
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     streakPausedUntilTs,
     sideStatus,
+    sessionStatus,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
     positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp } : null,
@@ -416,6 +452,14 @@ async function tryFire() {
   if (sideState.status === 'blocked') {
     return { skip: 'side-blocked', detail: `${sideKey.toUpperCase()}: ${sideState.reason}` };
   }
+  // Session-aware gate — same drift logic keyed on killzone label.
+  // Skips fires when live in this session has gone below the block
+  // threshold after min sample; halves risk on downshift.
+  const sessionKey = currentKillzoneName(Date.now()) || 'off';
+  const sessionState = sessionStatus[sessionKey];
+  if (sessionState && sessionState.status === 'blocked') {
+    return { skip: 'session-blocked', detail: `${sessionKey}: ${sessionState.reason}` };
+  }
 
   let tier;
   if (valid.length === 1) {
@@ -433,6 +477,10 @@ async function tryFire() {
   if (sideState.status === 'downshifted') {
     riskPct = riskPct * 0.5;
     log(`[side-downshift] ${sideKey.toUpperCase()} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${sideState.reason})`);
+  }
+  if (sessionState && sessionState.status === 'downshifted') {
+    riskPct = riskPct * 0.5;
+    log(`[session-downshift] ${sessionKey} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${sessionState.reason})`);
   }
 
   const equity = await getAccountUsdt();
@@ -773,11 +821,14 @@ try {
   }
 } catch (e) { log('[restore-err]', e.message); }
 
-// Compute LONG/SHORT live drift status from the post-mortem folder at
-// boot so the side gate is honest from cycle 1 instead of running with
-// stale defaults.
+// Load backtest per-session reference, then compute live drift status
+// for both side and session gates so they're honest from cycle 1.
+await loadBacktestSessionRef();
 await recomputeSideStatus();
 log(`[side-gate-boot] LONG=${sideStatus.long.status} (${sideStatus.long.reason}); SHORT=${sideStatus.short.status} (${sideStatus.short.reason})`);
+for (const [label, state] of Object.entries(sessionStatus)) {
+  log(`[session-gate-boot] ${label}=${state.status} (${state.reason})`);
+}
 
 // If the stop flag is set at startup, refuse to launch — operator must
 // clear it via the dashboard's start button (POST /trader-start).
