@@ -19,6 +19,7 @@ import { constants as fsConst } from 'node:fs';
 import path from 'node:path';
 import { callMexcSigned } from './mexc-signer.mjs';
 import { writeLearningFile } from './trade-learnings.mjs';
+import { collectTrades, summarise } from './trade-stats.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
 import { KILLZONES_UTC, inKillzone, currentKillzoneName, nextKillzoneBoundary } from './trader-killzones.mjs';
 import {
@@ -27,6 +28,7 @@ import {
   FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT, MIN_FVG_BODY_PCT, MIN_STOP_PCT,
   RISK_PCT_DEFAULT, RISK_PCT_TOP_2, RISK_PCT_BEST,
   RISK_DOWNSHIFT_AFTER_LOSSES, STREAK_PAUSE_AFTER_LOSSES, MAX_CONSECUTIVE_LOSSES,
+  SIDE_GATE_MIN_SAMPLE, SIDE_GATE_DOWNSHIFT_R, SIDE_GATE_BLOCK_R,
 } from './trader-config.mjs';
 
 // ──────────────────────────────────────────────────────────────────
@@ -106,6 +108,14 @@ let lastError = null;
 let lastCycleAt = 0;
 let cycleCount = 0;
 let lastScanSummary = null;           // top candidates from last scan, surfaced in state.json
+// Side-aware live drift: { long: {n, expR, status}, short: {n, expR, status} }
+//   status ∈ 'enabled' | 'downshifted' | 'blocked'
+// Default both 'enabled' (backtest says both sides profitable). The gate
+// only activates after SIDE_GATE_MIN_SAMPLE live trades on that side.
+let sideStatus = {
+  long:  { n: 0, expR: null, status: 'enabled', reason: 'below min sample — backtest +0.182R/trade' },
+  short: { n: 0, expR: null, status: 'enabled', reason: 'below min sample — backtest +0.283R/trade' },
+};
 
 function nextUtcMidnight() {
   const d = new Date();
@@ -127,6 +137,49 @@ function log(...args) {
   console.log(new Date().toISOString(), '·', ...args);
 }
 
+// Recompute LONG/SHORT live expectancy from the post-mortem folder.
+// Called on startup and after every trade close so the gate reacts to
+// drift within ~1 close instead of accumulating losses silently. Pure
+// read + group — no exchange calls.
+async function recomputeSideStatus() {
+  let trades;
+  try { trades = await collectTrades(LEARN_ROOT); }
+  catch (e) { log('[side-stats] collect failed', e.message); return; }
+  const longTrades  = trades.filter(t => String(t.side).toUpperCase() === 'LONG');
+  const shortTrades = trades.filter(t => String(t.side).toUpperCase() === 'SHORT');
+  const longSum  = summarise(longTrades);
+  const shortSum = summarise(shortTrades);
+  const decide = (side, sum, backtestR) => {
+    if (sum.total < SIDE_GATE_MIN_SAMPLE) {
+      return { n: sum.total, expR: sum.expectancyR, status: 'enabled',
+        reason: `below min sample (${sum.total}/${SIDE_GATE_MIN_SAMPLE}) — backtest ${backtestR >= 0 ? '+' : ''}${backtestR.toFixed(3)}R/trade` };
+    }
+    const r = sum.expectancyR ?? 0;
+    if (r < SIDE_GATE_BLOCK_R) {
+      return { n: sum.total, expR: r, status: 'blocked',
+        reason: `live ${r.toFixed(3)}R/trade < block threshold ${SIDE_GATE_BLOCK_R}R after ${sum.total} trades` };
+    }
+    if (r < SIDE_GATE_DOWNSHIFT_R) {
+      return { n: sum.total, expR: r, status: 'downshifted',
+        reason: `live ${r.toFixed(3)}R/trade < downshift threshold ${SIDE_GATE_DOWNSHIFT_R}R after ${sum.total} trades — halving risk` };
+    }
+    return { n: sum.total, expR: r, status: 'enabled',
+      reason: `live ${r >= 0 ? '+' : ''}${r.toFixed(3)}R/trade over ${sum.total} trades` };
+  };
+  const next = {
+    long:  decide('LONG',  longSum,  0.182),
+    short: decide('SHORT', shortSum, 0.283),
+  };
+  // Log only when status flips so we don't spam every tick.
+  if (next.long.status !== sideStatus.long.status) {
+    log(`[side-gate] LONG: ${sideStatus.long.status} → ${next.long.status} (${next.long.reason})`);
+  }
+  if (next.short.status !== sideStatus.short.status) {
+    log(`[side-gate] SHORT: ${sideStatus.short.status} → ${next.short.status} (${next.short.reason})`);
+  }
+  sideStatus = next;
+}
+
 async function writeState(extra = {}) {
   const s = {
     ts: Date.now(),
@@ -142,6 +195,7 @@ async function writeState(extra = {}) {
     haltedAt,
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     streakPausedUntilTs,
+    sideStatus,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
     positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp } : null,
@@ -376,7 +430,17 @@ async function tryFire() {
   //   "best" = top-1 AND its distPct is meaningfully better than #2 (margin)
   //   "top2" = ranks #1 or #2 (or sole candidate when only one survives)
   //   default = anything else (shouldn't happen — we only fire top-2)
+  // Side-aware gate — skip the candidate's direction if its live R/trade
+  // has drifted below SIDE_GATE_BLOCK_R after the minimum sample. Only
+  // activates after SIDE_GATE_MIN_SAMPLE trades on that side, so a fresh
+  // bot or a small streak can't trip it on noise.
   const pick = valid[0];
+  const sideKey = pick.fvg.dir === 'bull' ? 'long' : 'short';
+  const sideState = sideStatus[sideKey];
+  if (sideState.status === 'blocked') {
+    return { skip: 'side-blocked', detail: `${sideKey.toUpperCase()}: ${sideState.reason}` };
+  }
+
   let tier;
   if (valid.length === 1) {
     tier = 'top2';
@@ -389,6 +453,10 @@ async function tryFire() {
   if (consecutiveLosses >= RISK_DOWNSHIFT_AFTER_LOSSES) {
     riskPct = riskPct * 0.5;
     log(`[risk-downshift] consec=${consecutiveLosses} ≥ ${RISK_DOWNSHIFT_AFTER_LOSSES} → halving tier risk to ${(riskPct*100).toFixed(2)}%`);
+  }
+  if (sideState.status === 'downshifted') {
+    riskPct = riskPct * 0.5;
+    log(`[side-downshift] ${sideKey.toUpperCase()} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${sideState.reason})`);
   }
 
   const equity = await getAccountUsdt();
@@ -670,6 +738,9 @@ async function reconcileClosedPosition() {
   } catch (e) {
     log('[learn-write-fail]', e.message);
   }
+  // Refresh LONG/SHORT live expectancy now that the post-mortem just landed.
+  // Side gate reacts on the next fire-decision cycle.
+  await recomputeSideStatus();
 }
 
 async function stopFlagExists() {
@@ -720,6 +791,12 @@ try {
     log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} consecLoss=${consecutiveLosses} halted=${haltedAt ? 'yes' : 'no'} cooldowns=${cooldownUntil.size}`);
   }
 } catch (e) { log('[restore-err]', e.message); }
+
+// Compute LONG/SHORT live drift status from the post-mortem folder at
+// boot so the side gate is honest from cycle 1 instead of running with
+// stale defaults.
+await recomputeSideStatus();
+log(`[side-gate-boot] LONG=${sideStatus.long.status} (${sideStatus.long.reason}); SHORT=${sideStatus.short.status} (${sideStatus.short.reason})`);
 
 // If the stop flag is set at startup, refuse to launch — operator must
 // clear it via the dashboard's start button (POST /trader-start).
