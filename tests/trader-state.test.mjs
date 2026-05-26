@@ -28,7 +28,7 @@ describe('loadTraderStateFromDisk', () => {
     const now = 2_000_000;
     const file = await makeStateFile({
       dailyResetAt: 1_000_000, tradesToday: 9, dailyPnlUsd: -5,
-      consecutiveLosses: 4, haltedAt: null, cooldownUntil: {},
+      cooldownUntil: {},
     });
     const out = await loadTraderStateFromDisk(file, now);
     assert.equal(out, null);
@@ -40,22 +40,21 @@ describe('loadTraderStateFromDisk', () => {
       dailyResetAt: 9_999_999,
       tradesToday: 6,
       dailyPnlUsd: -1.0331,
-      consecutiveLosses: 3,
-      haltedAt: null,
       cooldownUntil: { SOL_USDT: 1_500_000, DOGE_USDT: 999_000 },
     });
     const out = await loadTraderStateFromDisk(file, now);
     assert.deepEqual(out, {
       tradesToday: 6,
       dailyPnlUsd: -1.0331,
-      consecutiveLosses: 3,
-      haltedAt: null,
       dailyResetAt: 9_999_999,
       cooldownUntil: { SOL_USDT: 1_500_000 },
     });
   });
 
-  test('preserves an active halt across restart', async () => {
+  test('ignores legacy consecutiveLosses/haltedAt fields on disk', async () => {
+    // State files written before the 2026-05-26 cascade removal still
+    // carry these fields. The loader silently drops them; no crash, no
+    // resurrection of halt state.
     const file = await makeStateFile({
       dailyResetAt: 9_999_999,
       tradesToday: 5,
@@ -65,8 +64,8 @@ describe('loadTraderStateFromDisk', () => {
       cooldownUntil: {},
     });
     const out = await loadTraderStateFromDisk(file, 1_000_000);
-    assert.equal(out.consecutiveLosses, 5);
-    assert.equal(out.haltedAt, '2026-05-25T20:30:00.000Z');
+    assert.equal(out.consecutiveLosses, undefined);
+    assert.equal(out.haltedAt, undefined);
   });
 
   test('drops expired per-symbol cooldowns, keeps future ones', async () => {
@@ -75,8 +74,6 @@ describe('loadTraderStateFromDisk', () => {
       dailyResetAt: 9_999_999,
       tradesToday: 0,
       dailyPnlUsd: 0,
-      consecutiveLosses: 0,
-      haltedAt: null,
       cooldownUntil: {
         ALREADY_EXPIRED: 1_000_000,
         STILL_ACTIVE:    2_000_000,
@@ -94,8 +91,6 @@ describe('loadTraderStateFromDisk', () => {
     assert.deepEqual(out, {
       tradesToday: 0,
       dailyPnlUsd: 0,
-      consecutiveLosses: 0,
-      haltedAt: null,
       dailyResetAt: 9_999_999,
       cooldownUntil: {},
     });

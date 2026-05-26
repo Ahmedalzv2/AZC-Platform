@@ -23,7 +23,7 @@ import { writeInsightsFile } from './trade-insights.mjs';
 import { appendScanEvent } from './trader-events.mjs';
 import { collectTrades, summarise } from './trade-stats.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
-import { KILLZONES_UTC, inKillzone, currentKillzoneName, nextKillzoneBoundary } from './trader-killzones.mjs';
+import { KILLZONES_UTC, inKillzone, currentKillzoneName } from './trader-killzones.mjs';
 import { buildSetup } from './trader-signal.mjs';
 import { decideGate, groupBySession } from './trader-drift-gate.mjs';
 import {
@@ -31,7 +31,6 @@ import {
   RR, MAX_HOLD_MS, COOLDOWN_MS,
   FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT, MIN_FVG_BODY_PCT, MIN_STOP_PCT,
   RISK_PCT_DEFAULT, RISK_PCT_TOP_2, RISK_PCT_BEST,
-  RISK_DOWNSHIFT_AFTER_LOSSES, STREAK_PAUSE_AFTER_LOSSES, MAX_CONSECUTIVE_LOSSES,
   SIDE_GATE_MIN_SAMPLE, SIDE_GATE_DOWNSHIFT_R, SIDE_GATE_BLOCK_R,
 } from './trader-config.mjs';
 
@@ -99,7 +98,6 @@ const LEARN_ROOT = path.resolve('./trade-learnings');
 const STATE_DIR  = path.resolve('./.trader-state');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 const STOP_FLAG  = path.join(STATE_DIR, 'stop.flag');
-const HALT_CLEAR = path.join(STATE_DIR, 'halt-cleared');
 const EVENTS_FILE = path.join(STATE_DIR, 'trader-events.jsonl');
 
 // ──────────────────────────────────────────────────────────────────
@@ -109,9 +107,6 @@ const cooldownUntil = new Map();      // symbol → ts ms when cooldown expires
 const metaCache = new Map();          // symbol → { contractSize, minVol, priceUnit } (cached)
 let tradesToday = 0;
 let dailyPnlUsd = 0;
-let consecutiveLosses = 0;       // resets on a win or break-even, halts at MAX_CONSECUTIVE_LOSSES
-let haltedAt = null;             // ISO timestamp set when consec-loss halt fires
-let streakPausedUntilTs = 0;     // unix ms — 3L pause expires at the next killzone boundary; cleared on win/BE
 let dailyResetAt = nextUtcMidnight();
 let pendingOrder = null;              // { symbol, orderId, expiresAt }
 let lastError = null;
@@ -141,11 +136,9 @@ function nextUtcMidnight() {
 
 function maybeRollDay() {
   if (Date.now() >= dailyResetAt) {
-    log(`[day-roll] resetting daily counters (was trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} losses=${consecutiveLosses} halted=${haltedAt ? 'yes' : 'no'})`);
+    log(`[day-roll] resetting daily counters (was trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)})`);
     tradesToday = 0;
     dailyPnlUsd = 0;
-    consecutiveLosses = 0;
-    haltedAt = null;
     dailyResetAt = nextUtcMidnight();
   }
 }
@@ -241,11 +234,7 @@ async function writeState(extra = {}) {
     tradesToday,
     dailyPnlUsd: Number(dailyPnlUsd.toFixed(6)),
     dailyResetAt,
-    consecutiveLosses,
-    maxConsecutiveLosses: MAX_CONSECUTIVE_LOSSES,
-    haltedAt,
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
-    streakPausedUntilTs,
     sideStatus,
     sessionStatus,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
@@ -422,18 +411,15 @@ async function tryFire() {
   maybeRollDay();
   const results = await scanAllSymbols();
 
-  if (haltedAt)                                              return { skip: 'consec-loss-halt', detail: `since ${haltedAt}` };
-  if (streakPausedUntilTs && Date.now() < streakPausedUntilTs) {
-    return { skip: 'streak-pause', detail: `until ${new Date(streakPausedUntilTs).toISOString()}` };
-  }
-  if (streakPausedUntilTs && Date.now() >= streakPausedUntilTs) {
-    log(`[streak-pause-cleared] killzone boundary crossed; resuming fires (consec=${consecutiveLosses})`);
-    streakPausedUntilTs = 0;
-  }
-  // No killzone gate — backtest comparison showed 24/7 firing gives ~+80%
-  // more trades and +61% more total R over 90d vs killzone-gated, at the
-  // cost of 6pp lower win rate. Volume wins. The killzone label is still
-  // recorded on every fire (session field in the postmortem) for analysis.
+  // No history-based halts. The consecutive-loss cascade (2L/3L/5L) was
+  // removed — drift gates (side + session, ~20-trade min sample) catch
+  // real edge degradation without stopping the bot on small-sample noise.
+  //
+  // No killzone gate either — backtest comparison showed 24/7 firing gives
+  // ~+80% more trades and +61% more total R over 90d vs killzone-gated,
+  // at the cost of 6pp lower win rate. Volume wins. The killzone label
+  // is still recorded on every fire (session field in the postmortem)
+  // for analysis.
   if (pendingOrder)                                          return { skip: 'pending-order' };
 
   const openPositions = await getOpenPositions();
@@ -479,10 +465,6 @@ async function tryFire() {
     tier = 'top2';
   }
   let riskPct = tier === 'best' ? RISK_PCT_BEST : tier === 'top2' ? RISK_PCT_TOP_2 : RISK_PCT_DEFAULT;
-  if (consecutiveLosses >= RISK_DOWNSHIFT_AFTER_LOSSES) {
-    riskPct = riskPct * 0.5;
-    log(`[risk-downshift] consec=${consecutiveLosses} ≥ ${RISK_DOWNSHIFT_AFTER_LOSSES} → halving tier risk to ${(riskPct*100).toFixed(2)}%`);
-  }
   if (sideState.status === 'downshifted') {
     riskPct = riskPct * 0.5;
     log(`[side-downshift] ${sideKey.toUpperCase()} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${sideState.reason})`);
@@ -707,23 +689,6 @@ async function reconcileClosedPosition() {
   const outcome = pnlUsd > 0.001 ? 'win' : pnlUsd < -0.001 ? 'loss' : 'be';
   log(`[close] ${ctx.symbol} ${ctx.dir} fill=${fillPx} pnl=$${pnlUsd.toFixed(4)} r=${rMultiple.toFixed(2)}R outcome=${outcome}`);
 
-  // Update consecutive-loss counter — the survival gate that replaced the
-  // daily $ cap. Win or BE resets; loss increments. Hit MAX → halt.
-  if (outcome === 'loss') {
-    consecutiveLosses += 1;
-    if (consecutiveLosses >= MAX_CONSECUTIVE_LOSSES) {
-      haltedAt = new Date().toISOString();
-      log(`[HALT] ${consecutiveLosses} consecutive losses — pausing fires. Auto-resumes at next UTC midnight (day-roll); touch ${STATE_DIR}/halt-cleared to resume sooner.`);
-    } else if (consecutiveLosses >= STREAK_PAUSE_AFTER_LOSSES && !streakPausedUntilTs) {
-      streakPausedUntilTs = nextKillzoneBoundary();
-      log(`[streak-pause] ${consecutiveLosses} consecutive losses — pausing fires until next killzone boundary at ${new Date(streakPausedUntilTs).toISOString()}.`);
-    }
-  } else {
-    if (consecutiveLosses > 0) log(`[streak-reset] consec=${consecutiveLosses} → 0 on ${outcome}`);
-    consecutiveLosses = 0;
-    streakPausedUntilTs = 0;
-  }
-
   try {
     const confluences = [];
     if (ctx.htfDir) confluences.push(`htf-agree:${ctx.htfDir}`);
@@ -809,24 +774,22 @@ process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 // ──────────────────────────────────────────────────────────────────
 // Main loop
 // ──────────────────────────────────────────────────────────────────
-log(`[start] AZC trader online · symbols=${SYMBOLS.join(',')} · lev=${LEVERAGE}× · risk=${RISK_PCT_DEFAULT*100}/${RISK_PCT_TOP_2*100}/${RISK_PCT_BEST*100}% (def/top2/best) · halt after ${MAX_CONSECUTIVE_LOSSES} consec losses`);
+log(`[start] AZC trader online · symbols=${SYMBOLS.join(',')} · lev=${LEVERAGE}× · risk=${RISK_PCT_DEFAULT*100}/${RISK_PCT_TOP_2*100}/${RISK_PCT_BEST*100}% (def/top2/best) · drift-gated only`);
 await mkdir(LEARN_ROOT, { recursive: true }).catch(() => {});
 await mkdir(STATE_DIR, { recursive: true }).catch(() => {});
 
-// Restore daily safety counters from the previous run. Without this, a
-// systemd restart silently clears the 5-loss halt, the daily P&L count,
-// per-symbol cooldowns, and trades-today — defeating every safety gate
-// that depends on cross-cycle memory.
+// Restore daily counters + per-symbol cooldowns from the previous run.
+// Without this, a systemd restart silently clears trades-today, daily
+// P&L, and cooldown timers — losing cross-cycle memory the operator
+// can act on.
 try {
   const r = await loadTraderStateFromDisk(STATE_FILE);
   if (r) {
-    tradesToday       = r.tradesToday;
-    dailyPnlUsd       = r.dailyPnlUsd;
-    consecutiveLosses = r.consecutiveLosses;
-    haltedAt          = r.haltedAt;
-    dailyResetAt      = r.dailyResetAt;
+    tradesToday  = r.tradesToday;
+    dailyPnlUsd  = r.dailyPnlUsd;
+    dailyResetAt = r.dailyResetAt;
     for (const [sym, ts] of Object.entries(r.cooldownUntil)) cooldownUntil.set(sym, ts);
-    log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} consecLoss=${consecutiveLosses} halted=${haltedAt ? 'yes' : 'no'} cooldowns=${cooldownUntil.size}`);
+    log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} cooldowns=${cooldownUntil.size}`);
   }
 } catch (e) { log('[restore-err]', e.message); }
 
@@ -871,17 +834,6 @@ while (true) {
   if (await stopFlagExists()) {
     await gracefulShutdown('stop-flag');
     break;
-  }
-  // Check halt-clear flag — if operator created it after a consec-loss
-  // halt and reviewed the trades, this resumes the bot.
-  if (haltedAt) {
-    try {
-      await access(HALT_CLEAR, fsConst.F_OK);
-      log(`[halt-cleared] resuming after operator review (was halted ${haltedAt})`);
-      haltedAt = null;
-      consecutiveLosses = 0;
-      try { await import('node:fs/promises').then(m => m.unlink(HALT_CLEAR)); } catch (e) {}
-    } catch { /* halt-cleared not present, stay halted */ }
   }
   try {
     if (positionContext?.posId) {

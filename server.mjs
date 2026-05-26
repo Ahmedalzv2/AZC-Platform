@@ -575,8 +575,7 @@ const server = http.createServer(async (req, res) => {
         // scanning that recently.
         const cycleFresh = cycleAge != null && cycleAge < 60_000;
         serverTrader = {
-          running: cycleFresh && !data.haltedAt && !stopFlag,
-          haltedAt: data.haltedAt || null,
+          running: cycleFresh && !stopFlag,
           stopFlag,
           cycleCount: data.cycleCount || 0,
           lastCycleAt: data.lastCycleAt || 0,

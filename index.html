@@ -3118,7 +3118,6 @@
       let dot = '🟢', label = 'live';
       if (s?.stopFlag) { dot = '🛑'; label = 'stopped'; }
       else if (!s?.ok || stale) { dot = '⚪'; label = 'offline'; }
-      else if (s?.haltedAt) { dot = '🟠'; label = `halted ${(s.consecutiveLosses||0)}/${s.maxConsecutiveLosses||5}`; }
       else if (s?.positionContext && s.positionContext.posId) { dot = '🔵'; label = `in-trade · ${s.positionContext.symbol.replace('_USDT','')}`; }
       else if (s?.pendingOrder) { dot = '🟡'; label = `pending · ${s.pendingOrder.symbol.replace('_USDT','')}`; }
       statusEl.innerHTML = `${dot} <b>${label}</b>`;
@@ -3208,18 +3207,11 @@
     } else if (s.pendingOrder) {
       btn.textContent = `TRADER: PENDING · ${s.pendingOrder.symbol}`;
       btn.classList.add('trader-position');
-    } else if (s.haltedAt) {
-      const losses = s.consecutiveLosses || 0;
-      const maxLosses = s.maxConsecutiveLosses || 5;
-      btn.textContent = `TRADER: HALTED · ${losses}/${maxLosses} losses · scans only`;
-      btn.classList.add('trader-stopped');
     } else {
       const trades = s.tradesToday || 0;
       const pnl    = s.dailyPnlUsd || 0;
       const pnlSign = pnl >= 0 ? '+' : '';
-      const losses = s.consecutiveLosses || 0;
-      const maxLosses = s.maxConsecutiveLosses || 5;
-      btn.textContent = `TRADER: ON · ${trades} trades · ${pnlSign}$${pnl.toFixed(2)} · ${losses}/${maxLosses} losses`;
+      btn.textContent = `TRADER: ON · ${trades} trades · ${pnlSign}$${pnl.toFixed(2)}`;
       btn.classList.add('trader-on');
     }
   }
