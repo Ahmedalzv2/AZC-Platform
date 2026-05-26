@@ -319,11 +319,11 @@ function summarize(symbol, trades) {
 
 const onlyAsset = args.asset ? String(args.asset).toUpperCase() : null;
 const files = readdirSync(FIX_DIR)
-  .filter(f => f.endsWith('-90d-Min5.json'))
+  .filter(f => /-\d+d-Min5\.json$/.test(f))
   .filter(f => !onlyAsset || f.startsWith(onlyAsset + '-'));
 
 if (!files.length) {
-  console.error(`No fixtures found (looking for *-90d-Min5.json${onlyAsset ? ` matching ${onlyAsset}` : ''})`);
+  console.error(`No fixtures found (looking for *-d-Min5.json${onlyAsset ? ` matching ${onlyAsset}` : ''})`);
   process.exit(1);
 }
 
