@@ -82,3 +82,37 @@ export function buildSetup({ bars5m, htfBars, price, config }) {
   const tp = fvg.dir === 'bull' ? entry + stopDist * RR : entry - stopDist * RR;
   return { fvg, htfDir: bias.dir, entry, sl, tp, stopDist, fvgBodyPct, distPct };
 }
+
+// Models the live trader's POST_ONLY limit-order fill behaviour for
+// backtests. The live trader posts at the FVG mid with a 180s TTL. Two
+// constraints decide whether the order ever fills:
+//
+//   1. POST_ONLY validity: a buy limit must be at-or-below the market
+//      (b.c >= entry for bull), a sell limit at-or-above. If the fire
+//      bar's close has already crossed the mid in the wrong direction,
+//      MEXC rejects the order at submit.
+//
+//   2. TTL fill: price must touch the entry price within ttlBars * 5m
+//      after the fire bar. We can't sub-sample 5m bars; bracket-check
+//      is the closest approximation available.
+//
+// Pure — no I/O, no globals. Backtest harness imports it; unit tests
+// pin both branches without booting the trader.
+//
+// Returns { filled, fillBarOffset, reason }:
+//   filled === true  → use fillBarOffset (1..ttlBars) for resolution
+//   filled === false → reason ∈ 'post-only-wrong-side' | 'ttl-cancel'
+export function checkPostOnlyTtlFill({ dir, entry, fireBarClose, futureBars, ttlBars }) {
+  if (typeof entry !== 'number' || !isFinite(entry)) {
+    return { filled: false, fillBarOffset: -1, reason: 'invalid-entry' };
+  }
+  const validPO = dir === 'bull' ? (fireBarClose >= entry) : (fireBarClose <= entry);
+  if (!validPO) return { filled: false, fillBarOffset: -1, reason: 'post-only-wrong-side' };
+  const limit = Math.min(ttlBars, futureBars.length);
+  for (let k = 0; k < limit; k++) {
+    const nb = futureBars[k];
+    const hits = dir === 'bull' ? (nb.l <= entry) : (nb.h >= entry);
+    if (hits) return { filled: true, fillBarOffset: k + 1, reason: 'filled' };
+  }
+  return { filled: false, fillBarOffset: -1, reason: 'ttl-cancel' };
+}

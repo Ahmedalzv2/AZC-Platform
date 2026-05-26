@@ -1,4 +1,4 @@
-// Replays the live azc-trader rules against the 90d 5m fixtures so we
+// Replays the live azc-trader rules against the {N}d 5m fixtures so we
 // have a real expectancy number for the current methodology before we
 // touch a single knob.
 //
@@ -7,6 +7,23 @@
 // MIN_STOP_PCT floor, TP at RR*stopDist, killzone gate, per-symbol
 // cooldown, MAX_HOLD_MS force-close. Walks tick-by-tick using each 5m
 // bar's high/low to resolve TP/SL.
+//
+// Known modelling limitations:
+//   1. TTL gate is bar-granular. checkPostOnlyTtlFill counts a fill if
+//      the next 5m bar's range brackets the entry — it can't see WHEN
+//      in that bar the cross happened. The live TTL is 180s ≈ 60% of
+//      a bar; a cross at minute 4 wouldn't fill in production but is
+//      counted as a fill here. Bias unknown direction (over- or under-
+//      counts depending on path within bar).
+//   2. resolve() assumes SL hits first when a bar's range spans both
+//      SL and TP. Pessimistic in trending bars, accurate in chop.
+//   3. Single regime — fixtures cover 90d or 365d ending today.
+//      Conclusions don't generalise across market cycles.
+//   4. Slippage is unmodelled. Live SL fills can be -1.06R from fast
+//      adverse moves; backtest exits cleanly at SL.
+//
+// These bias the result in different directions and don't fully cancel.
+// Treat per-trade R numbers as ±50% of the truth, not high-precision.
 //
 // Usage:
 //   node tests/backtest-azc-trader.mjs                       (all assets, default rules)
@@ -19,7 +36,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { buildSetup } from '../trader-signal.mjs';
+import { buildSetup, checkPostOnlyTtlFill } from '../trader-signal.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIX_DIR = path.join(__dirname, 'fixtures');
@@ -216,33 +233,19 @@ function backtestAsset(symbol, bars5) {
     if (KILLZONES_ENABLED && !inKillzone(b.t))    { i++; continue; }
     const cand = buildCandidate(bars5, htfClosedAt(b.t), i, b.c);
     if (cand.skip) { i++; continue; }
-    // Live trader posts POST_ONLY at the FVG mid with a 180s TTL — roughly
-    // 60% of one 5m bar. If price doesn't reach mid within that window
-    // the order cancels and no trade happens. Without this gate the
-    // backtest fills setups whose limit would TTL-cancel in production,
-    // overstating loose-touch configs by orders of magnitude.
+    // Live POST_ONLY-at-FVG-mid with 180s TTL — see checkPostOnlyTtlFill
+    // in trader-signal.mjs. Backtest mirrors live order placement so
+    // expectancy reflects only fills that would have actually happened.
     if (TTL_REALISTIC) {
-      // POST_ONLY validity: a buy limit must be at or below the market
-      // (b.c >= mid for bull), a sell limit must be at or above the
-      // market (b.c <= mid for bear). When the fire bar has already
-      // crossed mid in the wrong direction, MEXC rejects the order at
-      // submit. The old backtest filled these anyway, which inflated
-      // expectancy — they were "phantom" entries at a price the market
-      // wouldn't have honoured as a passive maker.
-      const validPO = cand.dir === 'bull' ? (b.c >= cand.entry) : (b.c <= cand.entry);
-      if (!validPO) { ttlCancels += 1; i++; continue; }
-      let filled = false;
-      let fillBar = -1;
-      for (let k = 1; k <= TTL_BARS; k++) {
-        if (i + k >= bars5.length) break;
-        const nb = bars5[i + k];
-        const hits = cand.dir === 'bull' ? (nb.l <= cand.entry) : (nb.h >= cand.entry);
-        if (hits) { filled = true; fillBar = i + k; break; }
-      }
-      if (!filled) { ttlCancels += 1; i++; continue; }
-      // Resolution starts after the fill bar so SL/TP that hit on bars
-      // BEFORE the fill don't count against us.
-      if (fillBar > i) i = fillBar - 1;
+      const fill = checkPostOnlyTtlFill({
+        dir: cand.dir, entry: cand.entry, fireBarClose: b.c,
+        futureBars: bars5.slice(i + 1, i + 1 + TTL_BARS),
+        ttlBars: TTL_BARS,
+      });
+      if (!fill.filled) { ttlCancels += 1; i++; continue; }
+      // Resolution starts on the fill bar (i + fillBarOffset). resolve()
+      // walks from startIdx + 1, so step i to fillBar - 1.
+      if (fill.fillBarOffset > 1) i += fill.fillBarOffset - 1;
     }
     const res = resolve(bars5, cand.dir, cand.entry, cand.sl, cand.tp, i);
     // Size the trade against current balance — matches live trader sizing
