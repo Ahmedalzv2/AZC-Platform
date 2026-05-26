@@ -27,6 +27,17 @@ import { KILLZONES_UTC, inKillzone, currentKillzoneName } from './trader-killzon
 import { buildSetup } from './trader-signal.mjs';
 import { decideGate, groupBySession } from './trader-drift-gate.mjs';
 import { decideFireAction } from './trader-fire-decision.mjs';
+import { sendTelegram, fmtFireAlert, fmtCloseAlert, fmtDriftAlert } from './trader-notify.mjs';
+
+async function notify(text) {
+  // Fire-and-forget — never let a Telegram failure interrupt the loop.
+  // sendTelegram already returns {ok, reason} on failure; we just log
+  // and move on.
+  try {
+    const r = await sendTelegram(text);
+    if (!r.ok && r.reason !== 'no-creds') log(`[notify-fail] ${r.reason}`);
+  } catch (e) { log('[notify-err]', e.message); }
+}
 import {
   HTF_MIN, HTF_SMA, LOOKBACK_BARS,
   RR, MAX_HOLD_MS, COOLDOWN_MS,
@@ -198,9 +209,11 @@ async function recomputeSideStatus() {
   };
   if (next.long.status !== sideStatus.long.status) {
     log(`[side-gate] LONG: ${sideStatus.long.status} → ${next.long.status} (${next.long.reason})`);
+    notify(fmtDriftAlert({ gate: 'side', key: 'LONG', fromStatus: sideStatus.long.status, toStatus: next.long.status, reason: next.long.reason }));
   }
   if (next.short.status !== sideStatus.short.status) {
     log(`[side-gate] SHORT: ${sideStatus.short.status} → ${next.short.status} (${next.short.reason})`);
+    notify(fmtDriftAlert({ gate: 'side', key: 'SHORT', fromStatus: sideStatus.short.status, toStatus: next.short.status, reason: next.short.reason }));
   }
   sideStatus = next;
 
@@ -220,6 +233,11 @@ async function recomputeSideStatus() {
     const prev = sessionStatus[label]?.status;
     if (prev !== state.status) {
       log(`[session-gate] ${label}: ${prev || '(new)'} → ${state.status} (${state.reason})`);
+      // Quiet the noise from initial "(new) → enabled" on first compute —
+      // only ping the operator on real transitions.
+      if (prev) {
+        notify(fmtDriftAlert({ gate: 'session', key: label, fromStatus: prev, toStatus: state.status, reason: state.reason }));
+      }
     }
   }
   sessionStatus = nextSessionStatus;
@@ -482,11 +500,18 @@ async function tryFire() {
     stopLossPrice: slSnap,
     takeProfitPrice: tpSnap,
   };
-  log(`[fire] ${pick.symbol} ${pick.fvg.dir.toUpperCase()} tier=${tier} htf=${pick.htfDir} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${(pick.stopDistUsdPerContract*qty).toFixed(3)} (${(riskPct*100).toFixed(1)}%) cand=${candidateCount}/${SYMBOLS.length}`);
+  const riskUsd = pick.stopDistUsdPerContract * qty;
+  log(`[fire] ${pick.symbol} ${pick.fvg.dir.toUpperCase()} tier=${tier} htf=${pick.htfDir} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${riskUsd.toFixed(3)} (${(riskPct*100).toFixed(1)}%) cand=${candidateCount}/${SYMBOLS.length}`);
   const r = await placeOrder(body);
   if (!r.json || r.json.success !== true) {
     return { skip: 'mexc-rejected', detail: JSON.stringify(r.json || r.raw).slice(0, 200), symbol: pick.symbol };
   }
+  notify(fmtFireAlert({
+    symbol: pick.symbol, dir: pick.fvg.dir, tier,
+    entry, sl: slSnap, tp: tpSnap,
+    riskUsd, riskPct,
+    candidateCount, totalSymbols: SYMBOLS.length,
+  }));
   const orderId = r.json.data;
   pendingOrder = { symbol: pick.symbol, orderId, expiresAt: Date.now() + MAKER_ORDER_TTL_MS };
   positionContext = {
@@ -669,6 +694,7 @@ async function reconcileClosedPosition() {
   const rMultiple = stopDist > 0 ? (pnlPriceMove / stopDist) : 0;
   const outcome = pnlUsd > 0.001 ? 'win' : pnlUsd < -0.001 ? 'loss' : 'be';
   log(`[close] ${ctx.symbol} ${ctx.dir} fill=${fillPx} pnl=$${pnlUsd.toFixed(4)} r=${rMultiple.toFixed(2)}R outcome=${outcome}`);
+  notify(fmtCloseAlert({ symbol: ctx.symbol, dir: ctx.dir, outcome, rMultiple, realizedUsd: pnlUsd, holdMs }));
 
   try {
     const confluences = [];
@@ -734,6 +760,8 @@ async function stopFlagExists() {
 
 async function gracefulShutdown(reason) {
   log(`[shutdown] reason=${reason}`);
+  const openWarn = positionContext?.posId ? ` · OPEN ${positionContext.symbol} left at MEXC` : '';
+  await notify(`🛑 AZC trader stopped · ${reason}${openWarn}`);
   // Cancel any pending unfilled order so we don't leave a stray maker on the book.
   if (pendingOrder) {
     log(`[shutdown] cancelling pending order ${pendingOrder.orderId}`);
@@ -756,6 +784,7 @@ process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 // Main loop
 // ──────────────────────────────────────────────────────────────────
 log(`[start] AZC trader online · symbols=${SYMBOLS.join(',')} · lev=${LEVERAGE}× · risk=${RISK_PCT_DEFAULT*100}/${RISK_PCT_TOP_2*100}/${RISK_PCT_BEST*100}% (def/top2/best) · drift-gated only`);
+notify(`🟢 AZC trader online · ${SYMBOLS.length} symbols · drift-gated only`);
 await mkdir(LEARN_ROOT, { recursive: true }).catch(() => {});
 await mkdir(STATE_DIR, { recursive: true }).catch(() => {});
 
