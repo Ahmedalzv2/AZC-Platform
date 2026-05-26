@@ -20,6 +20,7 @@ import path from 'node:path';
 import { callMexcSigned } from './mexc-signer.mjs';
 import { writeLearningFile } from './trade-learnings.mjs';
 import { writeInsightsFile } from './trade-insights.mjs';
+import { appendScanEvent } from './trader-events.mjs';
 import { collectTrades, summarise } from './trade-stats.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
 import { KILLZONES_UTC, inKillzone, currentKillzoneName, nextKillzoneBoundary } from './trader-killzones.mjs';
@@ -98,6 +99,7 @@ const STATE_DIR  = path.resolve('./.trader-state');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 const STOP_FLAG  = path.join(STATE_DIR, 'stop.flag');
 const HALT_CLEAR = path.join(STATE_DIR, 'halt-cleared');
+const EVENTS_FILE = path.join(STATE_DIR, 'trader-events.jsonl');
 
 // ──────────────────────────────────────────────────────────────────
 // Runtime state
@@ -358,6 +360,16 @@ async function scanAllSymbols() {
     detail: r.detail || null,
     ts: Date.now(),
   }));
+  // Persist the scan to a ring-buffered JSONL so the dashboard can
+  // replay the last N decisions. Best-effort — disk failures must not
+  // break the trader's main loop.
+  try {
+    await appendScanEvent(EVENTS_FILE, {
+      ts: Date.now(),
+      cycle: cycleCount,
+      scan: lastScanSummary,
+    });
+  } catch (e) { log('[events-append-err]', e.message); }
   return results;
 }
 
