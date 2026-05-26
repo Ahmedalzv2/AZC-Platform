@@ -1,0 +1,184 @@
+{
+  "config": {
+    "BALANCE": 50,
+    "RR": 1.8,
+    "MAX_HOLD_MS": 7200000,
+    "COOLDOWN_MS": 900000,
+    "HTF_SMA_LEN": 20,
+    "FVG_BUFFER_PCT": 0.1,
+    "TOUCH_TOLERANCE_PCT": 0.0008,
+    "MIN_FVG_BODY_PCT": 0.001,
+    "MIN_STOP_PCT": 0.002,
+    "KILLZONES_ENABLED": false,
+    "SIDE_FILTER": "both",
+    "FEES_ENABLED": true,
+    "RISK_PCT": 0.03
+  },
+  "aggregate": {
+    "trades": 2398,
+    "wins": 1128,
+    "losses": 1185,
+    "bes": 85,
+    "winRate": 0.47039199332777315,
+    "expectancyR": 0.23293999944010904,
+    "totalR": 558.5901186573815,
+    "netUsd": 281.7669743134999,
+    "totalFees": 157.45890741450017
+  },
+  "sides": {
+    "long": {
+      "n": 1189,
+      "wins": 539,
+      "losses": 610,
+      "totalR": 216.8543006800211
+    },
+    "short": {
+      "n": 1209,
+      "wins": 589,
+      "losses": 575,
+      "totalR": 341.73581797736324
+    }
+  },
+  "bySymbol": {
+    "ARB": {
+      "trades": 188,
+      "wins": 107,
+      "losses": 81,
+      "bes": 0,
+      "winRate": 0.5691489361702128,
+      "expectancyR": 0.43098746146568373,
+      "totalR": 81.02564275554855,
+      "netUsd": 42.21806492599979
+    },
+    "AVAX": {
+      "trades": 218,
+      "wins": 104,
+      "losses": 110,
+      "bes": 4,
+      "winRate": 0.47706422018348627,
+      "expectancyR": 0.18337564141877577,
+      "totalR": 39.975889829293116,
+      "netUsd": 20.32832376500029
+    },
+    "BNB": {
+      "trades": 218,
+      "wins": 96,
+      "losses": 99,
+      "bes": 23,
+      "winRate": 0.44036697247706424,
+      "expectancyR": 0.1818770115441802,
+      "totalR": 39.649188516631284,
+      "netUsd": 19.157505649999987
+    },
+    "BTC": {
+      "trades": 182,
+      "wins": 81,
+      "losses": 84,
+      "bes": 17,
+      "winRate": 0.44505494505494503,
+      "expectancyR": 0.33943876858239064,
+      "totalR": 61.777855881995094,
+      "netUsd": 31.7459497875004
+    },
+    "DOGE": {
+      "trades": 186,
+      "wins": 93,
+      "losses": 91,
+      "bes": 2,
+      "winRate": 0.5,
+      "expectancyR": 0.2376165953067417,
+      "totalR": 44.19668672705396,
+      "netUsd": 20.03672989999963
+    },
+    "DOT": {
+      "trades": 117,
+      "wins": 62,
+      "losses": 55,
+      "bes": 0,
+      "winRate": 0.5299145299145299,
+      "expectancyR": 0.3165194433964021,
+      "totalR": 37.03277487737905,
+      "netUsd": 19.62207659999991
+    },
+    "ETH": {
+      "trades": 184,
+      "wins": 65,
+      "losses": 107,
+      "bes": 12,
+      "winRate": 0.3532608695652174,
+      "expectancyR": -0.1340731657222556,
+      "totalR": -24.669462492895033,
+      "netUsd": -12.329267784999708
+    },
+    "INJ": {
+      "trades": 170,
+      "wins": 73,
+      "losses": 96,
+      "bes": 1,
+      "winRate": 0.4294117647058823,
+      "expectancyR": 0.032806141486122944,
+      "totalR": 5.5770440526409,
+      "netUsd": 4.368250049999816
+    },
+    "LINK": {
+      "trades": 202,
+      "wins": 84,
+      "losses": 115,
+      "bes": 3,
+      "winRate": 0.4158415841584158,
+      "expectancyR": 0.1864844779448061,
+      "totalR": 37.66986454485083,
+      "netUsd": 19.831056075000117
+    },
+    "LTC": {
+      "trades": 152,
+      "wins": 72,
+      "losses": 72,
+      "bes": 8,
+      "winRate": 0.47368421052631576,
+      "expectancyR": 0.1987764150505024,
+      "totalR": 30.214015087676366,
+      "netUsd": 15.54225709499988
+    },
+    "NEAR": {
+      "trades": 139,
+      "wins": 74,
+      "losses": 65,
+      "bes": 0,
+      "winRate": 0.5323741007194245,
+      "expectancyR": 0.3204228332541329,
+      "totalR": 44.53877382232447,
+      "netUsd": 21.748087500000143
+    },
+    "SOL": {
+      "trades": 134,
+      "wins": 64,
+      "losses": 65,
+      "bes": 5,
+      "winRate": 0.47761194029850745,
+      "expectancyR": 0.3886947761825516,
+      "totalR": 52.085100008461914,
+      "netUsd": 25.802201199999654
+    },
+    "SUI": {
+      "trades": 135,
+      "wins": 66,
+      "losses": 69,
+      "bes": 0,
+      "winRate": 0.4888888888888889,
+      "expectancyR": 0.19463913342339834,
+      "totalR": 26.276283012158775,
+      "netUsd": 11.837039714999882
+    },
+    "XRP": {
+      "trades": 173,
+      "wins": 87,
+      "losses": 76,
+      "bes": 10,
+      "winRate": 0.5028901734104047,
+      "expectancyR": 0.4811587400824404,
+      "totalR": 83.2404620342622,
+      "netUsd": 41.85869983500009
+    }
+  }
+}

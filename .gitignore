@@ -3,6 +3,7 @@ package-lock.json
 *.log
 .DS_Store
 tests/.backtest-cache/
+tests/baselines/.last-run.json
 # Per-resolved-trade post-mortems; user data, not source.
 trade-learnings/
 
