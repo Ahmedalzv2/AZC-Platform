@@ -82,15 +82,50 @@ export function rankLessons(parsedTrades, files, opts = {}) {
   };
 }
 
+// Bucket trades by a numeric field (e.g. fvgBodyPct) into fixed bins so
+// the operator can see actual expR per range instead of guessing from
+// loss-sentence counts. Edges in percent. Returns an array of
+// { label, n, wins, losses, expR, netR } in label order.
+export function binByPct(trades, field, edges) {
+  const bins = edges.slice(0, -1).map((_, i) => ({
+    label: `${(edges[i] * 100).toFixed(2)}-${(edges[i+1] * 100).toFixed(2)}%`,
+    lo: edges[i], hi: edges[i+1],
+    n: 0, wins: 0, losses: 0, netR: 0,
+  }));
+  for (const t of trades) {
+    const v = t[field];
+    if (!Number.isFinite(v)) continue;
+    for (const b of bins) {
+      if (v >= b.lo && (v < b.hi || (b === bins[bins.length - 1] && v <= b.hi))) {
+        b.n += 1;
+        if (t.outcome === 'win')  b.wins += 1;
+        if (t.outcome === 'loss') b.losses += 1;
+        if (Number.isFinite(t.rMultiple)) b.netR += t.rMultiple;
+        break;
+      }
+    }
+  }
+  return bins.map(b => ({
+    label: b.label,
+    n: b.n,
+    wins: b.wins,
+    losses: b.losses,
+    netR: b.netR,
+    expR: b.n ? b.netR / b.n : 0,
+  }));
+}
+
 export function buildInsights({ trades, files, now = Date.now() }) {
   const all     = summarise(trades);
   const last24h = summarise(trades.filter(t => now - t.ts <= 24 * 3600 * 1000));
   const last7d  = summarise(trades.filter(t => now - t.ts <=  7 * 86400 * 1000));
   const { edges, leaks } = rankLessons(trades, files);
+  const fvgBodyBins = binByPct(trades, 'fvgBodyPct', [0.0010, 0.0015, 0.0020, 0.0030, 0.0050, 0.0100]);
   return {
     generatedAt: new Date(now).toISOString(),
     all, last24h, last7d,
     edges, leaks,
+    fvgBodyBins,
   };
 }
 
@@ -122,7 +157,7 @@ function topGroup(bag, label) {
 }
 
 export function formatInsightsMarkdown(insights) {
-  const { generatedAt, all, last24h, last7d, edges, leaks } = insights;
+  const { generatedAt, all, last24h, last7d, edges, leaks, fvgBodyBins } = insights;
   const lines = [];
   lines.push('# Trade Insights');
   lines.push('');
@@ -141,6 +176,19 @@ export function formatInsightsMarkdown(insights) {
   const gradeBlock = topGroup(all.byGrade, 'By grade');
   if (gradeBlock) { lines.push(gradeBlock); lines.push(''); }
 
+  if (fvgBodyBins && fvgBodyBins.some(b => b.n > 0)) {
+    lines.push('### By FVG body size');
+    lines.push('_Real expectancy per bin. Trust this over loss-sentence counts when judging a knob change._');
+    lines.push('```');
+    for (const b of fvgBodyBins) {
+      if (b.n === 0) continue;
+      const expStr = (b.expR >= 0 ? '+' : '') + b.expR.toFixed(3) + 'R';
+      lines.push(`${b.label.padEnd(14)} n=${String(b.n).padStart(3)} W=${String(b.wins).padStart(2)} L=${String(b.losses).padStart(2)} expR=${expStr.padStart(8)} netR=${fmtR(b.netR).padStart(8)}`);
+    }
+    lines.push('```');
+    lines.push('');
+  }
+
   lines.push('## Edges (recurring win-side lessons)');
   if (!edges.length) {
     lines.push('_None yet — need more wins with overlapping post-mortem sentences._');
@@ -151,7 +199,8 @@ export function formatInsightsMarkdown(insights) {
   }
   lines.push('');
 
-  lines.push('## Leaks (recurring loss-side lessons)');
+  lines.push('## Leaks (recurring loss-side sentences — CORRELATION, not causation)');
+  lines.push('_These are post-mortem sentences that show up across multiple losses. A high count means the trader keeps writing that sentence after losses, not that the cited factor caused losses. Always cross-check against the per-bin tables above before acting on one._');
   if (!leaks.length) {
     lines.push('_None yet — need more losses with overlapping post-mortem sentences._');
   } else {
