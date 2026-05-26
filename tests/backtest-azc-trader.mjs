@@ -68,6 +68,7 @@ const LEVERAGE            = Number(args.lev     ?? 10);
 const MIN_FEE_USD         = Number(args['min-fee'] ?? 0.025);
 const FUNDING_PCT_PER_WIN = Number(args.funding ?? 0.0001);
 const FEES_ENABLED        = !args['no-fees'];
+const SIDE_FILTER         = String(args['side'] || 'both').toLowerCase();
 
 const KILLZONES_UTC = [
   { startH: 0,  startM: 0,  endH: 4,  endM: 0 },
@@ -141,6 +142,8 @@ function buildCandidate(bars5, htfBarsUpTo, i, price) {
   const fvg = detectUnmitigatedFvg(window);
   if (!fvg) return { skip: 'no-fvg' };
   if (fvg.dir !== htfDir) return { skip: 'htf-disagree' };
+  if (SIDE_FILTER === 'long'  && fvg.dir !== 'bull') return { skip: 'side-filter' };
+  if (SIDE_FILTER === 'short' && fvg.dir !== 'bear') return { skip: 'side-filter' };
 
   const fvgBodyPct = fvg.body / price;
   if (fvgBodyPct < MIN_FVG_BODY_PCT) return { skip: 'fvg-too-small' };

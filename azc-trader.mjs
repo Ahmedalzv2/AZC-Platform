@@ -20,6 +20,7 @@ import path from 'node:path';
 import { callMexcSigned } from './mexc-signer.mjs';
 import { writeLearningFile } from './trade-learnings.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
+import { KILLZONES_UTC, inKillzone, currentKillzoneName, nextKillzoneBoundary } from './trader-killzones.mjs';
 
 // ──────────────────────────────────────────────────────────────────
 // Config
@@ -76,10 +77,15 @@ const RISK_PCT_BEST     = 0.05;   // 5% for stand-out best candidate ($2.50)
 
 const MAX_OPEN_POSITIONS = 1;
 const COOLDOWN_MS = 15 * 60 * 1000;
-// 90d backtest (tests/backtest-azc-trader.mjs) at 5L tolerance ≈ 1-in-18
-// halt probability at the methodology's 50% win rate — a real signal, not
-// noise. 3L was 1-in-8, fired constantly on variance.
-const MAX_CONSECUTIVE_LOSSES = 5;
+// Graduated streak response (cascades from soft to hard):
+//   2 losses → next fire risks at 50% of the tier (limits drawdown speed)
+//   3 losses → pause new fires until the next killzone window boundary
+//              (stops martingale-style overtrading within a bad regime)
+//   5 losses → full halt until UTC midnight (the original hard safety,
+//              ~1-in-18 false-positive at 50% WR per 90d backtest)
+const RISK_DOWNSHIFT_AFTER_LOSSES = 2;
+const STREAK_PAUSE_AFTER_LOSSES   = 3;
+const MAX_CONSECUTIVE_LOSSES      = 5;
 // 60m force-close was leaving 6pp of win rate on the table — 70 trades
 // over 90d hit TP only after the cap. 120m captures them while still
 // staying inside a single funding window most of the time.
@@ -93,39 +99,11 @@ const TOUCH_TOLERANCE_PCT = 0.0008;   // proximity gate, 0.08% of price
 const MIN_FVG_BODY_PCT = 0.0010;      // FVG body must be ≥ 0.10% of price (skip micro-gaps)
 const MIN_STOP_PCT     = 0.0020;      // stop distance must be ≥ 0.20% of price (else stop is hunt-bait)
 
-// Killzone metadata — these UTC windows are *not* a gate (24/7 trading
-// is enabled). They're kept so every fire's post-mortem records which
-// session it happened in (currentKillzoneName() in the close payload).
-//   Asia:     00:00-04:00 UTC (Tokyo/HK desks; BTC moves often originate)
-//   London:   07:00-10:00 UTC (institutional open)
-//   NY AM:    12:30-16:00 UTC (peak global volume)
-//   Late-NY:  18:30-22:00 UTC (NY close → Asia roll-over)
-// Outside these windows session is reported as null on the postmortem.
-const KILLZONES_UTC = [
-  { startH: 0,  startM: 0,  endH: 4,  endM: 0 },
-  { startH: 7,  startM: 0,  endH: 10, endM: 0 },
-  { startH: 12, startM: 30, endH: 16, endM: 0 },
-  { startH: 18, startM: 30, endH: 22, endM: 0 },
-];
-function inKillzone(now = new Date()) {
-  const m = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return KILLZONES_UTC.some(z => {
-    const s = z.startH * 60 + z.startM;
-    const e = z.endH * 60 + z.endM;
-    return m >= s && m < e;
-  });
-}
-function currentKillzoneName(now = new Date()) {
-  const m = now.getUTCHours() * 60 + now.getUTCMinutes();
-  const names = ['asia', 'london', 'ny-am', 'late-ny'];
-  for (let i = 0; i < KILLZONES_UTC.length; i++) {
-    const z = KILLZONES_UTC[i];
-    const s = z.startH * 60 + z.startM;
-    const e = z.endH * 60 + z.endM;
-    if (m >= s && m < e) return names[i];
-  }
-  return null;
-}
+// Killzone windows live in ./trader-killzones.mjs so tests can pull pure
+// helpers without importing this file (which exits at load when MEXC creds
+// are missing). 24/7 firing remains active — the killzone label is only
+// recorded on every fire (postmortem `session` field) and used by the 3-loss
+// pause to find the next session boundary.
 const LEARN_ROOT = path.resolve('./trade-learnings');
 const STATE_DIR  = path.resolve('./.trader-state');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
@@ -141,6 +119,7 @@ let tradesToday = 0;
 let dailyPnlUsd = 0;
 let consecutiveLosses = 0;       // resets on a win or break-even, halts at MAX_CONSECUTIVE_LOSSES
 let haltedAt = null;             // ISO timestamp set when consec-loss halt fires
+let streakPausedUntilTs = 0;     // unix ms — 3L pause expires at the next killzone boundary; cleared on win/BE
 let dailyResetAt = nextUtcMidnight();
 let pendingOrder = null;              // { symbol, orderId, expiresAt }
 let lastError = null;
@@ -182,6 +161,7 @@ async function writeState(extra = {}) {
     maxConsecutiveLosses: MAX_CONSECUTIVE_LOSSES,
     haltedAt,
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
+    streakPausedUntilTs,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
     positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp } : null,
@@ -388,6 +368,13 @@ async function tryFire() {
   const results = await scanAllSymbols();
 
   if (haltedAt)                                              return { skip: 'consec-loss-halt', detail: `since ${haltedAt}` };
+  if (streakPausedUntilTs && Date.now() < streakPausedUntilTs) {
+    return { skip: 'streak-pause', detail: `until ${new Date(streakPausedUntilTs).toISOString()}` };
+  }
+  if (streakPausedUntilTs && Date.now() >= streakPausedUntilTs) {
+    log(`[streak-pause-cleared] killzone boundary crossed; resuming fires (consec=${consecutiveLosses})`);
+    streakPausedUntilTs = 0;
+  }
   // No killzone gate — backtest comparison showed 24/7 firing gives ~+80%
   // more trades and +61% more total R over 90d vs killzone-gated, at the
   // cost of 6pp lower win rate. Volume wins. The killzone label is still
@@ -418,7 +405,11 @@ async function tryFire() {
   } else {
     tier = 'top2';
   }
-  const riskPct = tier === 'best' ? RISK_PCT_BEST : tier === 'top2' ? RISK_PCT_TOP_2 : RISK_PCT_DEFAULT;
+  let riskPct = tier === 'best' ? RISK_PCT_BEST : tier === 'top2' ? RISK_PCT_TOP_2 : RISK_PCT_DEFAULT;
+  if (consecutiveLosses >= RISK_DOWNSHIFT_AFTER_LOSSES) {
+    riskPct = riskPct * 0.5;
+    log(`[risk-downshift] consec=${consecutiveLosses} ≥ ${RISK_DOWNSHIFT_AFTER_LOSSES} → halving tier risk to ${(riskPct*100).toFixed(2)}%`);
+  }
 
   const equity = await getAccountUsdt();
   const riskUsd = equity * riskPct;
@@ -642,9 +633,14 @@ async function reconcileClosedPosition() {
     if (consecutiveLosses >= MAX_CONSECUTIVE_LOSSES) {
       haltedAt = new Date().toISOString();
       log(`[HALT] ${consecutiveLosses} consecutive losses — pausing fires. Auto-resumes at next UTC midnight (day-roll); touch ${STATE_DIR}/halt-cleared to resume sooner.`);
+    } else if (consecutiveLosses >= STREAK_PAUSE_AFTER_LOSSES && !streakPausedUntilTs) {
+      streakPausedUntilTs = nextKillzoneBoundary();
+      log(`[streak-pause] ${consecutiveLosses} consecutive losses — pausing fires until next killzone boundary at ${new Date(streakPausedUntilTs).toISOString()}.`);
     }
   } else {
+    if (consecutiveLosses > 0) log(`[streak-reset] consec=${consecutiveLosses} → 0 on ${outcome}`);
     consecutiveLosses = 0;
+    streakPausedUntilTs = 0;
   }
 
   try {
