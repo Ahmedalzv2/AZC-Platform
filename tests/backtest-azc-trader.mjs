@@ -80,6 +80,14 @@ const MIN_FEE_USD         = Number(args['min-fee'] ?? 0.025);
 const FUNDING_PCT_PER_WIN = Number(args.funding ?? 0.0001);
 const FEES_ENABLED        = !args['no-fees'];
 const SIDE_FILTER         = String(args['side'] || 'both').toLowerCase();
+// --no-ttl disables the TTL fill gate — useful for sanity checks against
+// the old idealised-fill numbers, never for shippable analysis.
+const TTL_REALISTIC       = !args['no-ttl'];
+// --ttl-bars=N controls how many 5m bars after fire we allow for the
+// limit-order to fill. Default 1 ≈ matches the live 180s TTL (~60% of
+// one bar; we round up to 1 since we can't sub-sample bars). Use 2-3 to
+// model what happens if MAKER_ORDER_TTL_MS is increased.
+const TTL_BARS            = Math.max(1, Number(args['ttl-bars'] ?? 1));
 
 const KILLZONES_UTC = [
   { startH: 0,  startM: 0,  endH: 4,  endM: 0 },
@@ -200,6 +208,7 @@ function backtestAsset(symbol, bars5) {
 
   const trades = [];
   let cooldownUntil = 0;
+  let ttlCancels = 0;
   let i = LOOKBACK_BARS;
   while (i < bars5.length) {
     const b = bars5[i];
@@ -207,6 +216,34 @@ function backtestAsset(symbol, bars5) {
     if (KILLZONES_ENABLED && !inKillzone(b.t))    { i++; continue; }
     const cand = buildCandidate(bars5, htfClosedAt(b.t), i, b.c);
     if (cand.skip) { i++; continue; }
+    // Live trader posts POST_ONLY at the FVG mid with a 180s TTL — roughly
+    // 60% of one 5m bar. If price doesn't reach mid within that window
+    // the order cancels and no trade happens. Without this gate the
+    // backtest fills setups whose limit would TTL-cancel in production,
+    // overstating loose-touch configs by orders of magnitude.
+    if (TTL_REALISTIC) {
+      // POST_ONLY validity: a buy limit must be at or below the market
+      // (b.c >= mid for bull), a sell limit must be at or above the
+      // market (b.c <= mid for bear). When the fire bar has already
+      // crossed mid in the wrong direction, MEXC rejects the order at
+      // submit. The old backtest filled these anyway, which inflated
+      // expectancy — they were "phantom" entries at a price the market
+      // wouldn't have honoured as a passive maker.
+      const validPO = cand.dir === 'bull' ? (b.c >= cand.entry) : (b.c <= cand.entry);
+      if (!validPO) { ttlCancels += 1; i++; continue; }
+      let filled = false;
+      let fillBar = -1;
+      for (let k = 1; k <= TTL_BARS; k++) {
+        if (i + k >= bars5.length) break;
+        const nb = bars5[i + k];
+        const hits = cand.dir === 'bull' ? (nb.l <= cand.entry) : (nb.h >= cand.entry);
+        if (hits) { filled = true; fillBar = i + k; break; }
+      }
+      if (!filled) { ttlCancels += 1; i++; continue; }
+      // Resolution starts after the fill bar so SL/TP that hit on bars
+      // BEFORE the fill don't count against us.
+      if (fillBar > i) i = fillBar - 1;
+    }
     const res = resolve(bars5, cand.dir, cand.entry, cand.sl, cand.tp, i);
     // Size the trade against current balance — matches live trader sizing
     const { qty, notional } = sizeTrade(meta, cand.entry, cand.stopDist, BALANCE);
@@ -252,6 +289,7 @@ function backtestAsset(symbol, bars5) {
     // Advance to the exit bar so we don't re-enter on the same FVG.
     while (i < bars5.length && bars5[i].t <= res.exitTs) i++;
   }
+  trades.ttlCancels = ttlCancels;
   return trades;
 }
 
@@ -306,11 +344,13 @@ console.log('-------  -------  ----  ----  ----  -----   --------   --------   -
 
 const rows = [];
 const allTrades = [];
+let totalTtlCancels = 0;
 for (const f of files) {
   const symbol = f.split('-')[0];
   const bars5 = JSON.parse(readFileSync(path.join(FIX_DIR, f), 'utf8'));
   const trades = backtestAsset(symbol, bars5);
   if (!trades) { continue; }  // no contract meta — skip
+  totalTtlCancels += (trades.ttlCancels || 0);
   for (const t of trades) allTrades.push({ ...t, symbol });
   const s = summarize(symbol, trades);
   rows.push(s);
@@ -355,6 +395,7 @@ console.log('');
 console.log(`Net $ on $${BALANCE} starting: $${agg.totalUsd.toFixed(2)} after 90d (${((agg.totalUsd/BALANCE)*100).toFixed(1)}% return on bankroll)`);
 console.log(`Per-trade R after fees: ${aggExpR.toFixed(3)}R · Win rate: ${(aggWin*100).toFixed(1)}% (BE at RR=${RR} is ${(100/(1+RR)).toFixed(1)}%)`);
 console.log(`Total fees paid: $${agg.totalFees.toFixed(2)}`);
+console.log(`TTL cancels (no fill within 180s): ${totalTtlCancels} (would-have-fired but order timed out)${TTL_REALISTIC ? '' : ' — TTL gate DISABLED via --no-ttl'}`);
 console.log(`Status: ${agg.totalUsd > 0 ? '✅ NET POSITIVE' : '❌ net negative'}`);
 
 // Machine-readable summary — npm run eval consumes this to diff against
