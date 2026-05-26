@@ -106,6 +106,13 @@ const TTL_REALISTIC       = !args['no-ttl'];
 // one bar; we round up to 1 since we can't sub-sample bars). Use 2-3 to
 // model what happens if MAKER_ORDER_TTL_MS is increased.
 const TTL_BARS            = Math.max(1, Number(args['ttl-bars'] ?? 1));
+// --no-1m-fill disables the sub-bar 1m TTL gate. When 1m fixtures are
+// available (tests/fixtures/{SYMBOL}-30d-Min1.json), the backtest uses
+// them to model the real 180s TTL exactly instead of approximating with
+// a 5m bar bracket. Per the 1m diagnostic, the 5m bracket over-counts
+// fills by ~17-22%; 1m closes that gap.
+const USE_1M_FILL         = !args['no-1m-fill'];
+const TTL_MS              = 180_000;
 
 const KILLZONES_UTC = [
   { startH: 0,  startM: 0,  endH: 4,  endM: 0 },
@@ -195,6 +202,38 @@ function resolve(bars5, dir, entry, sl, tp, startIdx) {
   return { outcome: 'be', exitPrice: bars5[bars5.length - 1].c, exitTs: bars5[bars5.length - 1].t, holdBars: bars5.length - startIdx };
 }
 
+// Load matching 1m fixture for sub-bar TTL fill modelling. Returns
+// { bars1m, firstTs, lastTs } or null when no fixture exists. The 1m
+// fixtures are pulled separately (npm run dump-fixtures --interval=Min1
+// --days=30) and only exist for the live symbols (SOL/XRP/BTC).
+function load1mFill(symKey) {
+  if (!USE_1M_FILL) return null;
+  try {
+    const bars1m = JSON.parse(readFileSync(path.join(FIX_DIR, `${symKey}-30d-Min1.json`), 'utf8'));
+    if (!Array.isArray(bars1m) || !bars1m.length) return null;
+    return { bars1m, firstTs: bars1m[0].t, lastTs: bars1m[bars1m.length - 1].t };
+  } catch (e) { return null; }
+}
+
+// Binary search: first 1m bar index with t >= ts.
+function find1mStart(bars1m, ts) {
+  let lo = 0, hi = bars1m.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (bars1m[m].t < ts) lo = m + 1;
+    else hi = m;
+  }
+  return lo;
+}
+
+// Slice 1m bars whose t is in [tStart, tStart+TTL_MS). Caller passes
+// these as `futureBars` to checkPostOnlyTtlFill.
+function slice1mWindow(bars1m, tStart) {
+  const start = find1mStart(bars1m, tStart);
+  const end = find1mStart(bars1m, tStart + TTL_MS);
+  return bars1m.slice(start, end);
+}
+
 // Compute the qty the live trader would size at given balance, mirroring
 // azc-trader.mjs's tryFire() math. Returns the qty + the resulting notional.
 function sizeTrade(meta, entry, stopDist, balance, riskPct = RISK_PCT) {
@@ -224,9 +263,12 @@ function backtestAsset(symbol, bars5) {
     return bars1h.slice(0, idx);
   };
 
+  const fill1m = load1mFill(symKey);
   const trades = [];
   let cooldownUntil = 0;
   let ttlCancels = 0;
+  let fill1mUsed = 0;
+  let fill5mFallback = 0;
   let i = LOOKBACK_BARS;
   while (i < bars5.length) {
     const b = bars5[i];
@@ -238,15 +280,33 @@ function backtestAsset(symbol, bars5) {
     // in trader-signal.mjs. Backtest mirrors live order placement so
     // expectancy reflects only fills that would have actually happened.
     if (TTL_REALISTIC) {
-      const fill = checkPostOnlyTtlFill({
-        dir: cand.dir, entry: cand.entry, fireBarClose: b.c,
-        futureBars: bars5.slice(i + 1, i + 1 + TTL_BARS),
-        ttlBars: TTL_BARS,
-      });
+      const tFireClose = b.t + 5 * 60_000;
+      // Use 1m data when its window covers this fire's full TTL window;
+      // otherwise fall back to the coarse 5m bar bracket. The 1m gate is
+      // accurate to the second; the 5m gate over-counts by ~17-22% (per
+      // tests/ttl-resolution-diag.mjs).
+      let fill;
+      const have1m = fill1m && tFireClose >= fill1m.firstTs && tFireClose + TTL_MS <= fill1m.lastTs;
+      if (have1m) {
+        const futureBars = slice1mWindow(fill1m.bars1m, tFireClose);
+        fill = checkPostOnlyTtlFill({
+          dir: cand.dir, entry: cand.entry, fireBarClose: b.c,
+          futureBars, ttlBars: futureBars.length,
+        });
+        fill1mUsed += 1;
+      } else {
+        fill = checkPostOnlyTtlFill({
+          dir: cand.dir, entry: cand.entry, fireBarClose: b.c,
+          futureBars: bars5.slice(i + 1, i + 1 + TTL_BARS),
+          ttlBars: TTL_BARS,
+        });
+        fill5mFallback += 1;
+      }
       if (!fill.filled) { ttlCancels += 1; i++; continue; }
-      // Resolution starts on the fill bar (i + fillBarOffset). resolve()
-      // walks from startIdx + 1, so step i to fillBar - 1.
-      if (fill.fillBarOffset > 1) i += fill.fillBarOffset - 1;
+      // Resolution starts from the 5m bar containing the fill. For the
+      // 1m path, we assume bar i+1 owns the fill (sub-bar timing isn't
+      // modelled in resolve()); for the 5m path, step i to fillBar - 1.
+      if (!have1m && fill.fillBarOffset > 1) i += fill.fillBarOffset - 1;
     }
     const res = resolve(bars5, cand.dir, cand.entry, cand.sl, cand.tp, i);
     // Size the trade against current balance — matches live trader sizing
@@ -294,6 +354,8 @@ function backtestAsset(symbol, bars5) {
     while (i < bars5.length && bars5[i].t <= res.exitTs) i++;
   }
   trades.ttlCancels = ttlCancels;
+  trades.fill1mUsed = fill1mUsed;
+  trades.fill5mFallback = fill5mFallback;
   return trades;
 }
 
@@ -349,12 +411,16 @@ console.log('-------  -------  ----  ----  ----  -----   --------   --------   -
 const rows = [];
 const allTrades = [];
 let totalTtlCancels = 0;
+let totalFill1m = 0;
+let totalFill5m = 0;
 for (const f of files) {
   const symbol = f.split('-')[0];
   const bars5 = JSON.parse(readFileSync(path.join(FIX_DIR, f), 'utf8'));
   const trades = backtestAsset(symbol, bars5);
   if (!trades) { continue; }  // no contract meta — skip
   totalTtlCancels += (trades.ttlCancels || 0);
+  totalFill1m += (trades.fill1mUsed || 0);
+  totalFill5m += (trades.fill5mFallback || 0);
   for (const t of trades) allTrades.push({ ...t, symbol });
   const s = summarize(symbol, trades);
   rows.push(s);
@@ -400,6 +466,11 @@ console.log(`Net $ on $${BALANCE} starting: $${agg.totalUsd.toFixed(2)} after 90
 console.log(`Per-trade R after fees: ${aggExpR.toFixed(3)}R · Win rate: ${(aggWin*100).toFixed(1)}% (BE at RR=${RR} is ${(100/(1+RR)).toFixed(1)}%)`);
 console.log(`Total fees paid: $${agg.totalFees.toFixed(2)}`);
 console.log(`TTL cancels (no fill within 180s): ${totalTtlCancels} (would-have-fired but order timed out)${TTL_REALISTIC ? '' : ' — TTL gate DISABLED via --no-ttl'}`);
+if (TTL_REALISTIC) {
+  const totalFills = totalFill1m + totalFill5m;
+  const pct1m = totalFills > 0 ? (totalFill1m / totalFills * 100).toFixed(0) : '0';
+  console.log(`Fill resolution: ${totalFill1m} fires via 1m bars (${pct1m}% accurate to 180s), ${totalFill5m} via 5m bracket fallback`);
+}
 console.log(`Status: ${agg.totalUsd > 0 ? '✅ NET POSITIVE' : '❌ net negative'}`);
 
 // Machine-readable summary — npm run eval consumes this to diff against
