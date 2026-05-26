@@ -4,6 +4,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLearningFile } from './trade-learnings.mjs';
+import { buildStats } from './trade-stats.mjs';
 import { authedWriteWith } from './relay-auth.mjs';
 import { callMexcSigned, ALLOWED_PATH_PREFIX as MEXC_ALLOWED } from './mexc-signer.mjs';
 
@@ -496,6 +497,10 @@ const server = http.createServer(async (req, res) => {
       const tfsParam = (url.searchParams.get('tfs') || '1m,5m,15m,1h,4h,1d').split(',').map(s => s.trim()).filter(Boolean);
       const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '60', 10) || 60, 22), 300);
       try { return sendJson(res, 200, await us100Bars(tfsParam, limit), CORS_HEADERS); }
+      catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
+    }
+    if (url.pathname === '/stats' && req.method === 'GET') {
+      try { return sendJson(res, 200, await buildStats(LEARN_ROOT), CORS_HEADERS); }
       catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
     }
     if (url.pathname === '/actions' && req.method === 'GET') {
