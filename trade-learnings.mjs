@@ -27,6 +27,60 @@ export function learnFileSlug(payload) {
   return `${date}-${time}-${sym}-${side}.md`;
 }
 
+// Auto-derive a post-mortem from the fire context. The trader has every
+// number it needs at close time, so an empty "_To fill in_" placeholder
+// is wasted signal. Heuristics here are mechanical (not LLM) so the same
+// payload always produces the same text — easy to test and review.
+export function generatePostMortem(p) {
+  if (!p || typeof p !== 'object') return '';
+  const outcome = String(p.outcome || '').toLowerCase();
+  if (!['win', 'loss', 'be'].includes(outcome)) return '';
+  const r = Number(p.rMultiple);
+  const acc = p.accounting || {};
+  const gross = Number(acc.grossUsd);
+  const fees = Number.isFinite(Number(acc.feeUsdOpen)) && Number.isFinite(Number(acc.feeUsdClose))
+    ? Math.abs(Number(acc.feeUsdOpen)) + Math.abs(Number(acc.feeUsdClose)) : null;
+  const holdH = Number.isFinite(Number(acc.holdMs)) ? Number(acc.holdMs) / 3600000 : null;
+  const fvgBodyPct = Number(p.fvgBodyPct);
+  const session = String(p.session || '').toLowerCase();
+  const bias = String(p.bias || '').toLowerCase();
+  const dir = String(p.side || '').toLowerCase() === 'long' ? 'bull' : 'bear';
+  const lines = [];
+
+  if (outcome === 'loss') {
+    if (Number.isFinite(r) && Math.abs(r) < 0.85) {
+      lines.push(`Early exit at ${r.toFixed(2)}R before stop — not a clean rule-based -1R fill. Likely orphan-cleanup/time-stop path; verify exit code didn't bail prematurely.`);
+    } else {
+      lines.push(`Clean SL hit at ${Number.isFinite(r) ? r.toFixed(2) : '—'}R. Setup invalidated by adverse move beyond stop buffer.`);
+    }
+    if (bias && (bias === dir || bias === (dir === 'bull' ? 'bull' : 'bear'))) {
+      lines.push(`HTF agreed but trade still failed — 5m noise inside HTF trend; tighten FVG quality threshold.`);
+    }
+    if (session === 'asia') {
+      lines.push(`Asia killzone is lower-volume — edge thinner here than NY/London.`);
+    }
+    if (Number.isFinite(fvgBodyPct) && fvgBodyPct < 0.0020) {
+      lines.push(`FVG body ${(fvgBodyPct*100).toFixed(2)}% is below 0.20% — gap too thin to defend the entry.`);
+    }
+  } else if (outcome === 'win') {
+    lines.push(`Hit TP at ${Number.isFinite(r) ? '+' + r.toFixed(2) : '—'}R. Setup played as designed.`);
+    if (Array.isArray(p.confluences) && p.confluences.length) {
+      lines.push(`Aligned confluences: ${p.confluences.join(', ')}.`);
+    }
+    if (holdH != null && holdH < 0.5) {
+      lines.push(`Fast resolution (${(holdH*60).toFixed(0)}m hold) — strong intra-session momentum.`);
+    }
+  } else if (outcome === 'be') {
+    lines.push(`Closed flat near entry. Neither rule (stop or target) reached — likely time-stop or breakeven trail; weak learning signal either direction.`);
+  }
+
+  if (fees != null && Number.isFinite(gross) && Math.abs(gross) > 0 && fees / Math.abs(gross) > 0.30) {
+    lines.push(`Fees were ${((fees / Math.abs(gross)) * 100).toFixed(0)}% of gross — micro-size is fee-sensitive; only top-grade signals justify it.`);
+  }
+
+  return lines.join(' ');
+}
+
 export function formatLearningMarkdown(p) {
   const lines = [];
   const f = (n, d = 4) => (Number.isFinite(Number(n)) ? Number(n).toFixed(d) : '—');
@@ -75,10 +129,11 @@ export function formatLearningMarkdown(p) {
   lines.push((p?.analysis || '_(no analysis text recorded)_').trim());
   lines.push('');
   lines.push('## Post-mortem');
-  lines.push('_To fill in: what went right, what went wrong, what rule to apply next time._');
-  if (p?.postMortem) {
-    lines.push('');
-    lines.push(p.postMortem.trim());
+  const pm = (p?.postMortem && String(p.postMortem).trim()) || generatePostMortem(p);
+  if (pm) {
+    lines.push(pm.trim());
+  } else {
+    lines.push('_To fill in: what went right, what went wrong, what rule to apply next time._');
   }
   lines.push('');
   return lines.join('\n');

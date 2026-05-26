@@ -680,6 +680,8 @@ async function reconcileClosedPosition() {
       grade: ctx.tier || 'auto',
       bias: ctx.htfDir || null,
       session: ctx.session || null,
+      fvgBodyPct: ctx.fvgBodyPct,
+      distPct: ctx.distPct,
       confluences,
       analysis,
       accounting: {

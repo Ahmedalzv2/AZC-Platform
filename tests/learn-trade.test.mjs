@@ -8,6 +8,7 @@ import {
   learnFileSlug,
   formatLearningMarkdown,
   writeLearningFile,
+  generatePostMortem,
 } from '../trade-learnings.mjs';
 
 describe('trade-learnings (pure)', () => {
@@ -131,7 +132,6 @@ describe('writeLearningFile', () => {
       }, root);
       assert.equal(r.ok, false);
       assert.equal(r.reason, 'bad-outcome');
-      // No bucket dirs should exist
       const items = await readdir(root);
       assert.equal(items.length, 0);
     } finally {
@@ -148,11 +148,72 @@ describe('writeLearningFile', () => {
         entry: 1, sl: 0.9, tp: 1.1,
       }, root);
       assert.equal(r.ok, true);
-      // Slugifier strips /, dots, slashes — file must live inside root/wins
       assert.equal(path.dirname(r.file), path.join(root, 'wins'));
       assert.equal(path.basename(r.file).includes('..'), false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('generatePostMortem', () => {
+  test('clean -1R loss returns clean-SL line', () => {
+    const pm = generatePostMortem({ outcome: 'loss', rMultiple: -1.0, side: 'long', bias: 'bear', session: 'ny' });
+    assert.match(pm, /Clean SL hit at -1\.00R/);
+    assert.doesNotMatch(pm, /Early exit/);
+  });
+  test('shallow loss (|r| < 0.85) flags early-exit path', () => {
+    const pm = generatePostMortem({ outcome: 'loss', rMultiple: -0.20, side: 'short', bias: 'bear', session: 'asia' });
+    assert.match(pm, /Early exit at -0\.20R/);
+    assert.match(pm, /verify exit code/i);
+  });
+  test('asia + thin FVG loss surfaces both warnings', () => {
+    const pm = generatePostMortem({ outcome: 'loss', rMultiple: -1.0, side: 'short', session: 'asia', fvgBodyPct: 0.0015 });
+    assert.match(pm, /Asia killzone/);
+    assert.match(pm, /below 0\.20%/);
+  });
+  test('win records R achieved + aligned confluences', () => {
+    const pm = generatePostMortem({ outcome: 'win', rMultiple: 1.5, side: 'long', confluences: ['htf-agree:bull', 'tier:top2'] });
+    assert.match(pm, /Hit TP at \+1\.50R/);
+    assert.match(pm, /htf-agree:bull/);
+  });
+  test('be returns neutral note', () => {
+    const pm = generatePostMortem({ outcome: 'be', rMultiple: 0, side: 'long' });
+    assert.match(pm, /Closed flat/);
+  });
+  test('unknown outcome returns empty string', () => {
+    assert.equal(generatePostMortem({ outcome: 'pending' }), '');
+    assert.equal(generatePostMortem(null), '');
+  });
+  test('fee drag warning fires when fees > 30% of gross', () => {
+    const pm = generatePostMortem({
+      outcome: 'win', rMultiple: 1.5, side: 'long',
+      accounting: { grossUsd: 0.10, feeUsdOpen: -0.02, feeUsdClose: -0.02 },
+    });
+    assert.match(pm, /Fees were 40% of gross/);
+  });
+  test('formatLearningMarkdown auto-derives post-mortem when none supplied', () => {
+    const md = formatLearningMarkdown({
+      timestamp: Date.UTC(2026, 4, 26, 1, 53),
+      symbol: 'LTC', side: 'short', outcome: 'loss',
+      entry: 52.23, sl: 52.33, tp: 52.07,
+      realizedUsd: -0.0068, rMultiple: -0.20,
+      bias: 'bear', session: 'asia', fvgBodyPct: 0.0017,
+    });
+    assert.match(md, /## Post-mortem/);
+    assert.match(md, /Early exit at -0\.20R/);
+    assert.doesNotMatch(md, /_To fill in/);
+  });
+  test('formatLearningMarkdown still shows placeholder when context has nothing to say', () => {
+    const md = formatLearningMarkdown({ symbol: 'X', side: 'long', outcome: 'pending' });
+    assert.match(md, /_To fill in/);
+  });
+  test('explicit postMortem takes precedence over auto-generation', () => {
+    const md = formatLearningMarkdown({
+      symbol: 'X', side: 'long', outcome: 'win',
+      rMultiple: 1.5, postMortem: 'manual override text',
+    });
+    assert.match(md, /manual override text/);
+    assert.doesNotMatch(md, /Hit TP at/);
   });
 });
