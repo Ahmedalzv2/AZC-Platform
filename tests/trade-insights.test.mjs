@@ -7,6 +7,7 @@ import {
   rankLessons,
   buildInsights,
   formatInsightsMarkdown,
+  binByPct,
 } from '../trade-insights.mjs';
 
 const sampleBody = (postMortem) => [
@@ -122,5 +123,45 @@ describe('buildInsights + formatInsightsMarkdown', () => {
     const insights = buildInsights({ trades: [], files: [], now: 0 });
     const md = formatInsightsMarkdown(insights);
     assert.match(md, /None yet/);
+  });
+});
+
+describe('binByPct', () => {
+  it('buckets trades into fixed pct bins and computes per-bin expR', () => {
+    const trades = [
+      { fvgBodyPct: 0.0012, outcome: 'win',  rMultiple: 1.8 },
+      { fvgBodyPct: 0.0014, outcome: 'loss', rMultiple: -1 },
+      { fvgBodyPct: 0.0014, outcome: 'win',  rMultiple: 1.8 },
+      { fvgBodyPct: 0.0025, outcome: 'loss', rMultiple: -1 },
+      { fvgBodyPct: 0.0060, outcome: 'win',  rMultiple: 1.8 },
+    ];
+    const bins = binByPct(trades, 'fvgBodyPct', [0.0010, 0.0015, 0.0020, 0.0030, 0.0050, 0.0100]);
+    assert.equal(bins.length, 5);
+    assert.equal(bins[0].label, '0.10-0.15%');
+    assert.equal(bins[0].n, 3);     // 0.12, 0.14, 0.14
+    assert.equal(bins[0].wins, 2);
+    assert.equal(bins[0].losses, 1);
+    assert.equal(bins[2].n, 1);     // 0.25
+    assert.equal(bins[4].n, 1);     // 0.60
+  });
+
+  it('skips trades with missing field value', () => {
+    const bins = binByPct(
+      [{ outcome: 'win', rMultiple: 1.8 }, { fvgBodyPct: 0.0012, outcome: 'win', rMultiple: 1.8 }],
+      'fvgBodyPct',
+      [0.0010, 0.0020]
+    );
+    assert.equal(bins[0].n, 1);
+  });
+
+  it('surfaces in INSIGHTS markdown under "By FVG body size"', () => {
+    const trades = [
+      { ts: 1, symbol: 'X', side: 'LONG',  outcome: 'win',  rMultiple: 1.8, fvgBodyPct: 0.0012 },
+      { ts: 2, symbol: 'X', side: 'SHORT', outcome: 'loss', rMultiple: -1, fvgBodyPct: 0.0014 },
+    ];
+    const insights = buildInsights({ trades, files: [], now: 3 });
+    const md = formatInsightsMarkdown(insights);
+    assert.match(md, /By FVG body size/);
+    assert.match(md, /0\.10-0\.15%/);
   });
 });

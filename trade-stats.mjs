@@ -21,6 +21,19 @@ export function parseLearningFile(filename, body) {
   const sessionM = body.match(/^- Session:\s+(\S+)/m);
   const gradeM   = body.match(/^- Grade:\s+(\S+)/m);
   const biasM    = body.match(/^- Bias:\s+(\S+)/m);
+  // Confluences line carries the body/dist metrics the trader recorded
+  // at fire time. Format example:
+  //   - Confluences: htf-agree:bear, tier:top2, kz:asia, fvg-body:0.12%, fvg-dist:0.051%
+  const confluenceM = body.match(/^- Confluences:\s+(.+)$/m);
+  const confluences = confluenceM ? confluenceM[1].split(',').map(s => s.trim()) : [];
+  const pickConfluencePct = (label) => {
+    const hit = confluences.find(c => c.startsWith(label + ':'));
+    if (!hit) return null;
+    const n = Number(hit.split(':')[1].replace('%', ''));
+    return Number.isFinite(n) ? n / 100 : null;
+  };
+  const fvgBodyPct = pickConfluencePct('fvg-body');
+  const fvgDistPct = pickConfluencePct('fvg-dist');
 
   const outcome = outcomeM ? outcomeM[1].toLowerCase() : null;
   const realizedUsd = rM ? Number(rM[1]) : null;
@@ -29,7 +42,7 @@ export function parseLearningFile(filename, body) {
   const grade       = gradeM && gradeM[1] !== '—' ? gradeM[1] : null;
   const bias        = biasM && biasM[1] !== '—' ? biasM[1] : null;
 
-  return { filename, ts, symbol, side, outcome, realizedUsd, rMultiple, session, grade, bias };
+  return { filename, ts, symbol, side, outcome, realizedUsd, rMultiple, session, grade, bias, fvgBodyPct, fvgDistPct };
 }
 
 export function summarise(trades) {
