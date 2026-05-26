@@ -61,25 +61,21 @@ if (!API_KEY || !API_SECRET) {
 }
 
 // Live symbol set. Re-screened 2026-05-26 against the realistic-TTL
-// backtest (tests/backtest-azc-trader.mjs models the live 180s POST_ONLY
-// limit-order TTL and rejects "wrong-side" fires). The old screen
-// assumed instant-fill at FVG mid and overstated every symbol's edge by
-// ~0.3R/trade.
+// backtest extended to 365d of 5m bars (PR #224). The 90d window had
+// regime bias toward BTC; over a full year only SOL and XRP keep a
+// (small) positive expectancy:
 //
-// Under realistic TTL only three symbols carry positive expectancy:
-//     BTC  35.5% WR / +0.074R per trade / +$5.82  per $50/90d
-//     SOL  36.8%    / +0.106R           / +$4.64
-//     XRP  38.0%    / +0.144R           / +$8.26
+//   symbol   90d realistic    365d realistic
+//   BTC      +0.074R / +$5.82   -0.086R / -$17.26   ← dropped
+//   SOL      +0.106R / +$4.64   +0.055R / +$13.42
+//   XRP      +0.144R / +$8.26   +0.035R / +$11.28
 //
-// Every other 90d symbol bleeds: ARB −0.096R, AVAX −0.152R, DOT +0.013R
-// (BE), DOGE −0.113R, LTC −0.192R, NEAR −0.056R, SUI −0.185R. Combined
-// 10-symbol set is −0.122R/trade / −$100/90d.
-//
-// Aggregate at this 3-symbol set, 90d realistic-TTL: ~+$18.72 net on
-// $50 — small but the only configuration that is net-positive after
-// modelling order TTL. Re-evaluate after ~30 live trades have
-// accumulated post-#221 to see if real expectancy matches.
-const SYMBOLS = ['BTC_USDT', 'SOL_USDT', 'XRP_USDT'];
+// Aggregate at SOL+XRP, 365d realistic-TTL: ~+$24.70 net on $50/year.
+// Small edge, but the only configuration that is net-positive over a
+// full market cycle once order TTL is modelled. Re-evaluate after ~30
+// clean live trades (post-#221 stop-verify fix) to see whether reality
+// matches the realistic backtest or differs.
+const SYMBOLS = ['SOL_USDT', 'XRP_USDT'];
 // Methodology knobs (RR, MAX_HOLD_MS, MIN_FVG_BODY_PCT, risk tiers, the
 // 2L/3L/5L loss-streak cascade, etc.) live in ./trader-config.mjs so the
 // proof harness (tests/backtest-azc-trader.mjs) imports the same values
