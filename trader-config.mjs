@@ -41,3 +41,19 @@ export const MAX_CONSECUTIVE_LOSSES      = 5;
 // over 90d vs killzone-gated, at -6pp win rate. Volume wins. The
 // killzone label is still recorded on every fire for post-mortem.
 export const KILLZONE_GATE_ENABLED = false;
+
+// Side-aware live drift gate. Backtest at 90d/2398 trades says both
+// LONG (+0.182R/trade) and SHORT (+0.283R/trade) are net-positive, so
+// the default posture is ENABLED for both. These thresholds only kick
+// in if live LIVE diverges from backtest after a meaningful sample:
+//
+//   below SIDE_GATE_DOWNSHIFT_R  → halve risk on that side
+//   below SIDE_GATE_BLOCK_R      → skip fires on that side entirely
+//
+// SIDE_GATE_MIN_SAMPLE guards against acting on small-sample noise.
+// 20 is a compromise: enough to distinguish edge from variance at the
+// methodology's ~47% WR, small enough that real regime shifts trip the
+// gate within a few sessions.
+export const SIDE_GATE_MIN_SAMPLE   = 20;
+export const SIDE_GATE_DOWNSHIFT_R  = -0.10;
+export const SIDE_GATE_BLOCK_R      = -0.30;
