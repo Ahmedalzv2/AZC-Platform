@@ -53,6 +53,21 @@ describe('trader-events', () => {
     assert.equal(result.trimmed, 0);
   });
 
+  it('round-trips mixed kind:scan + kind:decision payloads', async () => {
+    const mixedPath = path.join(tmp, 'mixed.jsonl');
+    await appendScanEvent(mixedPath, { ts: 1, cycle: 1, kind: 'scan', scan: [{ symbol: 'BTC', skip: 'no-fvg' }] });
+    await appendScanEvent(mixedPath, { ts: 2, cycle: 1, kind: 'decision', action: 'skip', vetoed_by: 'side-blocked', reason: 'LONG: live -0.384R/trade', symbol: null });
+    await appendScanEvent(mixedPath, { ts: 3, cycle: 2, kind: 'decision', action: 'fire', vetoed_by: null, reason: null, symbol: 'SOL_USDT', orderId: '123', entry: 1.5, sl: 1.4, tp: 1.7 });
+    const events = await readTailEvents(mixedPath, 10);
+    assert.equal(events.length, 3);
+    assert.equal(events[0].kind, 'scan');
+    assert.equal(events[1].kind, 'decision');
+    assert.equal(events[1].action, 'skip');
+    assert.equal(events[1].vetoed_by, 'side-blocked');
+    assert.equal(events[2].action, 'fire');
+    assert.equal(events[2].symbol, 'SOL_USDT');
+  });
+
   it('appendScanEvent silently trims after TRIM_EVERY appends', async () => {
     const ringPath = path.join(tmp, 'ring.jsonl');
     // TRIM_EVERY=200, MAX_LINES=2000 — write 2300 entries and confirm
