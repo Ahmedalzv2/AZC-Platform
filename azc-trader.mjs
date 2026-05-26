@@ -19,6 +19,7 @@ import { constants as fsConst } from 'node:fs';
 import path from 'node:path';
 import { callMexcSigned } from './mexc-signer.mjs';
 import { writeLearningFile } from './trade-learnings.mjs';
+import { writeInsightsFile } from './trade-insights.mjs';
 import { collectTrades, summarise } from './trade-stats.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
 import { KILLZONES_UTC, inKillzone, currentKillzoneName, nextKillzoneBoundary } from './trader-killzones.mjs';
@@ -704,6 +705,11 @@ async function reconcileClosedPosition() {
   // Refresh LONG/SHORT live expectancy now that the post-mortem just landed.
   // Side gate reacts on the next fire-decision cycle.
   await recomputeSideStatus();
+  // Roll up the new lesson into trade-learnings/INSIGHTS.md so the
+  // dashboard reflects it on next read. Best-effort — the post-mortem
+  // file is canonical, this is a derived view.
+  try { await writeInsightsFile(LEARN_ROOT); }
+  catch (e) { log('[insights-refresh-fail]', e.message); }
 }
 
 async function stopFlagExists() {

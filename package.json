@@ -9,6 +9,7 @@
     "test:watch": "TZ=UTC node --test --watch 'tests/*.test.mjs'",
     "dump-fixtures": "node tests/dump-fixtures.mjs",
     "eval": "node tests/eval-diff.mjs",
-    "eval:bless": "node tests/eval-diff.mjs --bless"
+    "eval:bless": "node tests/eval-diff.mjs --bless",
+    "insights": "node -e \"import('./trade-insights.mjs').then(m=>m.writeInsightsFile('./trade-learnings')).then(r=>console.log(r))\""
   }
 }
