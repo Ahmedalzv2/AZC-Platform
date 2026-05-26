@@ -1490,6 +1490,23 @@
       font-size: 10px;
       letter-spacing: 0.04em;
     }
+    /* Server-side AZC trader pill — stacks ABOVE the browser AUTO pill so
+       both stay visible without overlapping the bottom nav. Without this
+       override the desktop bottom:64px placement collides with the 64px
+       bottom-nav rail, which is the "TRADER HALTED banner overlaps
+       tabs" report from mobile. Padding/font shrunk so the long HALT
+       status text doesn't span the screen width either. */
+    #azcTraderSwitch {
+      right: 10px;
+      bottom: calc(118px + env(safe-area-inset-bottom));
+      padding: 5px 12px;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      max-width: calc(100vw - 20px);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
 
     /* Compact top bar. Brand collapses to flex:0 so the timing segments
        (Clock, Session, Next KZ) take their natural width and fit on a
@@ -1600,6 +1617,33 @@
     /* Forms/inputs */
     input, select, textarea {
       font-size: 16px !important; /* prevents iOS zoom */
+    }
+
+    /* Capital strip — 2x2 grid on phones. The default flex-wrap stretched
+       4 chips across one row at ~85px each, which clipped labels and
+       collided dollar signs ("FP $100 $562" looked like garbage). Total
+       chip drops to a full-width row below so the gold figure stays
+       legible. */
+    .cap-strip-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .cap-chip {
+      padding: 6px 10px;
+      font-size: 11px;
+      min-width: 0;
+    }
+    .cap-chip-val {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cap-total-chip {
+      grid-column: 1 / -1;
+      margin-left: 0;
+      justify-content: space-between;
+      padding: 6px 12px;
     }
   }
 
