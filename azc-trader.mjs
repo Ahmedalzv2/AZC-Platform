@@ -597,10 +597,21 @@ async function verifyExchangeStopOrPanicClose(pos, ctx, retries = 5, delayMs = 2
     });
     const plans = Array.isArray(r.json?.data?.resultList) ? r.json.data.resultList
                 : Array.isArray(r.json?.data) ? r.json.data : [];
+    // MEXC's stoporder/list response uses stopLossPrice/takeProfitPrice
+    // on the per-position TP/SL plan; there is no triggerPrice field.
+    // A guard is "real" only if it belongs to THIS position and is
+    // still active (state===1 = untriggered; isFinished===0 means the
+    // same on rows that omit state). Without these filters we accept
+    // historical, cancelled, or unrelated plans and never panic-close —
+    // strictly worse. Without the right field name we accept nothing
+    // and panic-close every fill — also strictly worse. Both matter.
     const hasGuard = plans.some(p => {
-      const trig = +p.triggerPrice;
-      if (!isFinite(trig)) return false;
-      return ctx.dir === 'bull' ? trig < ctx.entry : trig > ctx.entry;
+      if (String(p.positionId || '') !== String(ctx.posId || '')) return false;
+      const stateOk = p.state === 1 || p.isFinished === 0;
+      if (!stateOk) return false;
+      const sl = +p.stopLossPrice;
+      if (!isFinite(sl) || sl <= 0) return false;
+      return ctx.dir === 'bull' ? sl < ctx.entry : sl > ctx.entry;
     });
     if (hasGuard) {
       log(`[stop-verify-ok] ${ctx.symbol} — ${plans.length} plan(s), guard present (attempt ${attempt}/${retries})`);
