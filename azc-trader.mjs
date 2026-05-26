@@ -44,6 +44,7 @@ import {
   FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT, MIN_FVG_BODY_PCT, MIN_STOP_PCT,
   RISK_PCT_DEFAULT, RISK_PCT_TOP_2, RISK_PCT_BEST,
   SIDE_GATE_MIN_SAMPLE, SIDE_GATE_DOWNSHIFT_R, SIDE_GATE_BLOCK_R,
+  SIDE_GATE_SAMPLE_SINCE_TS,
 } from './trader-config.mjs';
 
 const SIGNAL_CONFIG = {
@@ -112,6 +113,7 @@ let lastError = null;
 let lastCycleAt = 0;
 let cycleCount = 0;
 let lastScanSummary = null;           // top candidates from last scan, surfaced in state.json
+let gateCutoffLogged = false;         // log SIDE_GATE_SAMPLE_SINCE_TS filter once per boot
 // Side-aware live drift: { long: {n, expR, status}, short: {n, expR, status} }
 //   status ∈ 'enabled' | 'downshifted' | 'blocked'
 // Default both 'enabled' (backtest says both sides profitable). The gate
@@ -185,6 +187,15 @@ async function recomputeSideStatus() {
   let trades;
   try { trades = await collectTrades(LEARN_ROOT); }
   catch (e) { log('[side-stats] collect failed', e.message); return; }
+  if (SIDE_GATE_SAMPLE_SINCE_TS > 0) {
+    const before = trades.length;
+    trades = trades.filter(t => Number(t.ts) >= SIDE_GATE_SAMPLE_SINCE_TS);
+    const filtered = before - trades.length;
+    if (filtered > 0 && !gateCutoffLogged) {
+      log(`[gate-cutoff] excluding ${filtered} pre-${new Date(SIDE_GATE_SAMPLE_SINCE_TS).toISOString()} trades from gate sample (bug-era pre-#221)`);
+      gateCutoffLogged = true;
+    }
+  }
   const longTrades  = trades.filter(t => String(t.side).toUpperCase() === 'LONG');
   const shortTrades = trades.filter(t => String(t.side).toUpperCase() === 'SHORT');
   const longSum  = summarise(longTrades);

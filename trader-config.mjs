@@ -61,3 +61,13 @@ export const KILLZONE_GATE_ENABLED = false;
 export const SIDE_GATE_MIN_SAMPLE   = 10;
 export const SIDE_GATE_DOWNSHIFT_R  = -0.10;
 export const SIDE_GATE_BLOCK_R      = -0.30;
+
+// Trade-history cutoff for side/session drift-gate sampling. Trades
+// resolved before this timestamp are excluded from the gate's
+// expectancy calculation — they happened during the stop-verify panic-
+// close bug (PR #221, merged 2026-05-26T15:43:42Z) and don't represent
+// the methodology's real behaviour. Without this filter, 10
+// bug-contaminated LONG losses keep the LONG side gated to "blocked"
+// for ~14 healthy live trades before naturally diluting. Set to 0 to
+// disable the cutoff and use all history.
+export const SIDE_GATE_SAMPLE_SINCE_TS = 1779810222000;  // 2026-05-26T15:43:42Z (PR #221 merge)
