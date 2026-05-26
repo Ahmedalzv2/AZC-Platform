@@ -361,22 +361,22 @@ console.log(`Status: ${agg.totalUsd > 0 ? '✅ NET POSITIVE' : '❌ net negative
 // the checked-in baseline so config tweaks can be argued from data, not
 // memory. --json=- writes to stdout, --json=path writes to a file.
 if (args.json) {
-  const longSum = (() => {
-    const w = longTrades.filter(t => t.outcome === 'win').length;
-    const l = longTrades.filter(t => t.outcome === 'loss').length;
-    const r = longTrades.reduce((a, t) => a + t.rMultiple, 0);
-    return { n: longTrades.length, wins: w, losses: l, totalR: r };
-  })();
-  const shortSum = (() => {
-    const w = shortTrades.filter(t => t.outcome === 'win').length;
-    const l = shortTrades.filter(t => t.outcome === 'loss').length;
-    const r = shortTrades.reduce((a, t) => a + t.rMultiple, 0);
-    return { n: shortTrades.length, wins: w, losses: l, totalR: r };
-  })();
+  const sideSum = (trades) => {
+    const w = trades.filter(t => t.outcome === 'win').length;
+    const l = trades.filter(t => t.outcome === 'loss').length;
+    const r = trades.reduce((a, t) => a + t.rMultiple, 0);
+    return { n: trades.length, wins: w, losses: l, totalR: r, expectancyR: trades.length ? r / trades.length : 0 };
+  };
+  const bySession = {};
+  for (const t of allTrades) {
+    const k = t.session || 'off';
+    (bySession[k] ||= []).push(t);
+  }
   const summary = {
     config: { BALANCE, RR, MAX_HOLD_MS, COOLDOWN_MS, HTF_SMA_LEN, FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT, MIN_FVG_BODY_PCT, MIN_STOP_PCT, KILLZONES_ENABLED, SIDE_FILTER, FEES_ENABLED, RISK_PCT },
     aggregate: { trades: agg.n, wins: agg.wins, losses: agg.losses, bes: agg.bes, winRate: aggWin, expectancyR: aggExpR, totalR: agg.totalR, netUsd: agg.totalUsd, totalFees: agg.totalFees },
-    sides: { long: longSum, short: shortSum },
+    sides: { long: sideSum(longTrades), short: sideSum(shortTrades) },
+    bySession: Object.fromEntries(Object.entries(bySession).map(([k, v]) => [k, sideSum(v)])),
     bySymbol: Object.fromEntries(rows.map(r => [r.symbol, { trades: r.n, wins: r.wins, losses: r.losses, bes: r.bes, winRate: r.winRate, expectancyR: r.expR, totalR: r.totalR, netUsd: r.totalUsd }])),
   };
   const out = JSON.stringify(summary, null, 2);
