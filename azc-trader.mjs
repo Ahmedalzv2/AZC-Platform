@@ -159,19 +159,27 @@ function log(...args) {
 // drift within ~1 close instead of accumulating losses silently. Pure
 // read + group — no exchange calls.
 // Loaded once at startup from tests/baselines/current.json — backtest
-// per-session expectancyR is the reference for "is live drifting?" log
-// lines. Threshold semantics still use the SIDE_GATE_* absolute bands
-// (live expR vs -0.30 / -0.10), matching the side-gate so the two gates
-// share one mental model.
+// per-session AND per-side expectancyR are the reference values for
+// "is live drifting?" log lines. Threshold semantics still use the
+// SIDE_GATE_* absolute bands (live expR vs -0.30 / -0.10); the backtest
+// numbers only colour the reason string. `npm run eval:bless` updates
+// both via a single write — no more duplicated hardcoded refs.
 let backtestSessionRef = {};
-async function loadBacktestSessionRef() {
+let backtestSideRef = { long: 0.182, short: 0.283 };
+async function loadBacktestRefs() {
   try {
     const { readFile } = await import('node:fs/promises');
     const raw = await readFile(path.resolve('./tests/baselines/current.json'), 'utf8');
     const parsed = JSON.parse(raw);
     backtestSessionRef = parsed.bySession || {};
+    const longRef  = parsed?.sides?.long?.expectancyR;
+    const shortRef = parsed?.sides?.short?.expectancyR;
+    backtestSideRef = {
+      long:  Number.isFinite(longRef)  ? longRef  : backtestSideRef.long,
+      short: Number.isFinite(shortRef) ? shortRef : backtestSideRef.short,
+    };
   } catch (e) {
-    log('[session-gate-boot] no baseline at tests/baselines/current.json — reason strings will lack backtest refs');
+    log('[backtest-refs-boot] no baseline at tests/baselines/current.json — reason strings will use fallback refs');
   }
 }
 
@@ -189,11 +197,10 @@ async function recomputeSideStatus() {
   const shortTrades = trades.filter(t => String(t.side).toUpperCase() === 'SHORT');
   const longSum  = summarise(longTrades);
   const shortSum = summarise(shortTrades);
-  const sideRef = { long: 0.182, short: 0.283 };
   const tagBacktest = (gate, ref) => ({ ...gate, reason: `${gate.reason} (backtest ${ref >= 0 ? '+' : ''}${ref.toFixed(3)}R/trade)` });
   const next = {
-    long:  tagBacktest(decideGate(longSum,  GATE_THRESHOLDS), sideRef.long),
-    short: tagBacktest(decideGate(shortSum, GATE_THRESHOLDS), sideRef.short),
+    long:  tagBacktest(decideGate(longSum,  GATE_THRESHOLDS), backtestSideRef.long),
+    short: tagBacktest(decideGate(shortSum, GATE_THRESHOLDS), backtestSideRef.short),
   };
   if (next.long.status !== sideStatus.long.status) {
     log(`[side-gate] LONG: ${sideStatus.long.status} → ${next.long.status} (${next.long.reason})`);
@@ -823,7 +830,7 @@ try {
 
 // Load backtest per-session reference, then compute live drift status
 // for both side and session gates so they're honest from cycle 1.
-await loadBacktestSessionRef();
+await loadBacktestRefs();
 await recomputeSideStatus();
 log(`[side-gate-boot] LONG=${sideStatus.long.status} (${sideStatus.long.reason}); SHORT=${sideStatus.short.status} (${sideStatus.short.reason})`);
 for (const [label, state] of Object.entries(sessionStatus)) {
