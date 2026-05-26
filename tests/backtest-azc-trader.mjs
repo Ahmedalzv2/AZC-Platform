@@ -356,3 +356,35 @@ console.log(`Net $ on $${BALANCE} starting: $${agg.totalUsd.toFixed(2)} after 90
 console.log(`Per-trade R after fees: ${aggExpR.toFixed(3)}R · Win rate: ${(aggWin*100).toFixed(1)}% (BE at RR=${RR} is ${(100/(1+RR)).toFixed(1)}%)`);
 console.log(`Total fees paid: $${agg.totalFees.toFixed(2)}`);
 console.log(`Status: ${agg.totalUsd > 0 ? '✅ NET POSITIVE' : '❌ net negative'}`);
+
+// Machine-readable summary — npm run eval consumes this to diff against
+// the checked-in baseline so config tweaks can be argued from data, not
+// memory. --json=- writes to stdout, --json=path writes to a file.
+if (args.json) {
+  const longSum = (() => {
+    const w = longTrades.filter(t => t.outcome === 'win').length;
+    const l = longTrades.filter(t => t.outcome === 'loss').length;
+    const r = longTrades.reduce((a, t) => a + t.rMultiple, 0);
+    return { n: longTrades.length, wins: w, losses: l, totalR: r };
+  })();
+  const shortSum = (() => {
+    const w = shortTrades.filter(t => t.outcome === 'win').length;
+    const l = shortTrades.filter(t => t.outcome === 'loss').length;
+    const r = shortTrades.reduce((a, t) => a + t.rMultiple, 0);
+    return { n: shortTrades.length, wins: w, losses: l, totalR: r };
+  })();
+  const summary = {
+    config: { BALANCE, RR, MAX_HOLD_MS, COOLDOWN_MS, HTF_SMA_LEN, FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT, MIN_FVG_BODY_PCT, MIN_STOP_PCT, KILLZONES_ENABLED, SIDE_FILTER, FEES_ENABLED, RISK_PCT },
+    aggregate: { trades: agg.n, wins: agg.wins, losses: agg.losses, bes: agg.bes, winRate: aggWin, expectancyR: aggExpR, totalR: agg.totalR, netUsd: agg.totalUsd, totalFees: agg.totalFees },
+    sides: { long: longSum, short: shortSum },
+    bySymbol: Object.fromEntries(rows.map(r => [r.symbol, { trades: r.n, wins: r.wins, losses: r.losses, bes: r.bes, winRate: r.winRate, expectancyR: r.expR, totalR: r.totalR, netUsd: r.totalUsd }])),
+  };
+  const out = JSON.stringify(summary, null, 2);
+  if (args.json === true || args.json === '-') {
+    process.stdout.write('\n' + out + '\n');
+  } else {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(args.json, out);
+    console.log(`\nJSON summary written to ${args.json}`);
+  }
+}
