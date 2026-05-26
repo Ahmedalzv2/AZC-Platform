@@ -26,6 +26,7 @@ import { loadTraderStateFromDisk } from './trader-state.mjs';
 import { KILLZONES_UTC, inKillzone, currentKillzoneName } from './trader-killzones.mjs';
 import { buildSetup } from './trader-signal.mjs';
 import { decideGate, groupBySession } from './trader-drift-gate.mjs';
+import { decideFireAction } from './trader-fire-decision.mjs';
 import {
   HTF_MIN, HTF_SMA, LOOKBACK_BARS,
   RR, MAX_HOLD_MS, COOLDOWN_MS,
@@ -416,62 +417,42 @@ async function tryFire() {
   // real edge degradation without stopping the bot on small-sample noise.
   //
   // No killzone gate either — backtest comparison showed 24/7 firing gives
-  // ~+80% more trades and +61% more total R over 90d vs killzone-gated,
-  // at the cost of 6pp lower win rate. Volume wins. The killzone label
-  // is still recorded on every fire (session field in the postmortem)
-  // for analysis.
-  if (pendingOrder)                                          return { skip: 'pending-order' };
+  // ~+80% more trades and +61% more total R over 90d vs killzone-gated.
+  // The killzone label is still recorded on every fire (session field in
+  // the postmortem) for analysis.
+  //
+  // Pure decision logic lives in trader-fire-decision.mjs so every gate
+  // path is testable without mocking MEXC. This wrapper does the I/O:
+  // scan, position check, decide, log, size, place order.
+  if (pendingOrder) return { skip: 'pending-order' };  // short-circuit the exchange call
 
   const openPositions = await getOpenPositions();
-  if (openPositions.length >= MAX_OPEN_POSITIONS)            return { skip: 'in-position' };
-
   const valid = results.filter(r => !r.skip);
-  if (!valid.length) return { skip: 'no-candidates' };
 
-  // Rank by quality. Closer to FVG mid AND HTF-agreement strength both
-  // matter — we score each candidate and pick the top. Graduated risk %
-  // depends on the candidate's rank in this scan.
-  valid.sort((a, b) => a.distPct - b.distPct);
+  const decision = decideFireAction({
+    candidates: valid,
+    pendingOrder: false,
+    openPositions: openPositions.length,
+    maxOpenPositions: MAX_OPEN_POSITIONS,
+    sideStatus,
+    sessionStatus,
+    currentSession: currentKillzoneName(Date.now()) || 'off',
+    riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
+  });
 
-  // Quality buckets:
-  //   "best" = top-1 AND its distPct is meaningfully better than #2 (margin)
-  //   "top2" = ranks #1 or #2 (or sole candidate when only one survives)
-  //   default = anything else (shouldn't happen — we only fire top-2)
-  // Side-aware gate — skip the candidate's direction if its live R/trade
-  // has drifted below SIDE_GATE_BLOCK_R after the minimum sample. Only
-  // activates after SIDE_GATE_MIN_SAMPLE trades on that side, so a fresh
-  // bot or a small streak can't trip it on noise.
-  const pick = valid[0];
-  const sideKey = pick.fvg.dir === 'bull' ? 'long' : 'short';
-  const sideState = sideStatus[sideKey];
-  if (sideState.status === 'blocked') {
-    return { skip: 'side-blocked', detail: `${sideKey.toUpperCase()}: ${sideState.reason}` };
-  }
-  // Session-aware gate — same drift logic keyed on killzone label.
-  // Skips fires when live in this session has gone below the block
-  // threshold after min sample; halves risk on downshift.
-  const sessionKey = currentKillzoneName(Date.now()) || 'off';
-  const sessionState = sessionStatus[sessionKey];
-  if (sessionState && sessionState.status === 'blocked') {
-    return { skip: 'session-blocked', detail: `${sessionKey}: ${sessionState.reason}` };
+  if (decision.action === 'skip') {
+    return decision.detail
+      ? { skip: decision.skip, detail: decision.detail }
+      : { skip: decision.skip };
   }
 
-  let tier;
-  if (valid.length === 1) {
-    tier = 'top2';
-  } else if ((valid[1].distPct - pick.distPct) / Math.max(pick.distPct, 1e-9) > 0.5) {
-    tier = 'best';
-  } else {
-    tier = 'top2';
-  }
-  let riskPct = tier === 'best' ? RISK_PCT_BEST : tier === 'top2' ? RISK_PCT_TOP_2 : RISK_PCT_DEFAULT;
-  if (sideState.status === 'downshifted') {
-    riskPct = riskPct * 0.5;
-    log(`[side-downshift] ${sideKey.toUpperCase()} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${sideState.reason})`);
-  }
-  if (sessionState && sessionState.status === 'downshifted') {
-    riskPct = riskPct * 0.5;
-    log(`[session-downshift] ${sessionKey} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${sessionState.reason})`);
+  const { pick, tier, riskPct, sideKey, sessionKey, downshifts, candidateCount } = decision;
+  for (const d of downshifts) {
+    if (d.source === 'side') {
+      log(`[side-downshift] ${d.key.toUpperCase()} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
+    } else {
+      log(`[session-downshift] ${d.key} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
+    }
   }
 
   const equity = await getAccountUsdt();
@@ -501,7 +482,7 @@ async function tryFire() {
     stopLossPrice: slSnap,
     takeProfitPrice: tpSnap,
   };
-  log(`[fire] ${pick.symbol} ${pick.fvg.dir.toUpperCase()} tier=${tier} htf=${pick.htfDir} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${(pick.stopDistUsdPerContract*qty).toFixed(3)} (${(riskPct*100).toFixed(1)}%) cand=${valid.length}/${SYMBOLS.length}`);
+  log(`[fire] ${pick.symbol} ${pick.fvg.dir.toUpperCase()} tier=${tier} htf=${pick.htfDir} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${(pick.stopDistUsdPerContract*qty).toFixed(3)} (${(riskPct*100).toFixed(1)}%) cand=${candidateCount}/${SYMBOLS.length}`);
   const r = await placeOrder(body);
   if (!r.json || r.json.success !== true) {
     return { skip: 'mexc-rejected', detail: JSON.stringify(r.json || r.raw).slice(0, 200), symbol: pick.symbol };
