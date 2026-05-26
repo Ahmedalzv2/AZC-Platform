@@ -18,7 +18,13 @@ export const COOLDOWN_MS         = 15 * 60 * 1000;
 
 export const FVG_BUFFER_PCT      = 0.10;
 export const TOUCH_TOLERANCE_PCT = 0.0008;
-export const MIN_FVG_BODY_PCT    = 0.0010;
+// Raised from 0.0010 → 0.0015 on 2026-05-26 after sweeping the realistic-
+// TTL backtest (PR #231, 365d/SOL+XRP, n=446 trades):
+//   0.0010 (old)  →  +0.034R/trade · +$19.81/year/$50 · 951 trades
+//   0.0015 (new)  →  +0.095R/trade · +$24.09/year/$50 · 446 trades
+// Halves volume but triples per-trade R and lifts WR 35.8% → 37.7%.
+// The 22% net-$ improvement is real; sample healthy at 446 trades.
+export const MIN_FVG_BODY_PCT    = 0.0015;
 export const MIN_STOP_PCT        = 0.0020;
 
 // Graduated risk — sizes to conviction. For the $50 micro-capital lane
