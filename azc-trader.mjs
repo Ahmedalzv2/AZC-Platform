@@ -21,6 +21,13 @@ import { callMexcSigned } from './mexc-signer.mjs';
 import { writeLearningFile } from './trade-learnings.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
 import { KILLZONES_UTC, inKillzone, currentKillzoneName, nextKillzoneBoundary } from './trader-killzones.mjs';
+import {
+  HTF_MIN, HTF_SMA, LOOKBACK_BARS,
+  RR, MAX_HOLD_MS, COOLDOWN_MS,
+  FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT, MIN_FVG_BODY_PCT, MIN_STOP_PCT,
+  RISK_PCT_DEFAULT, RISK_PCT_TOP_2, RISK_PCT_BEST,
+  RISK_DOWNSHIFT_AFTER_LOSSES, STREAK_PAUSE_AFTER_LOSSES, MAX_CONSECUTIVE_LOSSES,
+} from './trader-config.mjs';
 
 // ──────────────────────────────────────────────────────────────────
 // Config
@@ -31,73 +38,46 @@ if (!API_KEY || !API_SECRET) {
   console.error('FATAL: MEXC_API_KEY / MEXC_API_SECRET not set'); process.exit(2);
 }
 
-// Expanded watchlist of liquid USDT perps. SOL excluded — its 1-contract
-// min size ($200 notional) + $0.08 roundtrip fee make it negative-EV at
-// $50 capital. The rest have small enough contracts that 1.5%/trade risk
-// math survives min-size rounding.
-// Symbol set chosen by tests/screen-symbols.mjs over 90d fixtures,
-// re-scored in 24/7 mode (no killzone gate) since the live trader now
-// fires around the clock.
-//   ARB   59.8% WR / +0.515R per trade  (top of the 24/7 dataset)
-//   DOT   57.6%    / +0.447R
-//   NEAR  55.4%    / +0.413R
-//   SUI   53.7%    / +0.385R
-//   XRP   50.8%    / +0.389R
-//   LTC   47.4%    / +0.395R
-//   AVAX  50.7%    / +0.331R
-//   DOGE  50.3%    / +0.326R
-//   SOL   47.0%    / +0.282R
-//   BTC   41.7%    / +0.276R  (institutional benchmark; marginal)
-// Dropped vs killzone-gated set: INJ (0.308R → 0.198R in 24/7 — falls
-// below the +0.20R bar). Stays dropped: BNB, LINK, ETH (also marginal
-// or below BE in 24/7 mode).
-// 90d aggregate (24/7, 10 symbols): 1844 trades · 45.7% WR · +614R
-// total · +0.333R/trade. Versus killzone-gated 11-symbol set (1025
-// trades / +382R total / +0.372R/trade): +80% trade volume, +61% total
-// R, -14% per-trade quality. Volume + total return wins.
+// Live symbol set. Justified per symbol against tests/screen-symbols.mjs
+// run at the production-matching backtest config (RR=1.8, 24/7, MAX_HOLD=120m).
+//   Quality bar: win% ≥ 40% AND R/trade ≥ +0.20R over 90d fixtures.
+//
+//   PASS (above bar — clear edge):
+//     ARB  56.9% WR / +0.431R per trade
+//     XRP  50.3%    / +0.481R
+//     SOL  47.8%    / +0.389R
+//     BTC  44.5%    / +0.339R
+//     NEAR 53.2%    / +0.320R
+//     DOT  53.0%    / +0.317R
+//     DOGE 50.0%    / +0.238R
+//
+//   marginal — kept for asset/regime diversity (all positive in backtest):
+//     LTC  47.4%    / +0.199R   (just under bar)
+//     SUI  48.9%    / +0.195R
+//     AVAX 47.7%    / +0.183R
+//
+//   Dropped: LINK / BNB / INJ (marginal but lower edge, plus LINK has
+//   zero-fee quirks), ETH (the only outright FAIL at -0.134R/trade).
+//
+// Aggregate at current 10-symbol set, 90d: 2398 trades · 47.0% WR ·
+// +558R total · +0.233R/trade. To regenerate this table run:
+//     node tests/screen-symbols.mjs
 const SYMBOLS = [
   'ARB_USDT',  'DOT_USDT',  'NEAR_USDT', 'SUI_USDT',
   'XRP_USDT',  'LTC_USDT',  'AVAX_USDT', 'DOGE_USDT',
   'SOL_USDT',  'BTC_USDT',
 ];
-const TF_MIN = 5;
-const HTF_MIN = 60;
-const LOOKBACK_BARS = 40;
-const HTF_LOOKBACK = 24;
-const HTF_SMA = 20;
-const LEVERAGE = 10;
-
-// Graduated sizing — sizes to conviction. Quality score from the scanner
-// determines the bucket: top-1 by wide margin (the "best of best"), top-2
-// (a strong candidate), or default. No daily $ cap — replaced by the
-// consecutive-loss halt below.
-const RISK_PCT_DEFAULT = 0.02;   // 2% base ($1 @ $50)
-const RISK_PCT_TOP_2    = 0.03;   // 3% for top-2 picks ($1.50 @ $50)
-const RISK_PCT_BEST     = 0.05;   // 5% for stand-out best candidate ($2.50)
-
-const MAX_OPEN_POSITIONS = 1;
-const COOLDOWN_MS = 15 * 60 * 1000;
-// Graduated streak response (cascades from soft to hard):
-//   2 losses → next fire risks at 50% of the tier (limits drawdown speed)
-//   3 losses → pause new fires until the next killzone window boundary
-//              (stops martingale-style overtrading within a bad regime)
-//   5 losses → full halt until UTC midnight (the original hard safety,
-//              ~1-in-18 false-positive at 50% WR per 90d backtest)
-const RISK_DOWNSHIFT_AFTER_LOSSES = 2;
-const STREAK_PAUSE_AFTER_LOSSES   = 3;
-const MAX_CONSECUTIVE_LOSSES      = 5;
-// 60m force-close was leaving 6pp of win rate on the table — 70 trades
-// over 90d hit TP only after the cap. 120m captures them while still
-// staying inside a single funding window most of the time.
-const MAX_HOLD_MS = 120 * 60 * 1000;
-const RR = 1.8;
-const TICK_MS = 15_000;
-const POSITION_POLL_MS = 5_000;
-const MAKER_ORDER_TTL_MS = 180_000;
-const FVG_BUFFER_PCT = 0.10;
-const TOUCH_TOLERANCE_PCT = 0.0008;   // proximity gate, 0.08% of price
-const MIN_FVG_BODY_PCT = 0.0010;      // FVG body must be ≥ 0.10% of price (skip micro-gaps)
-const MIN_STOP_PCT     = 0.0020;      // stop distance must be ≥ 0.20% of price (else stop is hunt-bait)
+// Methodology knobs (RR, MAX_HOLD_MS, MIN_FVG_BODY_PCT, risk tiers, the
+// 2L/3L/5L loss-streak cascade, etc.) live in ./trader-config.mjs so the
+// proof harness (tests/backtest-azc-trader.mjs) imports the same values
+// and cannot drift from production. Only operational constants stay here.
+const TF_MIN              = 5;
+const HTF_LOOKBACK        = 24;
+const LEVERAGE            = 10;
+const MAX_OPEN_POSITIONS  = 1;
+const TICK_MS             = 15_000;
+const POSITION_POLL_MS    = 5_000;
+const MAKER_ORDER_TTL_MS  = 180_000;
 
 // Killzone windows live in ./trader-killzones.mjs so tests can pull pure
 // helpers without importing this file (which exits at load when MEXC creds
