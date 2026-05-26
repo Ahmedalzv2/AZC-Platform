@@ -4,6 +4,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLearningFile } from './trade-learnings.mjs';
+import { writeInsightsFile } from './trade-insights.mjs';
 import { buildStats } from './trade-stats.mjs';
 import { authedWriteWith } from './relay-auth.mjs';
 import { callMexcSigned, ALLOWED_PATH_PREFIX as MEXC_ALLOWED } from './mexc-signer.mjs';
@@ -674,6 +675,12 @@ const server = http.createServer(async (req, res) => {
         }
         const out = await writeLearningFile(payload, LEARN_ROOT);
         if (!out.ok) return sendJson(res, 400, { error: out.reason || 'write-failed' }, CORS_HEADERS);
+        // Refresh INSIGHTS.md so the dashboard sees the new edge/leak
+        // counts on the next read. Failure here must not break the
+        // /learn-trade response — the post-mortem file is the canonical
+        // record; insights are a derived view.
+        try { await writeInsightsFile(LEARN_ROOT); }
+        catch (e) { console.error('[insights-refresh-err]', e.message); }
         return sendJson(res, 200, out, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 500, { error: error.message }, CORS_HEADERS);
