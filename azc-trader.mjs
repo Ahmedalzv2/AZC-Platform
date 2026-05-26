@@ -60,35 +60,26 @@ if (!API_KEY || !API_SECRET) {
   console.error('FATAL: MEXC_API_KEY / MEXC_API_SECRET not set'); process.exit(2);
 }
 
-// Live symbol set. Justified per symbol against tests/screen-symbols.mjs
-// run at the production-matching backtest config (RR=1.8, 24/7, MAX_HOLD=120m).
-//   Quality bar: win% ≥ 40% AND R/trade ≥ +0.20R over 90d fixtures.
+// Live symbol set. Re-screened 2026-05-26 against the realistic-TTL
+// backtest (tests/backtest-azc-trader.mjs models the live 180s POST_ONLY
+// limit-order TTL and rejects "wrong-side" fires). The old screen
+// assumed instant-fill at FVG mid and overstated every symbol's edge by
+// ~0.3R/trade.
 //
-//   PASS (above bar — clear edge):
-//     ARB  56.9% WR / +0.431R per trade
-//     XRP  50.3%    / +0.481R
-//     SOL  47.8%    / +0.389R
-//     BTC  44.5%    / +0.339R
-//     NEAR 53.2%    / +0.320R
-//     DOT  53.0%    / +0.317R
-//     DOGE 50.0%    / +0.238R
+// Under realistic TTL only three symbols carry positive expectancy:
+//     BTC  35.5% WR / +0.074R per trade / +$5.82  per $50/90d
+//     SOL  36.8%    / +0.106R           / +$4.64
+//     XRP  38.0%    / +0.144R           / +$8.26
 //
-//   marginal — kept for asset/regime diversity (all positive in backtest):
-//     LTC  47.4%    / +0.199R   (just under bar)
-//     SUI  48.9%    / +0.195R
-//     AVAX 47.7%    / +0.183R
+// Every other 90d symbol bleeds: ARB −0.096R, AVAX −0.152R, DOT +0.013R
+// (BE), DOGE −0.113R, LTC −0.192R, NEAR −0.056R, SUI −0.185R. Combined
+// 10-symbol set is −0.122R/trade / −$100/90d.
 //
-//   Dropped: LINK / BNB / INJ (marginal but lower edge, plus LINK has
-//   zero-fee quirks), ETH (the only outright FAIL at -0.134R/trade).
-//
-// Aggregate at current 10-symbol set, 90d: 2398 trades · 47.0% WR ·
-// +558R total · +0.233R/trade. To regenerate this table run:
-//     node tests/screen-symbols.mjs
-const SYMBOLS = [
-  'ARB_USDT',  'DOT_USDT',  'NEAR_USDT', 'SUI_USDT',
-  'XRP_USDT',  'LTC_USDT',  'AVAX_USDT', 'DOGE_USDT',
-  'SOL_USDT',  'BTC_USDT',
-];
+// Aggregate at this 3-symbol set, 90d realistic-TTL: ~+$18.72 net on
+// $50 — small but the only configuration that is net-positive after
+// modelling order TTL. Re-evaluate after ~30 live trades have
+// accumulated post-#221 to see if real expectancy matches.
+const SYMBOLS = ['BTC_USDT', 'SOL_USDT', 'XRP_USDT'];
 // Methodology knobs (RR, MAX_HOLD_MS, MIN_FVG_BODY_PCT, risk tiers, the
 // 2L/3L/5L loss-streak cascade, etc.) live in ./trader-config.mjs so the
 // proof harness (tests/backtest-azc-trader.mjs) imports the same values
