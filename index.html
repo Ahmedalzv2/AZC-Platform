@@ -142,6 +142,23 @@
           .azc-scan-stat { display:flex;align-items:center;gap:5px; }
           .azc-scan-stat b { color:var(--text);font-weight:600; }
           .azc-scan-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:10px; }
+          .azc-decisions { margin-top:14px;padding-top:12px;border-top:1px solid var(--border-soft); }
+          .azc-decisions-header { display:flex;justify-content:space-between;align-items:baseline;
+                                  font-size:11px;color:var(--text-mute);text-transform:uppercase;
+                                  letter-spacing:0.06em;margin-bottom:8px;font-weight:700; }
+          .azc-decisions-hint { font-weight:400;text-transform:none;letter-spacing:0;font-size:10px;opacity:0.7; }
+          .azc-decisions-list { font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.7;
+                                max-height:200px;overflow-y:auto; }
+          .azc-decisions-empty { color:var(--text-mute);padding:8px 0;font-style:italic; }
+          .azc-dec-row { display:flex;gap:8px;padding:2px 0;border-bottom:1px dashed var(--border-soft); }
+          .azc-dec-row:last-child { border-bottom:none; }
+          .azc-dec-ts { color:var(--text-mute);flex-shrink:0;min-width:64px; }
+          .azc-dec-tag { font-weight:700;flex-shrink:0;min-width:56px; }
+          .azc-dec-tag.fire { color:var(--bull); }
+          .azc-dec-tag.skip { color:var(--text-mute); }
+          .azc-dec-tag.skip-soft { color:var(--liq); }
+          .azc-dec-body { color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+          .azc-dec-veto { color:var(--bear);font-weight:700;margin-right:6px; }
           .azc-tile { background:var(--bg);border:1px solid var(--border);border-radius:10px;
                       padding:11px 13px;transition:border-color .2s,background .2s; }
           .azc-tile.ready { border-color:var(--bull);background:rgba(92,184,138,0.07); }
@@ -182,6 +199,19 @@
           <div class="azc-scan-grid" id="azcScanGrid">
             <div style="color:var(--text-mute);padding:14px;text-align:center;font-size:12px;grid-column:1/-1;">
               Awaiting first scan…
+            </div>
+          </div>
+          <!-- Decision feed — derived from /trader-events?kind=decision. Each
+               line is one cycle's top-level fire/skip outcome with the
+               gate that vetoed it. Source-backed-output pattern from the
+               financial-services audit applied to the trader. -->
+          <div class="azc-decisions">
+            <div class="azc-decisions-header">
+              <span>Recent fire decisions</span>
+              <span class="azc-decisions-hint" id="azcDecisionsHint">last 20 · refreshes every 5s</span>
+            </div>
+            <div id="azcDecisionList" class="azc-decisions-list">
+              <div class="azc-decisions-empty">Awaiting first decision…</div>
             </div>
           </div>
         </div>
@@ -3232,10 +3262,55 @@
     }
     refreshAzcTraderState();
   }
-  // Poll trader state every 5s while the page is open.
+  // Decision feed — render the last 20 fire decisions (kind:'decision')
+  // from /trader-events. Source-backed-output pattern: the operator can
+  // see which gate vetoed each cycle without opening journalctl.
+  function _decTimeStr(ts) {
+    const d = new Date(Number(ts));
+    if (!isFinite(d.getTime())) return '--:--:--';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  }
+  // Skip reasons that mean "nothing to do this cycle" vs "an active gate
+  // vetoed". no-candidates / pending-order are quiet operational states;
+  // the rest are real veto signals the operator wants to see highlighted.
+  const _DEC_QUIET_SKIPS = new Set(['no-candidates', 'pending-order']);
+  function _renderDecisionRow(ev) {
+    const ts = _decTimeStr(ev.ts);
+    if (ev.action === 'fire') {
+      const sym = (ev.symbol || '').replace('_USDT', '');
+      const entry = Number.isFinite(Number(ev.entry)) ? ` @ ${Number(ev.entry).toFixed(4)}` : '';
+      return `<div class="azc-dec-row"><span class="azc-dec-ts">${ts}</span><span class="azc-dec-tag fire">FIRE</span><span class="azc-dec-body">${sym}${entry}</span></div>`;
+    }
+    const tagCls = _DEC_QUIET_SKIPS.has(ev.vetoed_by) ? 'skip' : 'skip-soft';
+    const veto = ev.vetoed_by ? `<span class="azc-dec-veto">${ev.vetoed_by}</span>` : '';
+    const reason = ev.reason ? `<span>${String(ev.reason).slice(0, 120)}</span>` : '';
+    return `<div class="azc-dec-row"><span class="azc-dec-ts">${ts}</span><span class="azc-dec-tag ${tagCls}">skip</span><span class="azc-dec-body">${veto}${reason}</span></div>`;
+  }
+  async function refreshAzcDecisions() {
+    const list = document.getElementById('azcDecisionList');
+    if (!list) return;
+    try {
+      const r = await fetch(TG_RELAY_BASE + '/trader-events?limit=200', { cache: 'no-store' });
+      const j = await r.json();
+      const events = Array.isArray(j.events) ? j.events : [];
+      const decisions = events.filter(e => e && e.kind === 'decision').slice(-20).reverse();
+      if (!decisions.length) {
+        list.innerHTML = '<div class="azc-decisions-empty">No decisions logged yet.</div>';
+        return;
+      }
+      list.innerHTML = decisions.map(_renderDecisionRow).join('');
+    } catch (e) {
+      list.innerHTML = `<div class="azc-decisions-empty">Events endpoint unreachable: ${e.message}</div>`;
+    }
+  }
+
+  // Poll trader state + decisions every 5s while the page is open.
   if (typeof window !== 'undefined') {
     setInterval(() => { try { refreshAzcTraderState(); } catch (e) {} }, 5000);
+    setInterval(() => { try { refreshAzcDecisions(); } catch (e) {} }, 5000);
     setTimeout(() => { try { refreshAzcTraderState(); } catch (e) {} }, 1200);
+    setTimeout(() => { try { refreshAzcDecisions(); } catch (e) {} }, 1400);
   }
 
   function _updateLiveTradingBadge() {

@@ -1431,7 +1431,7 @@
   .mob-nav-items::-webkit-scrollbar { display: none; }
   .mob-nav-btn {
     flex: 1;
-    min-width: 52px;
+    min-width: 48px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1441,10 +1441,17 @@
     border: none;
     color: var(--text-mute);
     cursor: pointer;
-    padding: 6px 2px 8px;
+    padding: 6px 1px 8px;
     transition: color 0.2s;
     -webkit-tap-highlight-color: transparent;
     position: relative;
+  }
+  /* Below 380px (small phones) the 6-tab nav cramps. Shrink icon + label
+     and zero out tab padding so all six fit cleanly without ellipsis. */
+  @media (max-width: 380px) {
+    .mob-nav-btn { min-width: 42px; padding: 6px 0 8px; }
+    .mob-nav-btn .mob-icon { font-size: 17px; }
+    .mob-nav-btn .mob-label { font-size: 9px; letter-spacing: 0.02em; }
   }
   .mob-nav-btn.active { color: var(--gold); }
   .mob-nav-btn.active::before {
@@ -1510,14 +1517,18 @@
 
     /* Compact top bar. Brand collapses to flex:0 so the timing segments
        (Clock, Session, Next KZ) take their natural width and fit on a
-       375px phone. Sync stays hidden — debug surface, not actionable. */
+       375px phone. Sync stays hidden — debug surface, not actionable.
+       GST/Session labels also hidden — the clock format and session
+       pill are self-describing; the labels just added crowding.
+       Next KZ keeps its label because the bare countdown is ambiguous. */
     .autopilot-bar { height: calc(44px + env(safe-area-inset-top)); }
-    .ap-brand { padding: 0 10px; flex: 0 1 auto; min-width: 0; }
+    .ap-brand { padding: 0 8px; flex: 0 1 auto; min-width: 0; }
     .ap-brand .logo { font-size: 13px; white-space: nowrap; }
     .ap-brand .v { display: none; }
-    .ap-segment { padding: 0 10px; font-size: 11px; gap: 6px; }
+    .ap-segment { padding: 0 8px; font-size: 11px; gap: 4px; }
     .ap-label { font-size: 9px; }
     .ap-seg-sync { display: none; }
+    .ap-segment:not(.ap-seg-nextkz) .ap-label { display: none; }
     /* Next KZ is the most actionable mobile info during sessions —
        gold value + slightly bolder so it pops when scanning fast. */
     .ap-seg-nextkz .ap-value { color: var(--gold); font-weight: 700; }
