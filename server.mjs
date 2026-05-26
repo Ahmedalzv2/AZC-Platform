@@ -546,15 +546,65 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (url.pathname === '/auto-state' && req.method === 'GET') {
-      const age = _autoState.ts ? Date.now() - _autoState.ts : null;
-      const fresh = age != null && age < AUTO_STALE_MS;
-      return sendJson(res, 200, {
+      // The dashboard browser tab and the server-side autonomous trader
+      // are two independent execution lanes. Old payload conflated them
+      // ("running:false" when the browser AUTO was off, even with the
+      // server trader live and firing). Split them so a verifier can
+      // tell exactly what's alive.
+      const browserAge = _autoState.ts ? Date.now() - _autoState.ts : null;
+      const browserFresh = browserAge != null && browserAge < AUTO_STALE_MS;
+      const browserAuto = {
         state: _autoState.state,
         ts: _autoState.ts,
-        ageMs: age,
-        stale: age == null || !fresh,
-        running: fresh && _autoState.state === 'on',
+        ageMs: browserAge,
+        stale: browserAge == null || !browserFresh,
+        running: browserFresh && _autoState.state === 'on',
         lastFireTs: _autoState.lastFireTs || 0,
+      };
+
+      let serverTrader;
+      try {
+        const fs = await import('node:fs/promises');
+        const text = await fs.readFile('/app/.trader-state/state.json', 'utf8');
+        const data = JSON.parse(text);
+        const stopFlag = await fs.access('/app/.trader-state/stop.flag').then(() => true).catch(() => false);
+        const cycleAge = data.lastCycleAt ? Date.now() - data.lastCycleAt : null;
+        // 60s is 4× the trader's TICK_MS (15s) — alive if it's been
+        // scanning that recently.
+        const cycleFresh = cycleAge != null && cycleAge < 60_000;
+        serverTrader = {
+          running: cycleFresh && !data.haltedAt && !stopFlag,
+          haltedAt: data.haltedAt || null,
+          stopFlag,
+          cycleCount: data.cycleCount || 0,
+          lastCycleAt: data.lastCycleAt || 0,
+          cycleAgeMs: cycleAge,
+          stale: !cycleFresh,
+        };
+      } catch {
+        serverTrader = { running: false, reason: 'no-state-file' };
+      }
+
+      const label = serverTrader.running
+        ? (browserAuto.running ? 'Server trader live; browser AUTO on'
+                               : 'Server trader live; browser AUTO off (this is fine)')
+        : (browserAuto.running ? 'Server trader DOWN; browser AUTO on'
+                               : 'Both lanes offline');
+
+      return sendJson(res, 200, {
+        // New canonical fields:
+        browserAuto,
+        serverTrader,
+        label,
+        // Legacy top-level fields preserved so existing readers keep
+        // working. `running` now means "any execution lane is alive"
+        // (server trader OR browser AUTO), which matches user intent.
+        state: browserAuto.state,
+        ts: browserAuto.ts,
+        ageMs: browserAuto.ageMs,
+        stale: browserAuto.stale && serverTrader.stale,
+        running: browserAuto.running || serverTrader.running,
+        lastFireTs: browserAuto.lastFireTs,
       }, CORS_HEADERS);
     }
     if (url.pathname === '/auto-state' && req.method === 'POST') {
