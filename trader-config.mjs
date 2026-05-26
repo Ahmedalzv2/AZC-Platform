@@ -31,11 +31,12 @@ export const RISK_PCT_DEFAULT = 0.02;   // 2% base       ($1.00 @ $50)
 export const RISK_PCT_TOP_2   = 0.03;   // 3% top-2 pick ($1.50 @ $50)
 export const RISK_PCT_BEST    = 0.05;   // 5% stand-out  ($2.50 @ $50)
 
-// Cascade from soft to hard. 2L halves tier risk; 3L pauses until the
-// next killzone boundary; 5L halts until UTC midnight. Win/BE resets.
-export const RISK_DOWNSHIFT_AFTER_LOSSES = 2;
-export const STREAK_PAUSE_AFTER_LOSSES   = 3;
-export const MAX_CONSECUTIVE_LOSSES      = 5;
+// History-based loss throttling REMOVED (2026-05-26). Operator directive:
+// "execute when there is opportunity, otherwise don't enter." The
+// data-driven drift gates (side + session, activate at 20+ trades, see
+// SIDE_GATE_* below) replace the old 2L risk-halve / 3L killzone pause /
+// 5L hard halt cascade. Per-trade risk tiering, one-position max,
+// per-symbol cooldown, audit journal, and kill switch remain.
 
 // 24/7 firing — backtest comparison showed +80% trades / +61% total R
 // over 90d vs killzone-gated, at -6pp win rate. Volume wins. The
