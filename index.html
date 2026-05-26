@@ -7038,32 +7038,13 @@
   }
 
   // ═══════════════════════════════════════════════════════
-  // RSS sources via rss2json proxy (free, 10k calls/day, no key required)
-  // ═══════════════════════════════════════════════════════
-  const RSS_FEEDS = [
-    { key:'coindesk',     label:'CoinDesk',     url:'https://www.coindesk.com/arc/outboundfeeds/rss/' },
-    { key:'cointelegraph',label:'Cointelegraph',url:'https://cointelegraph.com/rss' },
-    { key:'theblock',     label:'The Block',    url:'https://www.theblock.co/rss.xml' },
-    { key:'beincrypto',   label:'BeInCrypto',   url:'https://beincrypto.com/feed/' },
-    { key:'utoday',       label:'U.Today',      url:'https://u.today/rss' }
-  ];
-
-  async function _fetchRSSFeed(feed) {
-    try {
-      const proxyUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&count=20`;
-      const opts = {};
-      opts.signal = _t(10000);
-      const r = await fetch(proxyUrl, opts);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      if (j.status !== 'ok' || !Array.isArray(j.items)) return [];
-      return j.items.map(it => {
-        const norm = _normalizeNewsItem(it, 'rss', feed.label);
-        if (norm) norm._sourceKey = feed.key;
-        return norm;
-      }).filter(Boolean);
-    } catch(e) { console.warn(`RSS ${feed.label} fetch failed:`, e.message); return []; }
-  }
+  // RSS sources removed: the rss2json proxy started returning HTTP 422 for
+  // all five feeds (CoinDesk / Cointelegraph / The Block / BeInCrypto /
+  // U.Today). Treating as dead. CryptoCompare + cryptocurrency.cv + CoinGecko
+  // + LunarCrush social still cover the news lane. If RSS comes back, route
+  // it through a server-side fetcher in the relay rather than a public proxy.
+  const RSS_FEEDS = [];
+  async function _fetchRSSFeed(_feed) { return []; }
 
   // ═══════════════════════════════════════════════════════
   // LunarCrush 𝕏 / social posts per tracked asset
@@ -7260,7 +7241,15 @@
       const r = await fetch(url, opts);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
-      return (j.Data || []).map(n => _normalizeNewsItem(n, 'cryptocompare')).filter(Boolean);
+      // CryptoCompare has shipped at least two shapes: { Data: [...] } and
+      // { Data: { items: [...] } }. They also sometimes return
+      // { Response: "Error", Message: "..." } with no Data at all on rate
+      // limit. Accept any of them without spamming the console.
+      const arr = Array.isArray(j?.Data) ? j.Data
+                : Array.isArray(j?.Data?.items) ? j.Data.items
+                : Array.isArray(j?.Data?.Data) ? j.Data.Data
+                : [];
+      return arr.map(n => _normalizeNewsItem(n, 'cryptocompare')).filter(Boolean);
     } catch(e) { console.warn('CryptoCompare news fetch failed:', e.message); return []; }
   }
 
@@ -7303,18 +7292,16 @@
     }
     const btn = document.getElementById('newsRefreshBtn');
     if (btn) btn.textContent = '⟳ refreshing…';
-    const rssTasks = RSS_FEEDS.map(f => _fetchRSSFeed(f));
     // X-Live (Nitter via ScrapeBadger) is SLOW and unreliable — fetch it
     // separately so the main news refresh isn't blocked by it.
-    const [cc, cv, cg, social, ...rssResults] = await Promise.all([
+    const [cc, cv, cg, social] = await Promise.all([
       _fetchCryptoCompareGlobal(),
       _fetchCryptocurrencyCV(),
       _fetchCoinGeckoGlobal(),
       _fetchLunarCrushSocial(),
-      ...rssTasks
     ]);
-    const allRss = rssResults.flat();
-    console.log('[news] sources:', { cryptocompare: cc.length, cccv: cv.length, coingecko: cg.length, lunarcrush: social.length, rssTotal: allRss.length, rssBySource: RSS_FEEDS.reduce((o, f, i) => { o[f.key] = (rssResults[i]||[]).length; return o; }, {}) });
+    const allRss = [];
+    console.log('[news] sources:', { cryptocompare: cc.length, cccv: cv.length, coingecko: cg.length, lunarcrush: social.length });
     // Dedupe by URL (preserve any already-loaded X-live items in the cache)
     const byUrl = new Map();
     const existingXlive = _newsAggregateItems.filter(i => i._sourceKey === 'xlive');
@@ -7696,7 +7683,7 @@
     if (!filtered.length) {
       const totalRaw = _newsAggregateItems.length;
       const reason = totalRaw === 0
-        ? 'No sources returned any items. Open DevTools → Console to see [news] diagnostic. Most likely: rss2json proxy quota exceeded (10K/day shared) or CryptoCompare temporarily unreachable.'
+        ? 'No sources returned any items. Open DevTools → Console to see [news] diagnostic. Likely CryptoCompare temporarily unreachable or all crypto news APIs are throttling.'
         : `${totalRaw} articles in cache but none match the current filters. Try widening recency, unchecking categories, or clearing the search box.`;
       host.innerHTML = `<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:36px 24px;text-align:center;color:var(--text-mute);font-size:12px;line-height:1.6;">${reason}</div>`;
       return;
