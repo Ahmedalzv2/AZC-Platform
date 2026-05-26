@@ -28,19 +28,25 @@ const args = Object.fromEntries(process.argv.slice(2).map(a => {
   return [m[0], m[1] ?? true];
 }));
 
-// Tunable knobs — defaults mirror live azc-trader constants exactly.
+// Defaults are imported from ../trader-config.mjs — the same module the
+// live trader reads at boot. Pass a flag (e.g. --rr=1.5, --killzone) to
+// explore non-production configs; the default proof matches what the
+// trader is actually doing right now.
+import * as CONFIG from '../trader-config.mjs';
 const TF_MIN              = 5;
-const HTF_MIN             = 60;
-const LOOKBACK_BARS       = Number(args.lookback || 40);
-const HTF_SMA_LEN         = Number(args.htfSma || 20);
-const FVG_BUFFER_PCT      = Number(args['fvg-buffer'] || 0.10);
-const TOUCH_TOLERANCE_PCT = Number(args.touch || 0.0008);
-const MIN_FVG_BODY_PCT    = Number(args['min-fvg'] || 0.0010);
-const MIN_STOP_PCT        = Number(args['min-stop'] || 0.0020);
-const RR                  = Number(args.rr || 1.5);
-const COOLDOWN_MS         = (Number(args.cooldown ?? 15)) * 60 * 1000;
-const MAX_HOLD_MS         = (Number(args['max-hold'] ?? 60)) * 60 * 1000;
-const KILLZONES_ENABLED   = !args['no-killzone'];
+const HTF_MIN             = CONFIG.HTF_MIN;
+const LOOKBACK_BARS       = Number(args.lookback || CONFIG.LOOKBACK_BARS);
+const HTF_SMA_LEN         = Number(args.htfSma   || CONFIG.HTF_SMA);
+const FVG_BUFFER_PCT      = Number(args['fvg-buffer'] || CONFIG.FVG_BUFFER_PCT);
+const TOUCH_TOLERANCE_PCT = Number(args.touch    || CONFIG.TOUCH_TOLERANCE_PCT);
+const MIN_FVG_BODY_PCT    = Number(args['min-fvg']  || CONFIG.MIN_FVG_BODY_PCT);
+const MIN_STOP_PCT        = Number(args['min-stop'] || CONFIG.MIN_STOP_PCT);
+const RR                  = Number(args.rr       || CONFIG.RR);
+const COOLDOWN_MS         = (Number(args.cooldown ?? (CONFIG.COOLDOWN_MS / 60000))) * 60 * 1000;
+const MAX_HOLD_MS         = (Number(args['max-hold'] ?? (CONFIG.MAX_HOLD_MS / 60000))) * 60 * 1000;
+// Live trader does NOT gate by killzone (24/7 firing). Use --killzone to
+// reintroduce the gate; --no-killzone is the explicit production default.
+const KILLZONES_ENABLED   = args['killzone'] === true || args['killzone'] === 'true';
 // Dynamic fee model — fees are computed PER TRADE from the actual balance,
 // risk-sized qty, notional, and per-symbol MEXC fee rates. No more
 // hardcoded 0.24%-of-everything assumption.
@@ -63,7 +69,11 @@ const KILLZONES_ENABLED   = !args['no-killzone'];
 import { readFileSync as _readFile } from 'node:fs';
 const CONTRACT_META = JSON.parse(_readFile(path.join(__dirname, 'contract-meta.json'), 'utf8'));
 const BALANCE             = Number(args.balance ?? 50);
-const RISK_PCT            = Number(args.risk    ?? 0.03);
+// Live trader uses graduated tiers (2%/3%/5%); backtest still simulates
+// at one flat rate per run. Default to the TOP_2 tier (3%) since that's
+// what the median fire historically lands in. Use --risk=0.05 to model
+// the "best" tier.
+const RISK_PCT            = Number(args.risk    ?? CONFIG.RISK_PCT_TOP_2);
 const LEVERAGE            = Number(args.lev     ?? 10);
 const MIN_FEE_USD         = Number(args['min-fee'] ?? 0.025);
 const FUNDING_PCT_PER_WIN = Number(args.funding ?? 0.0001);
@@ -309,24 +319,35 @@ if (!files.length) {
   process.exit(1);
 }
 
-console.log(`AZC trader backtest · 90d 5m fixtures · BALANCE=$${BALANCE} risk=${(RISK_PCT*100).toFixed(1)}% lev=${LEVERAGE}x`);
-console.log(`Rules: HTF=${HTF_MIN}m SMA(${HTF_SMA_LEN}), MIN_FVG_BODY=${(MIN_FVG_BODY_PCT*100).toFixed(2)}%, MIN_STOP=${(MIN_STOP_PCT*100).toFixed(2)}%, RR=${RR}, TOUCH=${(TOUCH_TOLERANCE_PCT*100).toFixed(2)}%, COOLDOWN=${COOLDOWN_MS/60000}m, MAX_HOLD=${MAX_HOLD_MS/60000}m, killzone=${KILLZONES_ENABLED}, fees=${FEES_ENABLED}, min-fee=$${MIN_FEE_USD}`);
+// Production-config banner — printed at top so a verifier can read it
+// and confirm at a glance what was simulated. Anything missing from this
+// line means it isn't part of the proof.
+const PROD_BANNER = [
+  `AZC trader backtest · 90d 5m fixtures · BALANCE=$${BALANCE} risk=${(RISK_PCT*100).toFixed(1)}% lev=${LEVERAGE}x`,
+  `Production-matching defaults imported from trader-config.mjs:`,
+  `  RR=${RR}  MAX_HOLD=${MAX_HOLD_MS/60000}m  COOLDOWN=${COOLDOWN_MS/60000}m  killzone=${KILLZONES_ENABLED}  side=${SIDE_FILTER}`,
+  `  HTF=${HTF_MIN}m SMA(${HTF_SMA_LEN})  MIN_FVG_BODY=${(MIN_FVG_BODY_PCT*100).toFixed(2)}%  MIN_STOP=${(MIN_STOP_PCT*100).toFixed(2)}%  TOUCH=${(TOUCH_TOLERANCE_PCT*100).toFixed(2)}%`,
+  `  fees=${FEES_ENABLED}  min-fee=$${MIN_FEE_USD}  funding=${(FUNDING_PCT_PER_WIN*100).toFixed(3)}%/8h`,
+].join('\n');
+console.log(PROD_BANNER);
 console.log('');
-console.log('symbol   trades   wins  loss   BE    win%    netUSD     $/trade    notional    fees%gross');
-console.log('-------  -------  ----  ----  ----  -----   --------   --------   ---------   ----------');
+console.log('symbol   trades   wins  loss   BE    win%    netUSD     $/trade    totalR    R/trade    fees%gross');
+console.log('-------  -------  ----  ----  ----  -----   --------   --------   --------  --------   ----------');
 
 const rows = [];
+const allTrades = [];
 for (const f of files) {
   const symbol = f.split('-')[0];
   const bars5 = JSON.parse(readFileSync(path.join(FIX_DIR, f), 'utf8'));
   const trades = backtestAsset(symbol, bars5);
   if (!trades) { continue; }  // no contract meta — skip
+  for (const t of trades) allTrades.push({ ...t, symbol });
   const s = summarize(symbol, trades);
   rows.push(s);
   const grossUsd = trades.reduce((a, t) => a + t.grossUsd, 0);
   const feePctOfGross = grossUsd > 0 ? (s.totalFees / grossUsd * 100).toFixed(0) + '%' : '—';
   console.log(
-    `${symbol.padEnd(7)}  ${String(s.n).padStart(7)}  ${String(s.wins).padStart(4)}  ${String(s.losses).padStart(4)}  ${String(s.bes).padStart(4)}  ${(s.winRate*100).toFixed(1).padStart(5)}%  $${s.totalUsd.toFixed(2).padStart(8)}  $${s.expUsd.toFixed(4).padStart(8)}   $${s.avgNotional.toFixed(0).padStart(7)}   ${feePctOfGross.padStart(9)}`
+    `${symbol.padEnd(7)}  ${String(s.n).padStart(7)}  ${String(s.wins).padStart(4)}  ${String(s.losses).padStart(4)}  ${String(s.bes).padStart(4)}  ${(s.winRate*100).toFixed(1).padStart(5)}%  $${s.totalUsd.toFixed(2).padStart(8)}  $${s.expUsd.toFixed(4).padStart(8)}  ${s.totalR.toFixed(2).padStart(7)}R  ${s.expR.toFixed(3).padStart(6)}R   ${feePctOfGross.padStart(9)}`
   );
 }
 
@@ -337,10 +358,29 @@ const agg = rows.reduce((a, r) => ({
 const aggWin = agg.n ? agg.wins / agg.n : 0;
 const aggExpUsd = agg.n ? agg.totalUsd / agg.n : 0;
 const aggExpR   = agg.n ? agg.totalR / agg.n : 0;
-console.log('-------  -------  ----  ----  ----  -----   --------   --------   ---------   ----------');
+console.log('-------  -------  ----  ----  ----  -----   --------   --------   --------  --------   ----------');
 console.log(
-  `${'TOTAL'.padEnd(7)}  ${String(agg.n).padStart(7)}  ${String(agg.wins).padStart(4)}  ${String(agg.losses).padStart(4)}  ${String(agg.bes).padStart(4)}  ${(aggWin*100).toFixed(1).padStart(5)}%  $${agg.totalUsd.toFixed(2).padStart(8)}  $${aggExpUsd.toFixed(4).padStart(8)}`
+  `${'TOTAL'.padEnd(7)}  ${String(agg.n).padStart(7)}  ${String(agg.wins).padStart(4)}  ${String(agg.losses).padStart(4)}  ${String(agg.bes).padStart(4)}  ${(aggWin*100).toFixed(1).padStart(5)}%  $${agg.totalUsd.toFixed(2).padStart(8)}  $${aggExpUsd.toFixed(4).padStart(8)}  ${agg.totalR.toFixed(2).padStart(7)}R  ${aggExpR.toFixed(3).padStart(6)}R`
 );
+console.log('');
+
+// Side split — required by Hermes verification spec. Lets the LONG vs
+// SHORT call be answered from this output without re-running.
+function splitSummary(label, trades) {
+  if (!trades.length) return `${label.padEnd(7)}  n=0  (no trades)`;
+  const wins = trades.filter(t => t.outcome === 'win').length;
+  const losses = trades.filter(t => t.outcome === 'loss').length;
+  const bes = trades.filter(t => t.outcome === 'be').length;
+  const totalR = trades.reduce((a, t) => a + t.rMultiple, 0);
+  const totalUsd = trades.reduce((a, t) => a + t.netUsd, 0);
+  const wr = (wins + losses) ? wins / (wins + losses) : 0;
+  return `${label.padEnd(7)}  n=${String(trades.length).padStart(4)}  W=${String(wins).padStart(3)} L=${String(losses).padStart(3)} BE=${String(bes).padStart(3)}  wr=${(wr*100).toFixed(1).padStart(5)}%  netR=${totalR.toFixed(2).padStart(7)}R  R/trade=${(totalR/trades.length).toFixed(3).padStart(6)}R  netUSD=$${totalUsd.toFixed(2).padStart(7)}`;
+}
+const longTrades  = allTrades.filter(t => t.dir === 'bull');
+const shortTrades = allTrades.filter(t => t.dir === 'bear');
+console.log('Side split:');
+console.log('  ' + splitSummary('LONG',  longTrades));
+console.log('  ' + splitSummary('SHORT', shortTrades));
 console.log('');
 console.log(`Net $ on $${BALANCE} starting: $${agg.totalUsd.toFixed(2)} after 90d (${((agg.totalUsd/BALANCE)*100).toFixed(1)}% return on bankroll)`);
 console.log(`Per-trade R after fees: ${aggExpR.toFixed(3)}R · Win rate: ${(aggWin*100).toFixed(1)}% (BE at RR=${RR} is ${(100/(1+RR)).toFixed(1)}%)`);
