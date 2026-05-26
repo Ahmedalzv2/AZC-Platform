@@ -227,6 +227,12 @@ async function us100Price() {
 // on this VPS (same bot, both lanes — that was the user's explicit ask).
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT  = process.env.TELEGRAM_CHAT_ID   || '';
+// Telegram has a single getUpdates lock per bot token: two processes polling
+// the same token will both see `Conflict: terminated by other getUpdates`.
+// Sending is shared-safe; only the long-poll loop conflicts. AZC default is
+// OFF so the same bot can be shared with Hermes; set AZC_TELEGRAM_COMMANDS=1
+// on exactly one host if you want /picks /status /win /loss /be commands.
+const TG_COMMANDS_ENABLED = String(process.env.AZC_TELEGRAM_COMMANDS || '').trim() === '1';
 async function telegramSend(text) {
   if (!TG_TOKEN || !TG_CHAT) throw new Error('telegram-not-configured');
   const r = await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
@@ -439,6 +445,10 @@ async function _tgPollOnce() {
 }
 function _startTgPoller() {
   if (_tgPollerStarted || !TG_TOKEN) return;
+  if (!TG_COMMANDS_ENABLED) {
+    console.log('[tg] command poller disabled (AZC_TELEGRAM_COMMANDS!=1) — /notify sends still work');
+    return;
+  }
   _tgPollerStarted = true;
   (async function loop() {
     while (true) {
