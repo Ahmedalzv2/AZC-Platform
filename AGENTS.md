@@ -29,10 +29,11 @@ Resulting policy:
 
 - **US100**: manual ICT/futures prompts only. Session-driven, decision-support, Telegram/card/outcome flow. No autonomous execution.
 - **MEXC crypto/assets**: guarded micro-capital experimentation only. Start dry-run, then paper/shadow, then live only behind hard safety gates.
-- **Safety gates before live MEXC**: server-side secrets only, dry-run default ON, explicit live-mode arming, hard daily loss cap, one open position max, tiny fixed risk, no martingale, no revenge trading, no re-entry spam, visible kill switch, full audit journal. Do not restore a MEXC daily trade-count cap unless Ahmed explicitly asks; the loss cap is the real safety and every resolved trade feeds learning files.
+- **Safety gates before live MEXC**: server-side secrets only, dry-run default ON, explicit live-mode arming, one open position max, tiny/conviction-based risk, no martingale, no revenge trading, no re-entry spam, visible kill switch, full audit journal, fee/funding-aware P&L, and 3-consecutive-loss halt for human review. Do not restore a MEXC daily trade-count cap or fixed daily-dollar cap unless Ahmed explicitly asks; every resolved trade feeds learning files.
 - **Everything not explicitly in the MEXC test lane**: Spot Watch only. HTF buy/sell zones, accumulate low, distribute high. No leverage/scalp alerts by default.
 - **Auto-fire**: live MEXC execution must be deliberately armed and protected by the safety gates above. The floating one-tap AUTO button is the intended user control for arm/disarm; avoid adding more per-asset arming controls.
 - **Leverage spec / IN-POSITION gates / per-asset cooldowns** remain in code for users who manually flip an asset to futures mode via `setTradeMode(symbol, 'futures')`; nothing fires by default.
+- **Incident handling**: when MEXC P&L changes unexpectedly, read the actual exchange tape before blaming the bot. Separate bot trades from manual/force-fire/direct-exchange trades, distinguish frozen margin from realised loss, neutralize naked exposure first, and refuse “make it back” revenge escalation.
 
 ## Communication style
 
