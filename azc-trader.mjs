@@ -454,7 +454,7 @@ async function tryFire() {
     maxOpenPositions: MAX_OPEN_POSITIONS,
     sideStatus,
     sessionStatus,
-    currentSession: currentKillzoneName(Date.now()) || 'off',
+    currentSession: currentKillzoneName() || 'off',
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
   });
 
