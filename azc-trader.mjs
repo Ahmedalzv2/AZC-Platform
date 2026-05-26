@@ -405,11 +405,13 @@ async function scanAllSymbols() {
   }));
   // Persist the scan to a ring-buffered JSONL so the dashboard can
   // replay the last N decisions. Best-effort — disk failures must not
-  // break the trader's main loop.
+  // break the trader's main loop. kind:'scan' lets the dashboard
+  // distinguish per-cycle scans from kind:'decision' top-level outcomes.
   try {
     await appendScanEvent(EVENTS_FILE, {
       ts: Date.now(),
       cycle: cycleCount,
+      kind: 'scan',
       scan: lastScanSummary,
     });
   } catch (e) { log('[events-append-err]', e.message); }
@@ -903,6 +905,22 @@ while (true) {
       if (r.skip && r.skip !== 'no-candidates') {
         log(`[skip] ${r.skip}${r.detail ? ' · ' + r.detail : ''}`);
       }
+      // Persist the top-level fire decision so the dashboard can show
+      // "at 11:11 fire vetoed by side-gate: LONG -0.384R/trade" instead
+      // of just the latest scan snapshot. Best-effort — disk failures
+      // never break the trader loop.
+      try {
+        await appendScanEvent(EVENTS_FILE, {
+          ts: Date.now(),
+          cycle: cycleCount,
+          kind: 'decision',
+          action: r.fired ? 'fire' : 'skip',
+          vetoed_by: r.fired ? null : (r.skip || 'unknown'),
+          reason: r.detail || null,
+          symbol: r.symbol || null,
+          ...(r.fired ? { orderId: r.orderId, entry: r.entry, sl: r.sl, tp: r.tp } : {}),
+        });
+      } catch (e) { log('[decision-event-err]', e.message); }
     } else if (pendingOrder || positionContext) {
       // Keep the dashboard scan feed alive even when bot can't fire.
       try { await scanAllSymbols(); } catch (e) {}
