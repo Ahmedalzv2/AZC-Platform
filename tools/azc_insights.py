@@ -139,6 +139,55 @@ def build_recommendations(report: dict[str, Any]) -> list[str]:
     return recs
 
 
+def proposed_gate_action(stats: dict[str, Any]) -> str | None:
+    trades = int(stats.get("trades") or 0)
+    net_r = float(stats.get("net_r") or 0.0)
+    win_rate = float(stats.get("win_rate") or 0.0)
+    expectancy_r = float(stats.get("expectancy_r") or 0.0)
+    if trades < 3 or net_r >= 0 or expectancy_r >= 0:
+        return None
+    if trades >= 5 and net_r <= -3.0 and win_rate <= 0.25:
+        return "block"
+    if net_r <= -1.0 and win_rate <= 0.35:
+        return "downshift"
+    return None
+
+
+def build_drift_gates(report: dict[str, Any]) -> dict[str, Any]:
+    gates: list[dict[str, Any]] = []
+    for dimension, group_key in (("side", "by_side"), ("session", "by_session"), ("symbol", "by_symbol")):
+        for value, stats in report.get(group_key, {}).items():
+            action = proposed_gate_action(stats)
+            if not action:
+                continue
+            gates.append({
+                "key": f"{dimension}:{value}",
+                "dimension": dimension,
+                "value": value,
+                "proposed_action": action,
+                "reason": (
+                    f"{value} has {stats['trades']} trades, {stats['win_rate']:.1%} win rate, "
+                    f"{stats['expectancy_r']:+.2f}R expectancy, {stats['net_r']:+.2f}R net"
+                ),
+                "stats": {
+                    "trades": stats["trades"],
+                    "wins": stats["wins"],
+                    "losses": stats["losses"],
+                    "be": stats["be"],
+                    "win_rate": stats["win_rate"],
+                    "expectancy_r": stats["expectancy_r"],
+                    "net_r": stats["net_r"],
+                },
+            })
+    return {
+        "schema": "azc-drift-gates/v1",
+        "generated_at": report.get("generated_at"),
+        "review_only": True,
+        "warning": "These are proposed gates only. Human review required before any execution logic changes.",
+        "gates": gates,
+    }
+
+
 def build_report(learn_root: str | Path, events_path: str | Path | None = None) -> dict[str, Any]:
     learn_root = Path(learn_root)
     events = Path(events_path) if events_path else None
@@ -211,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--events", default=".trader-state/trader-events.jsonl")
     parser.add_argument("--json-out")
     parser.add_argument("--md-out")
+    parser.add_argument("--drift-out", help="Write review-only proposed drift gates as JSON.")
     args = parser.parse_args(argv)
 
     report = build_report(args.learn_root, args.events)
@@ -218,7 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.json_out).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     if args.md_out:
         Path(args.md_out).write_text(render_markdown(report))
-    if not args.json_out and not args.md_out:
+    if args.drift_out:
+        Path(args.drift_out).write_text(json.dumps(build_drift_gates(report), indent=2, sort_keys=True) + "\n")
+    if not args.json_out and not args.md_out and not args.drift_out:
         print(render_markdown(report), end="")
     return 0
 
