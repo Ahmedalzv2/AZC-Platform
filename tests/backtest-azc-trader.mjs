@@ -19,6 +19,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { buildSetup } from '../trader-signal.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIX_DIR = path.join(__dirname, 'fixtures');
@@ -115,64 +116,33 @@ function to1h(bars5) {
   return out;
 }
 
-// EXACT copy of the live trader's detectUnmitigatedFvg.
-function detectUnmitigatedFvg(bars) {
-  if (bars.length < 3) return null;
-  for (let i = bars.length - 1; i >= 2; i--) {
-    const a = bars[i - 2], c = bars[i];
-    let gap = null;
-    if (a.h < c.l)      gap = { dir: 'bull', lo: a.h, hi: c.l };
-    else if (a.l > c.h) gap = { dir: 'bear', lo: c.h, hi: a.l };
-    if (!gap) continue;
-    gap.mid = (gap.lo + gap.hi) / 2;
-    gap.body = gap.hi - gap.lo;
-    gap.formedAt = c.t;
-    gap.formedIdx = i;
-    let mitigated = false;
-    for (let j = i + 1; j < bars.length; j++) {
-      if (bars[j].l <= gap.mid && bars[j].h >= gap.mid) { mitigated = true; break; }
-    }
-    if (!mitigated) return gap;
-  }
-  return null;
-}
-
-// Build a candidate at bar index `i` looking back at 5m bars (with the
-// matching rolling-window 1h SMA bias). Returns either { skip } or a
-// fully-formed setup.
+// Backtest wrapper around the pure setup builder in trader-signal.mjs.
+// Adds the bar-walking warmup gate and the side filter — those are
+// backtest-only concerns and don't belong in the live signal.
 function buildCandidate(bars5, htfBarsUpTo, i, price) {
   if (i < LOOKBACK_BARS) return { skip: 'warmup-5m' };
-  if (htfBarsUpTo.length < HTF_SMA_LEN) return { skip: 'htf-warmup' };
-
-  const recent = htfBarsUpTo.slice(-HTF_SMA_LEN);
-  const sma = recent.reduce((a, b) => a + b.c, 0) / recent.length;
-  const htfDir = htfBarsUpTo[htfBarsUpTo.length - 1].c > sma ? 'bull' : 'bear';
-
   const window = bars5.slice(i - LOOKBACK_BARS, i + 1);
-  const fvg = detectUnmitigatedFvg(window);
-  if (!fvg) return { skip: 'no-fvg' };
-  if (fvg.dir !== htfDir) return { skip: 'htf-disagree' };
-  if (SIDE_FILTER === 'long'  && fvg.dir !== 'bull') return { skip: 'side-filter' };
-  if (SIDE_FILTER === 'short' && fvg.dir !== 'bear') return { skip: 'side-filter' };
-
-  const fvgBodyPct = fvg.body / price;
-  if (fvgBodyPct < MIN_FVG_BODY_PCT) return { skip: 'fvg-too-small' };
-
-  const distPct = Math.abs((price - fvg.mid) / fvg.mid);
-  if (distPct > TOUCH_TOLERANCE_PCT) return { skip: 'far-from-fvg' };
-
-  const farEdge = fvg.dir === 'bull' ? fvg.lo : fvg.hi;
-  const slDir   = fvg.dir === 'bull' ? -1 : 1;
-  const entry   = fvg.mid;
-  const slRaw   = farEdge + slDir * (fvg.body * FVG_BUFFER_PCT);
-  const slMin   = entry + slDir * (price * MIN_STOP_PCT);
-  const sl      = fvg.dir === 'bull' ? Math.min(slRaw, slMin) : Math.max(slRaw, slMin);
-  const stopDist = Math.abs(entry - sl);
-  if (!isFinite(stopDist) || stopDist <= 0)    return { skip: 'invalid-stop' };
-  if (stopDist / price < MIN_STOP_PCT * 0.999) return { skip: 'stop-too-tight' };
-
-  const tp = fvg.dir === 'bull' ? entry + stopDist * RR : entry - stopDist * RR;
-  return { dir: fvg.dir, entry, sl, tp, distPct, fvgBodyPct, stopDist };
+  const setup = buildSetup({
+    bars5m: window,
+    htfBars: htfBarsUpTo,
+    price,
+    config: {
+      HTF_SMA: HTF_SMA_LEN, FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT,
+      MIN_FVG_BODY_PCT, MIN_STOP_PCT, RR,
+    },
+  });
+  if (setup.skip) return setup;
+  if (SIDE_FILTER === 'long'  && setup.fvg.dir !== 'bull') return { skip: 'side-filter' };
+  if (SIDE_FILTER === 'short' && setup.fvg.dir !== 'bear') return { skip: 'side-filter' };
+  return {
+    dir: setup.fvg.dir,
+    entry: setup.entry,
+    sl: setup.sl,
+    tp: setup.tp,
+    distPct: setup.distPct,
+    fvgBodyPct: setup.fvgBodyPct,
+    stopDist: setup.stopDist,
+  };
 }
 
 // Walk forward from open bar `i+1` until the next bar that crosses SL or

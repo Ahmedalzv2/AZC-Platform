@@ -22,6 +22,7 @@ import { writeLearningFile } from './trade-learnings.mjs';
 import { collectTrades, summarise } from './trade-stats.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
 import { KILLZONES_UTC, inKillzone, currentKillzoneName, nextKillzoneBoundary } from './trader-killzones.mjs';
+import { buildSetup } from './trader-signal.mjs';
 import {
   HTF_MIN, HTF_SMA, LOOKBACK_BARS,
   RR, MAX_HOLD_MS, COOLDOWN_MS,
@@ -30,6 +31,11 @@ import {
   RISK_DOWNSHIFT_AFTER_LOSSES, STREAK_PAUSE_AFTER_LOSSES, MAX_CONSECUTIVE_LOSSES,
   SIDE_GATE_MIN_SAMPLE, SIDE_GATE_DOWNSHIFT_R, SIDE_GATE_BLOCK_R,
 } from './trader-config.mjs';
+
+const SIGNAL_CONFIG = {
+  HTF_SMA, FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT,
+  MIN_FVG_BODY_PCT, MIN_STOP_PCT, RR,
+};
 
 // ──────────────────────────────────────────────────────────────────
 // Config
@@ -292,36 +298,14 @@ async function cancelOrder(orderId) {
 // A gap is "mitigated" when a subsequent bar trades back through its mid.
 // We want the most recent unmitigated gap.
 // ──────────────────────────────────────────────────────────────────
-function detectUnmitigatedFvg(bars) {
-  if (bars.length < 3) return null;
-  for (let i = bars.length - 1; i >= 2; i--) {
-    const a = bars[i - 2], c = bars[i];
-    let gap = null;
-    if (a.h < c.l)      gap = { dir: 'bull', lo: a.h, hi: c.l };
-    else if (a.l > c.h) gap = { dir: 'bear', lo: c.h, hi: a.l };
-    if (!gap) continue;
-    gap.mid = (gap.lo + gap.hi) / 2;
-    gap.body = gap.hi - gap.lo;
-    gap.formedAt = c.t;
-    gap.formedIdx = i;
-    // Check mitigation by any bar AFTER it.
-    let mitigated = false;
-    for (let j = i + 1; j < bars.length; j++) {
-      if (bars[j].l <= gap.mid && bars[j].h >= gap.mid) { mitigated = true; break; }
-    }
-    if (!mitigated) return gap;
-  }
-  return null;
-}
-
 // ──────────────────────────────────────────────────────────────────
 // Trade lifecycle
 // ──────────────────────────────────────────────────────────────────
 let positionContext = null;  // remembers { symbol, side, entry, sl, tp, qty, lev, posId, openedAt }
 
-// Build a candidate trade for a single symbol. Returns { skip } if any
-// per-symbol gate fails; otherwise returns the prepared trade payload so
-// the multi-asset scanner can rank candidates and fire one.
+// Per-symbol wrapper around the pure setup builder in trader-signal.mjs.
+// Owns the I/O (klines, ticker, contract meta), cooldown gate, and the
+// contract-sizing math that lives outside the shared signal.
 async function buildCandidate(symbol) {
   const cd = cooldownUntil.get(symbol) || 0;
   if (Date.now() < cd) return { skip: 'cooldown', symbol };
@@ -335,47 +319,26 @@ async function buildCandidate(symbol) {
   ]);
   if (!bars5m.length || !htfBars.length || !ticker || !meta) return { skip: 'no-data', symbol };
 
-  const recent = htfBars.slice(-HTF_SMA);
-  if (recent.length < HTF_SMA) return { skip: 'htf-warmup', symbol };
-  const sma = recent.reduce((a, b) => a + b.c, 0) / recent.length;
-  const htfDir = htfBars[htfBars.length-1].c > sma ? 'bull' : 'bear';
-
-  const fvg = detectUnmitigatedFvg(bars5m);
-  if (!fvg) return { skip: 'no-fvg', symbol };
-  if (fvg.dir !== htfDir) return { skip: 'htf-disagree', symbol };
-
   const price = ticker.lastPrice;
+  const setup = buildSetup({ bars5m, htfBars, price, config: SIGNAL_CONFIG });
+  if (setup.skip) return { ...setup, symbol };
 
-  // Minimum FVG size — gaps smaller than 0.10% of price are micro-noise
-  // (1-bar wicks, not real displacement). Stop sitting at the FVG edge
-  // is hunt-bait when the body is this small.
-  const fvgBodyPct = fvg.body / price;
-  if (fvgBodyPct < MIN_FVG_BODY_PCT) return { skip: 'fvg-too-small', symbol, fvgBodyPct };
+  const sideOpen = setup.fvg.dir === 'bull' ? 1 : 3;
+  const stopDistUsdPerContract = meta.contractSize * setup.stopDist;
 
-  const distPct = Math.abs((price - fvg.mid) / fvg.mid);
-  if (distPct > TOUCH_TOLERANCE_PCT) return { skip: 'far-from-fvg', symbol, distPct };
-
-  const sideOpen = fvg.dir === 'bull' ? 1 : 3;
-  const farEdge  = fvg.dir === 'bull' ? fvg.lo : fvg.hi;
-  const slDir    = fvg.dir === 'bull' ? -1 : 1;
-
-  // Entry is the FVG mid. SL and TP must be computed FROM THE ENTRY, not
-  // from ticker price — earlier code mixed those references which made
-  // the math drift (e.g. SL on the wrong side of entry on a small FVG).
-  // The entry-anchored math also makes the FVG-edge buffer + min-stop
-  // floor work correctly together.
-  const entry    = fvg.mid;
-  const slRaw    = farEdge + slDir * (fvg.body * FVG_BUFFER_PCT);
-  const slMinFloor = entry + slDir * (price * MIN_STOP_PCT);  // floor: at least MIN_STOP_PCT away
-  const sl       = fvg.dir === 'bull' ? Math.min(slRaw, slMinFloor) : Math.max(slRaw, slMinFloor);
-  const stopDist = Math.abs(entry - sl);
-  if (!isFinite(stopDist) || stopDist <= 0) return { skip: 'invalid-stop', symbol };
-  if (stopDist / price < MIN_STOP_PCT) return { skip: 'stop-too-tight', symbol };
-
-  const tp = fvg.dir === 'bull' ? entry + stopDist * RR : entry - stopDist * RR;
-  const stopDistUsdPerContract = meta.contractSize * stopDist;
-
-  return { symbol, fvg, htfDir, price, entry, sl, tp, sideOpen, stopDistUsdPerContract, meta, distPct };
+  return {
+    symbol,
+    fvg: setup.fvg,
+    htfDir: setup.htfDir,
+    price,
+    entry: setup.entry,
+    sl: setup.sl,
+    tp: setup.tp,
+    sideOpen,
+    stopDistUsdPerContract,
+    meta,
+    distPct: setup.distPct,
+  };
 }
 
 // Always-on scan — runs every cycle whether or not the bot can actually
