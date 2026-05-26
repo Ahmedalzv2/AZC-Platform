@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLearningFile } from './trade-learnings.mjs';
 import { writeInsightsFile } from './trade-insights.mjs';
+import { readTailEvents } from './trader-events.mjs';
 import { buildStats } from './trade-stats.mjs';
 import { authedWriteWith } from './relay-auth.mjs';
 import { callMexcSigned, ALLOWED_PATH_PREFIX as MEXC_ALLOWED } from './mexc-signer.mjs';
@@ -698,6 +699,19 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, stopFlag, ...data }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 200, { ok: false, running: false, reason: 'no-state-file' }, CORS_HEADERS);
+      }
+    }
+
+    // Trader events — append-only JSONL ring buffer of recent scan
+    // decisions. Public GET so the dashboard can render decision
+    // provenance ("why didn't the bot fire?") without sending the token.
+    if (url.pathname === '/trader-events' && req.method === 'GET') {
+      const limit = Math.max(1, Math.min(2000, Number(url.searchParams.get('limit')) || 200));
+      try {
+        const events = await readTailEvents('/app/.trader-state/trader-events.jsonl', limit);
+        return sendJson(res, 200, { ok: true, count: events.length, events }, CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: error.message }, CORS_HEADERS);
       }
     }
 
