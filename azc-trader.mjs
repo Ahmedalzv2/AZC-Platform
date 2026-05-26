@@ -84,7 +84,7 @@ const MAX_CONSECUTIVE_LOSSES = 5;
 // over 90d hit TP only after the cap. 120m captures them while still
 // staying inside a single funding window most of the time.
 const MAX_HOLD_MS = 120 * 60 * 1000;
-const RR = 1.5;
+const RR = 1.8;
 const TICK_MS = 15_000;
 const POSITION_POLL_MS = 5_000;
 const MAKER_ORDER_TTL_MS = 180_000;
