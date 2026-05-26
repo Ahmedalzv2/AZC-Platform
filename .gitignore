@@ -2,6 +2,8 @@ node_modules/
 package-lock.json
 *.log
 .DS_Store
+__pycache__/
+*.pyc
 tests/.backtest-cache/
 tests/baselines/.last-run.json
 # Per-resolved-trade post-mortems; user data, not source.
