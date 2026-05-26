@@ -52,9 +52,12 @@ export const KILLZONE_GATE_ENABLED = false;
 //   below SIDE_GATE_BLOCK_R      → skip fires on that side entirely
 //
 // SIDE_GATE_MIN_SAMPLE guards against acting on small-sample noise.
-// 20 is a compromise: enough to distinguish edge from variance at the
-// methodology's ~47% WR, small enough that real regime shifts trip the
-// gate within a few sessions.
-export const SIDE_GATE_MIN_SAMPLE   = 20;
+// Lowered 2026-05-26 from 20 → 10. The 5L hard halt was removed the
+// same day, so the side/session gates are now the only data-driven
+// safety against a sustained-bleed direction. 10 trades is enough to
+// reject the most blatant divergence (live -0.38R vs backtest +0.18R
+// on the LONG side wouldn't survive past trade 10 with this band)
+// while still requiring more signal than a one-bad-session streak.
+export const SIDE_GATE_MIN_SAMPLE   = 10;
 export const SIDE_GATE_DOWNSHIFT_R  = -0.10;
 export const SIDE_GATE_BLOCK_R      = -0.30;
