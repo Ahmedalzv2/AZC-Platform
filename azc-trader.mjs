@@ -474,8 +474,7 @@ async function tryFire() {
   }
 
   const equity = await getAccountUsdt();
-  const riskUsd = equity * riskPct;
-  let qty = Math.floor(riskUsd / pick.stopDistUsdPerContract);
+  let qty = Math.floor((equity * riskPct) / pick.stopDistUsdPerContract);
   if (qty < pick.meta.minVol) qty = pick.meta.minVol;
   const maxQtyByMargin = Math.floor((equity * 0.5 * LEVERAGE) / (pick.meta.contractSize * pick.price));
   if (qty > maxQtyByMargin && maxQtyByMargin > 0) qty = maxQtyByMargin;
