@@ -10,11 +10,12 @@
 //
 // Known modelling limitations:
 //   1. TTL gate is bar-granular. checkPostOnlyTtlFill counts a fill if
-//      the next 5m bar's range brackets the entry — it can't see WHEN
-//      in that bar the cross happened. The live TTL is 180s ≈ 60% of
-//      a bar; a cross at minute 4 wouldn't fill in production but is
-//      counted as a fill here. Bias unknown direction (over- or under-
-//      counts depending on path within bar).
+//      the next 5m bar's range brackets the entry. Measured against
+//      1m bars (tests/ttl-resolution-diag.mjs, 30d sample): the coarse
+//      gate is purely OPTIMISTIC — it never misses a real fill, but
+//      over-counts by ~17-22% (BTC worst at 36%, SOL/XRP best at 17%).
+//      Means realistic-backtest dollar/R projections should be
+//      discounted ~20% to compare against live execution.
 //   2. resolve() assumes SL hits first when a bar's range spans both
 //      SL and TP. Pessimistic in trending bars, accurate in chop.
 //   3. Single regime — fixtures cover 90d or 365d ending today.

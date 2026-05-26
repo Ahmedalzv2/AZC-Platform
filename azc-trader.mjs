@@ -72,10 +72,12 @@ if (!API_KEY || !API_SECRET) {
 //   XRP      +0.144R / +$8.26   +0.035R / +$11.28
 //
 // Aggregate at SOL+XRP, 365d realistic-TTL: ~+$24.70 net on $50/year.
-// Small edge, but the only configuration that is net-positive over a
-// full market cycle once order TTL is modelled. Re-evaluate after ~30
-// clean live trades (post-#221 stop-verify fix) to see whether reality
-// matches the realistic backtest or differs.
+// 30d 1m-bar TTL diagnostic (tests/ttl-resolution-diag.mjs) shows the
+// coarse 5m-bracket gate over-counts fills by ~17-19% for SOL/XRP — so
+// the truthful projection is closer to ~+$20/year. Small edge, but the
+// only configuration that is net-positive over a full market cycle once
+// order TTL is modelled. Re-evaluate after ~30 clean live trades
+// (post-#221 stop-verify fix) to see whether reality matches.
 const SYMBOLS = ['SOL_USDT', 'XRP_USDT'];
 // Methodology knobs (RR, MAX_HOLD_MS, MIN_FVG_BODY_PCT, risk tiers, the
 // 2L/3L/5L loss-streak cascade, etc.) live in ./trader-config.mjs so the
