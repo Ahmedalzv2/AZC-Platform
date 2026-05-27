@@ -3220,6 +3220,7 @@
     } catch (e) {
       _azcTraderState = { ok: false, running: false, reason: 'fetch-failed' };
     }
+    try { _syncMexcWalletFromTrader(_azcTraderState); } catch (e) {}
     _renderAzcScanFeed(_azcTraderState);
     const btn = document.getElementById('azcTraderSwitch');
     if (!btn) return;
@@ -7434,6 +7435,10 @@
     const pnl = cost > 0 ? ((value - cost) / cost) * 100 : 0;
     return { value, cost, pnl };
   }
+  // Stamped each time _syncMexcWalletFromTrader applies a live wallet
+  // figure from /trader-state. Used by _renderCapitalCard to badge the
+  // MEXC chip as LIVE so the user knows the value is auto-synced.
+  let _mexcAutoSyncAt = 0;
   function _renderCapitalCard() {
     const el = document.getElementById('capitalStrip');
     if (!el) return;
@@ -7477,8 +7482,8 @@
           <span class="cap-chip-label">Bank</span>
           <span class="cap-chip-val">${fmt(bank)}</span>
         </button>
-        <button class="cap-chip cap-chip-edit" onclick="_editCapital('mexcMicroCapital')" title="Click to edit MEXC futures wallet (micro-capital lane)">
-          <span class="cap-chip-label">MEXC · Futures</span>
+        <button class="cap-chip cap-chip-edit" onclick="_editCapital('mexcMicroCapital')" title="${_mexcAutoSyncAt ? 'Auto-synced from MEXC futures wallet · click to override' : 'Click to edit MEXC futures wallet (micro-capital lane)'}">
+          <span class="cap-chip-label">MEXC · Futures${_mexcAutoSyncAt ? ' · LIVE' : ''}</span>
           <span class="cap-chip-val">${fmtMexc(mexc)}</span>
         </button>
         <button class="cap-chip cap-chip-edit" onclick="_editCapital('fpMarketsUs100')" title="Click to edit FP Markets US100 balance">
@@ -7521,6 +7526,25 @@
     _renderCapitalCard();
     // Re-render every 5s so spot-held value tracks live prices.
     setInterval(_renderCapitalCard, 5000);
+  }
+  // Trader writes the live MEXC futures USDT balance into /trader-state
+  // every cycle; mirror it into the capital strip so the chip reflects
+  // the exchange wallet without a manual edit. Manual edits still work —
+  // they're just overwritten on the next poll while the trader is live.
+  function _syncMexcWalletFromTrader(s) {
+    if (!s || s.ok === false) return;
+    const v = Number(s.walletUsdt);
+    const at = Number(s.walletUsdtAt);
+    if (!Number.isFinite(v) || v < 0 || !Number.isFinite(at) || at <= 0) return;
+    // Treat anything older than 5 min as stale — don't overwrite a manual
+    // edit with a frozen number if the trader stopped writing state.
+    if (Date.now() - at > 5 * 60 * 1000) return;
+    if (typeof _userCapital === 'undefined') return;
+    if (Math.abs((Number(_userCapital.mexcMicroCapital) || 0) - v) < 0.0001) return;
+    _userCapital.mexcMicroCapital = v;
+    _mexcAutoSyncAt = at;
+    saveUserCapital();
+    _renderCapitalCard();
   }
 
   function _checkNewsForHeldPositions() {

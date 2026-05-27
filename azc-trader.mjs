@@ -90,6 +90,10 @@ const MAX_OPEN_POSITIONS  = 1;
 const TICK_MS             = 15_000;
 const POSITION_POLL_MS    = 5_000;
 const MAKER_ORDER_TTL_MS  = 180_000;
+// Wallet balance refresh cadence — keeps the dashboard chip live without
+// pounding the signed-API rate limit. 30s is well below the 5s position
+// poll so the freshness is always within one tick of the chart update.
+const WALLET_REFRESH_MS   = 30_000;
 
 // Killzone windows live in ./trader-killzones.mjs so tests can pull pure
 // helpers without importing this file (which exits at load when MEXC creds
@@ -115,6 +119,12 @@ let lastError = null;
 let lastCycleAt = 0;
 let cycleCount = 0;
 let lastScanSummary = null;           // top candidates from last scan, surfaced in state.json
+// Cached MEXC futures wallet balance (USDT availableBalance). Refreshed
+// every WALLET_REFRESH_MS so the dashboard can render the live wallet
+// chip without each browser making a signed call. null = never fetched.
+let walletUsdt = null;
+let walletUsdtAt = 0;
+let walletUsdtError = null;
 let gateCutoffLogged = false;         // log SIDE_GATE_SAMPLE_SINCE_TS filter once per boot
 // Side-aware live drift: { long: {n, expR, status}, short: {n, expR, status} }
 //   status ∈ 'enabled' | 'downshifted' | 'blocked'
@@ -261,6 +271,9 @@ async function writeState(extra = {}) {
     positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp } : null,
     lastScanSummary,
     lastError,
+    walletUsdt,
+    walletUsdtAt,
+    walletUsdtError,
     ...extra,
   };
   try { await writeFile(STATE_FILE, JSON.stringify(s, null, 2)); }
@@ -335,6 +348,21 @@ async function getAccountUsdt() {
   const rows = Array.isArray(r.json?.data) ? r.json.data : [];
   const usdt = rows.find(x => x.currency === 'USDT');
   return usdt ? +usdt.availableBalance : 0;
+}
+
+// Refresh the cached MEXC futures wallet figure when the last fetch is
+// older than WALLET_REFRESH_MS. Called from the main loop so the value
+// in state.json — which the dashboard polls — never drifts more than one
+// cycle behind the exchange.
+async function maybeRefreshWallet(now = Date.now()) {
+  if (walletUsdtAt && (now - walletUsdtAt) < WALLET_REFRESH_MS) return;
+  try {
+    walletUsdt = await getAccountUsdt();
+    walletUsdtAt = Date.now();
+    walletUsdtError = null;
+  } catch (e) {
+    walletUsdtError = e.message || String(e);
+  }
 }
 
 async function placeOrder(body) {
@@ -902,6 +930,7 @@ while (true) {
     lastError = e.message || String(e);
     log('[cycle-err]', lastError);
   }
+  await maybeRefreshWallet();
   await writeState();
   await sleep(positionContext ? POSITION_POLL_MS : TICK_MS);
 }
