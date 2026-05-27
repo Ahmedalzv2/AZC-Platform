@@ -151,13 +151,18 @@
           .azc-decisions-empty { color:var(--text-mute);padding:8px 0;font-style:italic; }
           .azc-dec-row { display:flex;gap:8px;padding:2px 0;border-bottom:1px dashed var(--border-soft); }
           .azc-dec-row:last-child { border-bottom:none; }
+          .azc-dec-row.stacked { background:rgba(255,255,255,0.02); }
           .azc-dec-ts { color:var(--text-mute);flex-shrink:0;min-width:64px; }
-          .azc-dec-tag { font-weight:700;flex-shrink:0;min-width:56px; }
+          .azc-dec-tag { font-weight:700;flex-shrink:0;min-width:56px;display:flex;align-items:baseline;gap:6px; }
           .azc-dec-tag.fire { color:var(--bull); }
           .azc-dec-tag.skip { color:var(--text-mute); }
           .azc-dec-tag.skip-soft { color:var(--liq); }
-          .azc-dec-body { color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-          .azc-dec-veto { color:var(--bear);font-weight:700;margin-right:6px; }
+          .azc-dec-count { font-weight:700;color:var(--text);font-size:10px;padding:1px 5px;
+            background:rgba(255,255,255,0.06);border-radius:9px;letter-spacing:0; }
+          .azc-dec-body { color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+            display:flex;align-items:baseline;gap:6px;flex:1;min-width:0; }
+          .azc-dec-veto { color:var(--bear);font-weight:700;flex-shrink:0; }
+          .azc-dec-since { color:var(--text-mute);font-size:10px;margin-left:auto;flex-shrink:0; }
           .azc-tile { background:var(--bg);border:1px solid var(--border);border-radius:10px;
                       padding:11px 13px;transition:border-color .2s,background .2s; }
           .azc-tile.ready { border-color:var(--bull);background:rgba(92,184,138,0.07); }
@@ -207,7 +212,7 @@
           <div class="azc-decisions">
             <div class="azc-decisions-header">
               <span>Recent fire decisions</span>
-              <span class="azc-decisions-hint" id="azcDecisionsHint">last 20 · refreshes every 5s</span>
+              <span class="azc-decisions-hint" id="azcDecisionsHint">consecutive same-reason skips stacked · refreshes every 5s</span>
             </div>
             <div id="azcDecisionList" class="azc-decisions-list">
               <div class="azc-decisions-empty">Awaiting first decision…</div>
@@ -3275,17 +3280,51 @@
   // vetoed". no-candidates / pending-order are quiet operational states;
   // the rest are real veto signals the operator wants to see highlighted.
   const _DEC_QUIET_SKIPS = new Set(['no-candidates', 'pending-order']);
-  function _renderDecisionRow(ev) {
-    const ts = _decTimeStr(ev.ts);
-    if (ev.action === 'fire') {
-      const sym = (ev.symbol || '').replace('_USDT', '');
-      const entry = Number.isFinite(Number(ev.entry)) ? ` @ ${Number(ev.entry).toFixed(4)}` : '';
+  // Collapse consecutive skips that share the same vetoed_by into one row
+  // with a count + "since HH:MM:SS" range. Fires never stack — each has a
+  // unique symbol/entry. Input is newest-first; output preserves that
+  // order and stamps each group with newestTs/oldestTs from its members.
+  function _groupDecisions(events) {
+    const groups = [];
+    for (const ev of events) {
+      const last = groups[groups.length - 1];
+      const canStack = last
+        && ev.action === 'skip'
+        && last.action === 'skip'
+        && last.vetoed_by === ev.vetoed_by;
+      if (canStack) {
+        last.count += 1;
+        last.oldestTs = ev.ts;
+        if (last.reason !== ev.reason) last.reason = null;
+      } else {
+        groups.push({
+          action: ev.action,
+          vetoed_by: ev.vetoed_by ?? null,
+          symbol: ev.symbol ?? null,
+          entry: ev.entry,
+          reason: ev.reason ?? null,
+          newestTs: ev.ts,
+          oldestTs: ev.ts,
+          count: 1,
+        });
+      }
+    }
+    return groups;
+  }
+  function _renderDecisionRow(g) {
+    const ts = _decTimeStr(g.newestTs);
+    if (g.action === 'fire') {
+      const sym = (g.symbol || '').replace('_USDT', '');
+      const entry = Number.isFinite(Number(g.entry)) ? ` @ ${Number(g.entry).toFixed(4)}` : '';
       return `<div class="azc-dec-row"><span class="azc-dec-ts">${ts}</span><span class="azc-dec-tag fire">FIRE</span><span class="azc-dec-body">${sym}${entry}</span></div>`;
     }
-    const tagCls = _DEC_QUIET_SKIPS.has(ev.vetoed_by) ? 'skip' : 'skip-soft';
-    const veto = ev.vetoed_by ? `<span class="azc-dec-veto">${ev.vetoed_by}</span>` : '';
-    const reason = ev.reason ? `<span>${String(ev.reason).slice(0, 120)}</span>` : '';
-    return `<div class="azc-dec-row"><span class="azc-dec-ts">${ts}</span><span class="azc-dec-tag ${tagCls}">skip</span><span class="azc-dec-body">${veto}${reason}</span></div>`;
+    const tagCls = _DEC_QUIET_SKIPS.has(g.vetoed_by) ? 'skip' : 'skip-soft';
+    const countBadge = g.count > 1 ? `<span class="azc-dec-count">× ${g.count}</span>` : '';
+    const veto = g.vetoed_by ? `<span class="azc-dec-veto">${g.vetoed_by}</span>` : '';
+    const reason = g.reason ? `<span>${String(g.reason).slice(0, 120)}</span>` : '';
+    const since = g.count > 1 ? `<span class="azc-dec-since">since ${_decTimeStr(g.oldestTs)}</span>` : '';
+    const rowCls = g.count > 1 ? 'azc-dec-row stacked' : 'azc-dec-row';
+    return `<div class="${rowCls}"><span class="azc-dec-ts">${ts}</span><span class="azc-dec-tag ${tagCls}">skip${countBadge}</span><span class="azc-dec-body">${veto}${reason}${since}</span></div>`;
   }
   async function refreshAzcDecisions() {
     const list = document.getElementById('azcDecisionList');
@@ -3294,12 +3333,17 @@
       const r = await fetch(TG_RELAY_BASE + '/trader-events?limit=200', { cache: 'no-store' });
       const j = await r.json();
       const events = Array.isArray(j.events) ? j.events : [];
-      const decisions = events.filter(e => e && e.kind === 'decision').slice(-20).reverse();
-      if (!decisions.length) {
+      // events arrive oldest-first; reverse so grouping merges newest
+      // consecutive cycles first. Then trim to the most recent 20 groups
+      // (with stacking, 20 groups cover materially more wall-clock time
+      // than 20 raw rows did).
+      const decisions = events.filter(e => e && e.kind === 'decision').reverse();
+      const groups = _groupDecisions(decisions).slice(0, 20);
+      if (!groups.length) {
         list.innerHTML = '<div class="azc-decisions-empty">No decisions logged yet.</div>';
         return;
       }
-      list.innerHTML = decisions.map(_renderDecisionRow).join('');
+      list.innerHTML = groups.map(_renderDecisionRow).join('');
     } catch (e) {
       list.innerHTML = `<div class="azc-decisions-empty">Events endpoint unreachable: ${e.message}</div>`;
     }
