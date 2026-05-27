@@ -124,6 +124,31 @@ describe('buildInsights + formatInsightsMarkdown', () => {
     const md = formatInsightsMarkdown(insights);
     assert.match(md, /None yet/);
   });
+
+  it('sinceTs excludes pre-cutoff trades + post-mortem files from every block', () => {
+    const tradesWithCutoff = [
+      // Bug-era trade — should be filtered out
+      { filename: 'pre.md', ts: 1, symbol: 'BUG', side: 'LONG', outcome: 'loss', rMultiple: -1, realizedUsd: -3, session: 'asia', grade: 'top2', fvgBodyPct: 0.0012 },
+      // Post-fix wins
+      { filename: 'w1.md', ts: 10, symbol: 'OK', side: 'SHORT', outcome: 'win',  rMultiple: 1.8, realizedUsd: 5, session: 'ny-am', grade: 'top2', fvgBodyPct: 0.0025 },
+      { filename: 'w2.md', ts: 11, symbol: 'OK', side: 'SHORT', outcome: 'win',  rMultiple: 1.8, realizedUsd: 5, session: 'ny-am', grade: 'top2', fvgBodyPct: 0.0025 },
+    ];
+    const filesWithCutoff = [
+      { trade: tradesWithCutoff[0], body: sampleBody('Likely orphan-cleanup path. Likely orphan-cleanup path.') },
+      { trade: tradesWithCutoff[1], body: sampleBody('Hit TP at +1.80R. Setup played as designed.') },
+      { trade: tradesWithCutoff[2], body: sampleBody('Hit TP at +1.80R. Setup played as designed.') },
+    ];
+    const insights = buildInsights({ trades: tradesWithCutoff, files: filesWithCutoff, now: 20, sinceTs: 5 });
+    assert.equal(insights.all.total, 2, 'stats exclude bug-era trade');
+    assert.equal(insights.all.wins, 2);
+    assert.equal(insights.all.losses, 0);
+    assert.equal(insights.leaks.length, 0, 'bug-era loss sentence does not pollute leaks');
+    assert.ok(insights.edges.some(e => /Hit TP/.test(e.example)), 'post-fix win edge surfaces');
+    const bugBin = insights.fvgBodyBins.find(b => b.label === '0.10-0.15%');
+    assert.equal(bugBin.n, 0, 'bug-era trade excluded from FVG bins');
+    const goodBin = insights.fvgBodyBins.find(b => b.label === '0.20-0.30%');
+    assert.equal(goodBin.n, 2);
+  });
 });
 
 describe('binByPct', () => {

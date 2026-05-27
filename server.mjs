@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLearningFile } from './trade-learnings.mjs';
 import { writeInsightsFile } from './trade-insights.mjs';
+import { SIDE_GATE_SAMPLE_SINCE_TS } from './trader-config.mjs';
 import { readTailEvents } from './trader-events.mjs';
 import { buildStats } from './trade-stats.mjs';
 import { authedWriteWith } from './relay-auth.mjs';
@@ -749,7 +750,7 @@ const server = http.createServer(async (req, res) => {
         // counts on the next read. Failure here must not break the
         // /learn-trade response — the post-mortem file is the canonical
         // record; insights are a derived view.
-        try { await writeInsightsFile(LEARN_ROOT); }
+        try { await writeInsightsFile(LEARN_ROOT, { sinceTs: SIDE_GATE_SAMPLE_SINCE_TS }); }
         catch (e) { console.error('[insights-refresh-err]', e.message); }
         return sendJson(res, 200, out, CORS_HEADERS);
       } catch (error) {

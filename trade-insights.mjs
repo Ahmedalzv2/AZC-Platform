@@ -115,12 +115,23 @@ export function binByPct(trades, field, edges) {
   }));
 }
 
-export function buildInsights({ trades, files, now = Date.now() }) {
-  const all     = summarise(trades);
-  const last24h = summarise(trades.filter(t => now - t.ts <= 24 * 3600 * 1000));
-  const last7d  = summarise(trades.filter(t => now - t.ts <=  7 * 86400 * 1000));
-  const { edges, leaks } = rankLessons(trades, files);
-  const fvgBodyBins = binByPct(trades, 'fvgBodyPct', [0.0010, 0.0015, 0.0020, 0.0030, 0.0050, 0.0100]);
+// `sinceTs`: when set, drops any trade (and its post-mortem file) with
+// ts < sinceTs from every aggregation. Used to exclude the pre-#221
+// stop-verify-FAIL panic-close era from INSIGHTS so the dashboard
+// reflects the methodology that's actually running today. Mirrors the
+// side-gate filter in azc-trader.mjs.
+export function buildInsights({ trades, files, now = Date.now(), sinceTs }) {
+  const sample = Number.isFinite(sinceTs) && sinceTs > 0
+    ? trades.filter(t => Number(t.ts) >= sinceTs)
+    : trades;
+  const sampleFiles = Number.isFinite(sinceTs) && sinceTs > 0
+    ? files.filter(f => Number(f.trade?.ts) >= sinceTs)
+    : files;
+  const all     = summarise(sample);
+  const last24h = summarise(sample.filter(t => now - t.ts <= 24 * 3600 * 1000));
+  const last7d  = summarise(sample.filter(t => now - t.ts <=  7 * 86400 * 1000));
+  const { edges, leaks } = rankLessons(sample, sampleFiles);
+  const fvgBodyBins = binByPct(sample, 'fvgBodyPct', [0.0010, 0.0015, 0.0020, 0.0030, 0.0050, 0.0100]);
   return {
     generatedAt: new Date(now).toISOString(),
     all, last24h, last7d,
@@ -217,7 +228,9 @@ export function formatInsightsMarkdown(insights) {
 // write them to learnRoot/INSIGHTS.md. Safe to call from concurrent
 // /learn-trade requests — file writes are atomic at the OS level for
 // small payloads, and the worst-case race is one stale render.
-export async function writeInsightsFile(learnRoot, now = Date.now()) {
+export async function writeInsightsFile(learnRoot, opts = {}) {
+  const now = Number.isFinite(opts.now) ? opts.now : (typeof opts === 'number' ? opts : Date.now());
+  const sinceTs = Number.isFinite(opts.sinceTs) ? opts.sinceTs : undefined;
   const trades = await collectTrades(learnRoot);
   const files = [];
   for (const bucket of BUCKETS) {
@@ -233,7 +246,7 @@ export async function writeInsightsFile(learnRoot, now = Date.now()) {
       files.push({ trade, body });
     }
   }
-  const insights = buildInsights({ trades, files, now });
+  const insights = buildInsights({ trades, files, now, sinceTs });
   const md = formatInsightsMarkdown(insights);
   await mkdir(learnRoot, { recursive: true });
   const out = path.join(learnRoot, 'INSIGHTS.md');
