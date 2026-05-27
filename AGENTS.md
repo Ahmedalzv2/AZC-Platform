@@ -51,6 +51,7 @@ Resulting policy:
 ## Repo-specific facts
 
 - Tests: `npm test` (fast, ~2s). Always run before push.
+- After editing `azc-trader.mjs` or trader-imported modules, `npm test` is not enough. Run a boot check under `relay.env` and inspect `/var/log/azc-trader.log` for repeated `[cycle-err]`/Error lines; a systemd-active service can be dead every cycle.
 - Dev branch is set per-session by the harness — use whichever branch
   the session instructions name, not a branch hard-coded here.
 - Worker URL is user-deployed Cloudflare Worker proxying signed MEXC
