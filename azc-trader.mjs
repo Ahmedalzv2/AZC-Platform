@@ -88,6 +88,10 @@ if (!API_KEY || !API_SECRET) {
 // closer to ~+$20/year. Small edge, but the only configuration that
 // survives 365d screening. Re-evaluate after ~30 clean live trades
 // (post-#221 stop-verify fix) to see whether reality matches.
+//
+// Per-asset strategy notes live in ./docs/strategies/<SYMBOL>.md — what
+// setup is firing, knob values, backtest numbers, why this asset. Adding
+// a symbol here without creating its .md file (or vice versa) is a bug.
 const SYMBOLS = ['SOL_USDT', 'XRP_USDT'];
 // Methodology knobs (RR, MAX_HOLD_MS, MIN_FVG_BODY_PCT, risk tiers, the
 // 2L/3L/5L loss-streak cascade, etc.) live in ./trader-config.mjs so the

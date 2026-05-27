@@ -29,6 +29,7 @@
 // Usage:
 //   node tests/backtest-azc-trader.mjs                       (all assets, default rules)
 //   node tests/backtest-azc-trader.mjs --asset=BTC           (one asset)
+//   node tests/backtest-azc-trader.mjs --assets=SOL,XRP --days=365
 //   node tests/backtest-azc-trader.mjs --rr=2 --min-stop=0.0035  (vary knobs)
 //
 // Output: per-symbol fills/wins/losses/be, win rate, expectancy in R,
@@ -384,9 +385,15 @@ function summarize(symbol, trades) {
 }
 
 const onlyAsset = args.asset ? String(args.asset).toUpperCase() : null;
+const onlyAssets = args.assets
+  ? new Set(String(args.assets).split(',').map(s => s.trim().toUpperCase()).filter(Boolean))
+  : null;
+const onlyDays = args.days ? String(args.days) : null;
 const files = readdirSync(FIX_DIR)
   .filter(f => /-\d+d-Min5\.json$/.test(f))
-  .filter(f => !onlyAsset || f.startsWith(onlyAsset + '-'));
+  .filter(f => !onlyAsset || f.startsWith(onlyAsset + '-'))
+  .filter(f => !onlyAssets || onlyAssets.has(f.split('-')[0]))
+  .filter(f => !onlyDays || f.includes(`-${onlyDays}d-Min5.json`));
 
 if (!files.length) {
   console.error(`No fixtures found (looking for *-d-Min5.json${onlyAsset ? ` matching ${onlyAsset}` : ''})`);
@@ -397,7 +404,7 @@ if (!files.length) {
 // and confirm at a glance what was simulated. Anything missing from this
 // line means it isn't part of the proof.
 const PROD_BANNER = [
-  `AZC trader backtest · 90d 5m fixtures · BALANCE=$${BALANCE} risk=${(RISK_PCT*100).toFixed(1)}% lev=${LEVERAGE}x`,
+  `AZC trader backtest · ${onlyDays || 'all'}d 5m fixtures · BALANCE=$${BALANCE} risk=${(RISK_PCT*100).toFixed(1)}% lev=${LEVERAGE}x`,
   `Production-matching defaults imported from trader-config.mjs:`,
   `  RR=${RR}  MAX_HOLD=${MAX_HOLD_MS/60000}m  COOLDOWN=${COOLDOWN_MS/60000}m  killzone=${KILLZONES_ENABLED}  side=${SIDE_FILTER}`,
   `  HTF=${HTF_MIN}m SMA(${HTF_SMA_LEN})  MIN_FVG_BODY=${(MIN_FVG_BODY_PCT*100).toFixed(2)}%  MIN_STOP=${(MIN_STOP_PCT*100).toFixed(2)}%  TOUCH=${(TOUCH_TOLERANCE_PCT*100).toFixed(2)}%`,
@@ -462,7 +469,7 @@ console.log('Side split:');
 console.log('  ' + splitSummary('LONG',  longTrades));
 console.log('  ' + splitSummary('SHORT', shortTrades));
 console.log('');
-console.log(`Net $ on $${BALANCE} starting: $${agg.totalUsd.toFixed(2)} after 90d (${((agg.totalUsd/BALANCE)*100).toFixed(1)}% return on bankroll)`);
+console.log(`Net $ on $${BALANCE} starting: $${agg.totalUsd.toFixed(2)} after ${onlyDays || 'all'}d (${((agg.totalUsd/BALANCE)*100).toFixed(1)}% return on bankroll)`);
 console.log(`Per-trade R after fees: ${aggExpR.toFixed(3)}R · Win rate: ${(aggWin*100).toFixed(1)}% (BE at RR=${RR} is ${(100/(1+RR)).toFixed(1)}%)`);
 console.log(`Total fees paid: $${agg.totalFees.toFixed(2)}`);
 console.log(`TTL cancels (no fill within 180s): ${totalTtlCancels} (would-have-fired but order timed out)${TTL_REALISTIC ? '' : ' — TTL gate DISABLED via --no-ttl'}`);
