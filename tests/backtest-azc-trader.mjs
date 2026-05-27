@@ -511,3 +511,25 @@ if (args.json) {
     console.log(`\nJSON summary written to ${args.json}`);
   }
 }
+
+// --trades-json=<path> dumps the per-trade list so downstream analyses
+// (regime classification, funding-rate joins, etc.) don't need to
+// re-replay the strategy. Pure data export — no behaviour change.
+if (args['trades-json']) {
+  const slim = allTrades.map(t => ({
+    symbol: t.symbol,
+    ts: t.ts,
+    exitTs: t.exitTs,
+    dir: t.dir,
+    outcome: t.outcome,
+    rMultiple: t.rMultiple,
+    netUsd: t.netUsd,
+    entry: t.entry,
+    sl: t.sl,
+    tp: t.tp,
+    session: t.session,
+  }));
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(args['trades-json'], JSON.stringify(slim));
+  console.log(`Per-trade JSON written to ${args['trades-json']} (${slim.length} trades)`);
+}
