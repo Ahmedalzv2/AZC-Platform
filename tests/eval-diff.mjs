@@ -21,6 +21,8 @@ const bless = process.argv.includes('--bless');
 
 const r = spawnSync(process.execPath, [
   path.join(__dirname, 'backtest-azc-trader.mjs'),
+  '--assets=SOL,XRP',
+  '--days=365',
   `--json=${TMP_PATH}`,
 ], { stdio: ['ignore', 'inherit', 'inherit'] });
 if (r.status !== 0) {
