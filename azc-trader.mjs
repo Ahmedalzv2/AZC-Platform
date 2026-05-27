@@ -28,6 +28,7 @@ import { buildSetup } from './trader-signal.mjs';
 import { decideGate, groupBySession } from './trader-drift-gate.mjs';
 import { decideFireAction } from './trader-fire-decision.mjs';
 import { sendTelegram, fmtFireAlert, fmtCloseAlert, fmtDriftAlert } from './trader-notify.mjs';
+import { shouldRefreshWallet } from './trader-wallet.mjs';
 
 async function notify(text) {
   // Fire-and-forget — never let a Telegram failure interrupt the loop.
@@ -369,7 +370,7 @@ async function getAccountUsdt() {
 // in state.json — which the dashboard polls — never drifts more than one
 // cycle behind the exchange.
 async function maybeRefreshWallet(now = Date.now()) {
-  if (walletUsdtAt && (now - walletUsdtAt) < WALLET_REFRESH_MS) return;
+  if (!shouldRefreshWallet(walletUsdtAt, now, WALLET_REFRESH_MS)) return;
   try {
     walletUsdt = await getAccountUsdt();
     walletUsdtAt = Date.now();
