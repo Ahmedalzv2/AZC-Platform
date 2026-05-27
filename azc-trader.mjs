@@ -802,7 +802,7 @@ async function reconcileClosedPosition() {
   // Roll up the new lesson into trade-learnings/INSIGHTS.md so the
   // dashboard reflects it on next read. Best-effort — the post-mortem
   // file is canonical, this is a derived view.
-  try { await writeInsightsFile(LEARN_ROOT); }
+  try { await writeInsightsFile(LEARN_ROOT, { sinceTs: SIDE_GATE_SAMPLE_SINCE_TS }); }
   catch (e) { log('[insights-refresh-fail]', e.message); }
 }
 
