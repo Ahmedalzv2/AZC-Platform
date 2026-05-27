@@ -99,7 +99,9 @@ const TF_RESOLUTION = {
   '4h':  '240',
   '1d':  '1D',
 };
-async function us100Bars(tfs, limit = 60) {
+async function tvBars(symbol, tfs, limit = 60) {
+  const tvSymbol = String(symbol || '').trim().toUpperCase();
+  if (!/^[A-Z0-9_:.!\-]{1,64}$/.test(tvSymbol)) throw new Error('invalid-tv-symbol');
   const ws = new WebSocket('wss://data.tradingview.com/socket.io/websocket', {
     headers: { 'Origin': 'https://www.tradingview.com' },
   });
@@ -141,7 +143,7 @@ async function us100Bars(tfs, limit = 60) {
     send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
     for (const [csid, tf] of Object.entries(sessions)) {
       send({ m: 'chart_create_session', p: [csid, ''] });
-      send({ m: 'resolve_symbol', p: [csid, 'sym', '={"adjustment":"splits","symbol":"FPMARKETS:US100"}'] });
+      send({ m: 'resolve_symbol', p: [csid, 'sym', '={"adjustment":"splits","symbol":"' + tvSymbol + '"}'] });
       send({ m: 'create_series', p: [csid, 'ser', 's1', 'sym', TF_RESOLUTION[tf], limit, ''] });
     }
 
@@ -181,10 +183,14 @@ async function us100Bars(tfs, limit = 60) {
       ws.addEventListener('error', () => { clearTimeout(to); reject(new Error('ws-error')); });
       ws.addEventListener('close', () => { clearTimeout(to); reject(new Error('ws-closed')); });
     });
-    return { bars: out, ts: Date.now(), source: 'tv-ws:FPMARKETS:US100' };
+    return { bars: out, ts: Date.now(), source: 'tv-ws:' + tvSymbol, symbol: tvSymbol };
   } finally {
     try { ws.close(); } catch {}
   }
+}
+
+async function us100Bars(tfs, limit = 60) {
+  return tvBars('FPMARKETS:US100', tfs, limit);
 }
 
 async function us100Price() {
@@ -586,6 +592,13 @@ const server = http.createServer(async (req, res) => {
       const tfsParam = (url.searchParams.get('tfs') || '1m,5m,15m,1h,4h,1d').split(',').map(s => s.trim()).filter(Boolean);
       const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '60', 10) || 60, 22), 300);
       try { return sendJson(res, 200, await us100Bars(tfsParam, limit), CORS_HEADERS); }
+      catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
+    }
+    if (url.pathname === '/tv/bars') {
+      const symbol = url.searchParams.get('symbol') || 'FPMARKETS:US100';
+      const tfsParam = (url.searchParams.get('tfs') || '1m,5m,15m,1h,4h,1d').split(',').map(s => s.trim()).filter(Boolean);
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '60', 10) || 60, 22), 300);
+      try { return sendJson(res, 200, await tvBars(symbol, tfsParam, limit), CORS_HEADERS); }
       catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
     }
     if (url.pathname === '/stats' && req.method === 'GET') {

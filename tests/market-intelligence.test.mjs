@@ -65,3 +65,57 @@ describe('getMarketIntelligence', () => {
     assert.match(read.action, /Dead Zone/i);
   });
 });
+
+describe('AZC Intel Scouts', () => {
+  test('keeps SEC and 13F scouts dormant until source-backed collectors exist', () => {
+    const { app } = loadApp();
+    const read = app._buildIntelScouts({
+      market: { verdict: 'MIXED', action: 'Manual watch', reasons: [], cryptoAvg: 0, hotFunding: 0 },
+      assets: [],
+      fundingRates: {},
+      macroBlackout: null,
+    });
+    const eddie = read.scouts.find(s => s.name === 'Eddie');
+    const maggie = read.scouts.find(s => s.name === 'Maggie');
+    assert.equal(eddie.state, 'dormant');
+    assert.equal(maggie.state, 'dormant');
+    assert.equal(read.consensus.status, 'NO CONSENSUS');
+  });
+
+  test('fires Sophie consensus only when three active scouts align on same asset and direction', () => {
+    const { app } = loadApp();
+    const read = app._buildIntelScouts({
+      market: { verdict: 'RISK ON', action: 'Manual longs can be watched', reasons: ['NY AM active'], cryptoAvg: 1.2, hotFunding: 0 },
+      assets: [
+        { symbol: 'US100', bias: 'Bullish', checks: [1,1,1], mtf: { h1: 'bull', h4: 'bull', d1: 'bull' } },
+        { symbol: 'BTC', bias: 'Bullish', checks: [1,1,1,1,1,1,1,1,1,1] },
+      ],
+      fundingRates: { CRYPTO: -0.07 },
+      macroBlackout: null,
+    });
+    assert.equal(read.consensus.status, 'CONSENSUS');
+    assert.equal(read.consensus.asset, 'CRYPTO');
+    assert.equal(read.consensus.direction, 'BULLISH');
+    // Individual asserts instead of deepEqual — loadApp's vm context
+    // has its own Array prototype, so deepStrictEqual fails on
+    // structurally-equal cross-realm arrays.
+    const got = [...read.consensus.scouts].sort();
+    assert.equal(got.length, 3);
+    assert.equal(got[0], 'Frank');
+    assert.equal(got[1], 'Maya');
+    assert.equal(got[2], 'Nora');
+  });
+
+  test('macro blackout forces Frank bearish but does not create fake consensus alone', () => {
+    const { app } = loadApp();
+    const read = app._buildIntelScouts({
+      market: { verdict: 'STAND DOWN', action: 'No new trades', reasons: ['US CPI'], cryptoAvg: 0, hotFunding: 0 },
+      assets: [{ symbol: 'US100', bias: 'Neutral', checks: [] }],
+      fundingRates: {},
+      macroBlackout: { event: 'US CPI', mins: 12, impact: 'high' },
+    });
+    const frank = read.scouts.find(s => s.name === 'Frank');
+    assert.equal(frank.direction, 'BEARISH');
+    assert.equal(read.consensus.status, 'NO CONSENSUS');
+  });
+});
