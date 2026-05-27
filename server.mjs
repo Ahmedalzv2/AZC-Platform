@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, access } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -195,6 +195,7 @@ async function us100Price() {
   const tryYahoo = async () => {
     const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m', {
       headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(6_000),
     });
     if (!r.ok) throw new Error('yahoo HTTP ' + r.status);
     const j = await r.json();
@@ -207,6 +208,7 @@ async function us100Price() {
     const r = await fetch('https://scanner.tradingview.com/global/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(6_000),
       body: JSON.stringify({ symbols: { tickers: ['CME_MINI:NQ1!'] }, columns: ['lp'] }),
     });
     if (!r.ok) throw new Error('TV scanner HTTP ' + r.status);
@@ -240,6 +242,7 @@ async function telegramSend(text) {
   const r = await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(8_000),
     body: JSON.stringify({ chat_id: TG_CHAT, text: String(text).slice(0, 4000), disable_web_page_preview: true }),
   });
   const j = await r.json();
@@ -482,6 +485,76 @@ function denyAuth(res) {
 // host disk; the user reviews them with normal grep/cat. Per-file dedupe by
 // filename — re-POSTing the same id is a no-op so the dashboard can retry.
 const LEARN_ROOT = process.env.LEARN_ROOT || path.join(root, 'trade-learnings');
+const TRADER_STATE_DIR = process.env.TRADER_STATE_DIR || '/app/.trader-state';
+const TRADER_STATE_FILE = path.join(TRADER_STATE_DIR, 'state.json');
+const TRADER_STOP_FLAG = path.join(TRADER_STATE_DIR, 'stop.flag');
+const TRADER_EVENTS_FILE = path.join(TRADER_STATE_DIR, 'trader-events.jsonl');
+
+async function fileExists(file) {
+  return access(file).then(() => true).catch(() => false);
+}
+
+function freshness(ts, staleMs) {
+  const ageMs = ts ? Date.now() - Number(ts) : null;
+  return { ts: ts || 0, ageMs, stale: ageMs == null || ageMs > staleMs };
+}
+
+async function readRequestBody(req, maxBytes) {
+  let body = '';
+  await new Promise((resolve, reject) => {
+    req.on('data', c => {
+      body += c;
+      if (body.length > maxBytes) {
+        reject(new Error('body-too-large'));
+        req.destroy();
+      }
+    });
+    req.on('end', resolve);
+    req.on('error', reject);
+  });
+  return body;
+}
+
+async function buildHealth() {
+  const browserState = freshness(_dashState.ts, STATE_STALE_MS);
+  const browserAuto = freshness(_autoState.ts, AUTO_STALE_MS);
+  const stopFlag = await fileExists(TRADER_STOP_FLAG);
+  let trader = { ok: false, running: false, reason: 'no-state-file', stopFlag };
+  try {
+    const data = JSON.parse(await readFile(TRADER_STATE_FILE, 'utf8'));
+    const cycle = freshness(data.lastCycleAt, 60_000);
+    trader = {
+      ok: true,
+      running: !cycle.stale && !stopFlag,
+      stopFlag,
+      cycleCount: data.cycleCount || 0,
+      lastCycleAt: data.lastCycleAt || 0,
+      cycleAgeMs: cycle.ageMs,
+      stale: cycle.stale,
+      lastError: data.lastError || null,
+      pendingOrder: data.pendingOrder || null,
+      positionContext: data.positionContext || null,
+    };
+  } catch (e) {
+    trader.error = e.code || e.message;
+  }
+  const checks = {
+    relayAuth: { ok: Boolean(RELAY_TOKEN) },
+    mexcSigning: { ok: Boolean(MEXC_API_KEY && MEXC_API_SECRET) },
+    telegramSend: { ok: Boolean(TG_TOKEN && TG_CHAT) },
+    learnRoot: { ok: await fileExists(LEARN_ROOT) },
+    traderEvents: { ok: await fileExists(TRADER_EVENTS_FILE) },
+    browserState: { ok: !browserState.stale, ...browserState },
+    browserAuto: { ok: !browserAuto.stale, ...browserAuto, state: _autoState.state },
+    trader,
+  };
+  return {
+    ok: checks.learnRoot.ok,
+    ts: Date.now(),
+    uptimeSec: Math.round(process.uptime()),
+    checks,
+  };
+}
 
 function sendJson(res, status, body, extraHeaders = {}) {
   res.writeHead(status, {
@@ -497,6 +570,10 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (req.method === 'OPTIONS') {
       res.writeHead(204, CORS_HEADERS); return res.end();
+    }
+    if ((url.pathname === '/health' || url.pathname === '/ready') && req.method === 'GET') {
+      const health = await buildHealth();
+      return sendJson(res, health.ok ? 200 : 503, health, CORS_HEADERS);
     }
     // Same payload exposed under two paths so a hardcoded fallback URL can
     // point at either `/us100` (matches the Cloudflare Worker contract) or
@@ -529,13 +606,8 @@ const server = http.createServer(async (req, res) => {
       // Browser ticker pushes its current state here every minute so the
       // Telegram command handler can answer /picks /positions /status from
       // cached data without waking the dashboard.
-      let body = '';
       try {
-        await new Promise((resolve, reject) => {
-          req.on('data', c => { body += c; if (body.length > 32 * 1024) { reject(new Error('body-too-large')); req.destroy(); } });
-          req.on('end', resolve);
-          req.on('error', reject);
-        });
+        const body = await readRequestBody(req, 32 * 1024);
         const payload = JSON.parse(body || '{}');
         _dashState = {
           positions: Array.isArray(payload.positions) ? payload.positions : [],
@@ -567,9 +639,9 @@ const server = http.createServer(async (req, res) => {
       let serverTrader;
       try {
         const fs = await import('node:fs/promises');
-        const text = await fs.readFile('/app/.trader-state/state.json', 'utf8');
+        const text = await fs.readFile(TRADER_STATE_FILE, 'utf8');
         const data = JSON.parse(text);
-        const stopFlag = await fs.access('/app/.trader-state/stop.flag').then(() => true).catch(() => false);
+        const stopFlag = await fs.access(TRADER_STOP_FLAG).then(() => true).catch(() => false);
         const cycleAge = data.lastCycleAt ? Date.now() - data.lastCycleAt : null;
         // 60s is 4× the trader's TICK_MS (15s) — alive if it's been
         // scanning that recently.
@@ -610,13 +682,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/auto-state' && req.method === 'POST') {
       if (!authedWrite(req)) return denyAuth(res);
-      let body = '';
       try {
-        await new Promise((resolve, reject) => {
-          req.on('data', c => { body += c; if (body.length > 512) { reject(new Error('body-too-large')); req.destroy(); } });
-          req.on('end', resolve);
-          req.on('error', reject);
-        });
+        const body = await readRequestBody(req, 512);
         const payload = JSON.parse(body || '{}');
         const state = payload.state === 'on' ? 'on' : 'off';
         // Only overwrite lastFireTs when the payload explicitly carries a
@@ -637,13 +704,8 @@ const server = http.createServer(async (req, res) => {
       if (!MEXC_API_KEY || !MEXC_API_SECRET) {
         return sendJson(res, 503, { error: 'server-signing-disabled' }, CORS_HEADERS);
       }
-      let body = '';
       try {
-        await new Promise((resolve, reject) => {
-          req.on('data', c => { body += c; if (body.length > 8 * 1024) { reject(new Error('body-too-large')); req.destroy(); } });
-          req.on('end', resolve);
-          req.on('error', reject);
-        });
+        const body = await readRequestBody(req, 8 * 1024);
         const payload = JSON.parse(body || '{}');
         const path = String(payload.path || '');
         if (!path.startsWith(MEXC_ALLOWED)) {
@@ -662,13 +724,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/learn-trade' && req.method === 'POST') {
       if (!authedWrite(req)) return denyAuth(res);
-      let body = '';
       try {
-        await new Promise((resolve, reject) => {
-          req.on('data', c => { body += c; if (body.length > 16 * 1024) { reject(new Error('body-too-large')); req.destroy(); } });
-          req.on('end', resolve);
-          req.on('error', reject);
-        });
+        const body = await readRequestBody(req, 16 * 1024);
         const payload = JSON.parse(body || '{}');
         if (!payload || !payload.symbol || !payload.outcome) {
           return sendJson(res, 400, { error: 'missing-fields' }, CORS_HEADERS);
@@ -692,9 +749,9 @@ const server = http.createServer(async (req, res) => {
     // sending the token.
     if (url.pathname === '/trader-state' && req.method === 'GET') {
       try {
-        const text = await import('node:fs/promises').then(m => m.readFile('/app/.trader-state/state.json', 'utf8'));
+        const text = await import('node:fs/promises').then(m => m.readFile(TRADER_STATE_FILE, 'utf8'));
         const data = JSON.parse(text);
-        const stopFlag = await import('node:fs/promises').then(m => m.access('/app/.trader-state/stop.flag').then(() => true).catch(() => false));
+        const stopFlag = await import('node:fs/promises').then(m => m.access(TRADER_STOP_FLAG).then(() => true).catch(() => false));
         return sendJson(res, 200, { ok: true, stopFlag, ...data }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 200, { ok: false, running: false, reason: 'no-state-file' }, CORS_HEADERS);
@@ -707,7 +764,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/trader-events' && req.method === 'GET') {
       const limit = Math.max(1, Math.min(2000, Number(url.searchParams.get('limit')) || 200));
       try {
-        const events = await readTailEvents('/app/.trader-state/trader-events.jsonl', limit);
+        const events = await readTailEvents(TRADER_EVENTS_FILE, limit);
         return sendJson(res, 200, { ok: true, count: events.length, events }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 500, { ok: false, error: error.message }, CORS_HEADERS);
@@ -720,8 +777,8 @@ const server = http.createServer(async (req, res) => {
       if (!authedWrite(req)) return denyAuth(res);
       try {
         const fs = await import('node:fs/promises');
-        await fs.mkdir('/app/.trader-state', { recursive: true });
-        await fs.writeFile('/app/.trader-state/stop.flag', new Date().toISOString());
+        await fs.mkdir(TRADER_STATE_DIR, { recursive: true });
+        await fs.writeFile(TRADER_STOP_FLAG, new Date().toISOString());
         return sendJson(res, 200, { ok: true, stopped: true }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 500, { error: error.message }, CORS_HEADERS);
@@ -735,7 +792,7 @@ const server = http.createServer(async (req, res) => {
       if (!authedWrite(req)) return denyAuth(res);
       try {
         const fs = await import('node:fs/promises');
-        await fs.unlink('/app/.trader-state/stop.flag').catch(() => {});
+        await fs.unlink(TRADER_STOP_FLAG).catch(() => {});
         return sendJson(res, 200, { ok: true, cleared: true }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 500, { error: error.message }, CORS_HEADERS);
@@ -745,13 +802,8 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/notify' && req.method === 'POST') {
       if (!authedWrite(req)) return denyAuth(res);
       // Read body, expect { text }. Cap at 2KB so a stuck client can't flood us.
-      let body = '';
       try {
-        await new Promise((resolve, reject) => {
-          req.on('data', c => { body += c; if (body.length > 2048) { reject(new Error('body-too-large')); req.destroy(); } });
-          req.on('end', resolve);
-          req.on('error', reject);
-        });
+        const body = await readRequestBody(req, 2048);
         const payload = JSON.parse(body || '{}');
         const text = String(payload.text || '').trim();
         if (!text) return sendJson(res, 400, { error: 'empty-text' }, CORS_HEADERS);

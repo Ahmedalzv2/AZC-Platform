@@ -63,8 +63,11 @@ export function buildSignedRequest({ apiKey, apiSecret, path, method, body, para
 
 // Perform the signed call. Returns { ok, status, body } — body is text;
 // caller JSON.parses if it wants. Network errors throw.
-export async function callMexcSigned({ apiKey, apiSecret, path, method, body, params }) {
+export async function callMexcSigned({ apiKey, apiSecret, path, method, body, params, timeoutMs = 10_000 }) {
   const { url, init } = buildSignedRequest({ apiKey, apiSecret, path, method, body, params });
+  // Exchange calls must fail closed quickly; a hung signed request can freeze
+  // the trader loop while exposure is open.
+  init.signal = AbortSignal.timeout(timeoutMs);
   const r = await fetch(url, init);
   const text = await r.text();
   return { ok: r.ok, status: r.status, body: text };

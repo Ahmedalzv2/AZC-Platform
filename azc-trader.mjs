@@ -61,22 +61,32 @@ if (!API_KEY || !API_SECRET) {
   console.error('FATAL: MEXC_API_KEY / MEXC_API_SECRET not set'); process.exit(2);
 }
 
-// Live symbol set. Re-screened 2026-05-26 against the realistic-TTL
-// backtest extended to 365d of 5m bars (PR #224). The 90d window had
-// regime bias toward BTC; over a full year only SOL and XRP keep a
-// (small) positive expectancy:
+// Live symbol set. Re-screened 2026-05-27 against the realistic-TTL
+// backtest at 365d of 5m bars (10 candidates with full-year fixtures).
+// SOL and XRP are still the only symbols net-positive over a full
+// market cycle; every other large-cap bleeds once order-TTL is modelled.
 //
-//   symbol   90d realistic    365d realistic
-//   BTC      +0.074R / +$5.82   -0.086R / -$17.26   ← dropped
-//   SOL      +0.106R / +$4.64   +0.055R / +$13.42
-//   XRP      +0.144R / +$8.26   +0.035R / +$11.28
+//   symbol   365d realistic R/trade   365d realistic net$
+//   SOL          +0.073R                 +$8.31
+//   XRP          +0.113R                +$15.78
+//   BTC          -0.023R                 -$1.11   (was -0.086R; drifted flat)
+//   DOGE         -0.253R                -$34.13
+//   DOT          -0.045R                 -$4.56
+//   LINK         -0.060R                 -$8.86
+//   LTC          -0.232R                -$36.45
+//   NEAR         -0.172R                -$16.29
+//   SUI          -0.354R                -$51.14
 //
-// Aggregate at SOL+XRP, 365d realistic-TTL: ~+$24.70 net on $50/year.
-// 30d 1m-bar TTL diagnostic (tests/ttl-resolution-diag.mjs) shows the
-// coarse 5m-bracket gate over-counts fills by ~17-19% for SOL/XRP — so
-// the truthful projection is closer to ~+$20/year. Small edge, but the
-// only configuration that is net-positive over a full market cycle once
-// order TTL is modelled. Re-evaluate after ~30 clean live trades
+// Meme/AI-narrative perps (PEPE, WIF, BONK, etc.) are excluded upstream
+// in tests/dump-fixtures.mjs — their wick patterns over-trigger
+// MIN_STOP_PCT and the strategy has no edge there.
+//
+// Aggregate SOL+XRP, 365d realistic-TTL: ~+$24.09 net on $50/year (446
+// trades, ~+0.095R/trade). 30d 1m-bar TTL diagnostic
+// (tests/ttl-resolution-diag.mjs) shows the coarse 5m-bracket gate
+// over-counts fills by ~17-19% for SOL/XRP — truthful projection is
+// closer to ~+$20/year. Small edge, but the only configuration that
+// survives 365d screening. Re-evaluate after ~30 clean live trades
 // (post-#221 stop-verify fix) to see whether reality matches.
 const SYMBOLS = ['SOL_USDT', 'XRP_USDT'];
 // Methodology knobs (RR, MAX_HOLD_MS, MIN_FVG_BODY_PCT, risk tiers, the
@@ -293,7 +303,7 @@ async function mexcSigned(opts) {
 // Public klines fetch (no signing). interval default = 5m.
 async function fetchKlines(symbol, intervalMin = TF_MIN, limit = LOOKBACK_BARS) {
   const url = `https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min${intervalMin}&limit=${limit}`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
   const j = await r.json();
   const d = j.data || {};
   if (!Array.isArray(d.open)) return [];
@@ -316,7 +326,7 @@ async function htfTrend(symbol) {
 
 async function fetchTicker(symbol) {
   const url = `https://contract.mexc.com/api/v1/contract/ticker?symbol=${symbol}`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
   const j = await r.json();
   const d = j.data;
   if (!d) return null;
@@ -326,7 +336,7 @@ async function fetchTicker(symbol) {
 
 async function fetchContractMeta(symbol) {
   const url = `https://contract.mexc.com/api/v1/contract/detail?symbol=${symbol}`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
   const j = await r.json();
   const d = j.data;
   const x = Array.isArray(d) ? d[0] : d;
