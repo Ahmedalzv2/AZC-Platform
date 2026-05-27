@@ -274,6 +274,27 @@
             </div>
           </div>
 
+          <div class="ap-card full" style="border-color:rgba(201,169,97,0.35);">
+            <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>🛰 AZC Intel Scouts</span>
+              <span id="intelScoutsStamp" style="color:var(--text-mute);font-size:10px;font-family:'JetBrains Mono',monospace;">read-only · no execution</span>
+            </div>
+            <div id="intelScoutsPanel" style="font-size:12px;color:var(--text-dim);line-height:1.6;">
+              Loading scout consensus...
+            </div>
+          </div>
+
+          <div class="ap-card full" style="border-color:rgba(91,141,239,0.28);">
+            <div class="ap-card-title">🔌 TradingView Data Connector</div>
+            <div style="font-size:12px;color:var(--text-dim);line-height:1.7;">
+              AZC reads TradingView at the data level through the VPS relay. No screenshots. No image recognition.
+              <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-mute);">
+                Endpoint: <span style="color:var(--liq);">/tv/bars?symbol=FPMARKETS:US100&amp;tfs=1m,5m,15m,1h,4h,1d</span>
+              </div>
+              <div style="margin-top:6px;color:var(--text-mute);">Use this as the AZC-native replacement for the Codex/TradingView MCP installer idea: server pulls candles directly, dashboard/agents consume structured OHLC bars.</div>
+            </div>
+          </div>
+
           <!-- Market Intelligence Row -->
           <div class="ap-card" id="fearGreedCard">
             <div class="ap-card-title">😨 Fear & Greed</div>
@@ -1257,6 +1278,7 @@
 
     renderSessionTimeline(gst, session);
     try { renderMarketIntelligencePanel(); } catch (e) {}
+    try { renderIntelScoutsPanel(); } catch (e) {}
 
     // Live Trading modal: keep the diagnostic panels (Scalp Tick Diag,
     // Last Fire, conn-test) refreshed every second
@@ -1766,6 +1788,119 @@
           <div style="font-size:13px;color:var(--text);font-weight:700;margin-bottom:6px;">${esc(read.action)}</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">${reasons}</div>
           <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">Session ${esc(read.session)} · Crypto ${read.cryptoAvg ?? '—'}% · Metals ${read.metalsAvg ?? '—'}% · Hot funding ${read.hotFunding || 0}</div>
+        </div>
+      </div>`;
+  }
+
+  function _azcScoutDirectionFromBias(bias) {
+    const s = String(bias || '').toUpperCase();
+    if (s.includes('BULL')) return 'BULLISH';
+    if (s.includes('BEAR')) return 'BEARISH';
+    return 'NEUTRAL';
+  }
+
+  function _buildIntelScouts(opts) {
+    opts = opts || {};
+    const assets = Array.isArray(opts.assets) ? opts.assets : (typeof ASSETS !== 'undefined' ? ASSETS : []);
+    const market = opts.market || getMarketIntelligence(opts);
+    const macro = Object.prototype.hasOwnProperty.call(opts, 'macroBlackout') ? opts.macroBlackout : (typeof getMacroBlackout === 'function' ? getMacroBlackout() : null);
+    const fundingRates = opts.fundingRates || (typeof _latestFundingRates !== 'undefined' ? _latestFundingRates : {});
+    const bySym = new Map(assets.map(a => [String(a.symbol || '').toUpperCase(), a]));
+    const scouts = [];
+
+    if (macro) {
+      scouts.push({ name: 'Frank', department: 'Macro', asset: 'MACRO', direction: 'BEARISH', confidence: 5, state: 'active', reason: `${macro.event || 'high-impact event'} inside macro blackout` });
+    } else {
+      const dir = market.verdict === 'RISK ON' ? 'BULLISH' : market.verdict === 'RISK OFF' ? 'BEARISH' : 'NEUTRAL';
+      const macroAsset = Math.abs(Number(market.cryptoAvg) || 0) >= 0.7 ? 'CRYPTO' : 'MACRO';
+      scouts.push({ name: 'Frank', department: 'Macro', asset: macroAsset, direction: dir, confidence: dir === 'NEUTRAL' ? 2 : 3, state: 'active', reason: market.reasons?.[0] || market.action });
+    }
+
+    const hotFunding = Object.entries(fundingRates).map(([sym, rate]) => ({ sym, rate: Number(rate) })).filter(x => Number.isFinite(x.rate) && Math.abs(x.rate) >= 0.05);
+    if (hotFunding.length) {
+      const top = hotFunding.sort((a, b) => Math.abs(b.rate) - Math.abs(a.rate))[0];
+      scouts.push({ name: 'Maya', department: 'Crypto flow', asset: String(top.sym).toUpperCase(), direction: top.rate > 0 ? 'BEARISH' : 'BULLISH', confidence: 3, state: 'active', reason: `crowded funding ${top.rate.toFixed(3)}% warns of squeeze risk` });
+    } else if (Number(market.cryptoAvg) > 0.7) {
+      scouts.push({ name: 'Maya', department: 'Crypto flow', asset: 'CRYPTO', direction: 'BULLISH', confidence: 2, state: 'active', reason: `crypto breadth positive ${market.cryptoAvg}%` });
+    } else if (Number(market.cryptoAvg) < -0.7) {
+      scouts.push({ name: 'Maya', department: 'Crypto flow', asset: 'CRYPTO', direction: 'BEARISH', confidence: 2, state: 'active', reason: `crypto breadth weak ${market.cryptoAvg}%` });
+    } else {
+      scouts.push({ name: 'Maya', department: 'Crypto flow', asset: 'CRYPTO', direction: 'NEUTRAL', confidence: 1, state: 'active', reason: 'no strong crypto flow proxy' });
+    }
+
+    const us100 = bySym.get('US100');
+    if (us100) {
+      const dir = _azcScoutDirectionFromBias(us100.bias);
+      const mtf = typeof getMTFAligned === 'function' ? getMTFAligned(us100) : null;
+      scouts.push({ name: 'Cairo', department: 'TradingView chart', asset: 'US100', direction: dir, confidence: mtf?.aligned ? 4 : 2, state: 'active', reason: mtf?.aligned ? 'US100 chart bias aligns across higher timeframes' : 'US100 chart bias present but not fully aligned' });
+    }
+
+    const mexc = assets
+      .filter(a => ['SOL', 'XRP', 'BTC', 'ETH'].includes(String(a.symbol || '').toUpperCase()))
+      .map(a => ({ a, dir: _azcScoutDirectionFromBias(a.bias), score: Number(a.checks?.reduce ? a.checks.reduce((x, y) => x + y, 0) : 0) }))
+      .filter(x => x.dir !== 'NEUTRAL')
+      .sort((a, b) => b.score - a.score)[0];
+    if (mexc) {
+      const mexcAsset = ['BTC', 'ETH', 'SOL', 'XRP'].includes(String(mexc.a.symbol || '').toUpperCase()) && Math.abs(Number(market.cryptoAvg) || 0) >= 0.7
+        ? 'CRYPTO'
+        : mexc.a.symbol;
+      scouts.push({ name: 'Nora', department: 'AZC setup state', asset: mexcAsset, direction: mexc.dir, confidence: Math.max(1, Math.min(5, Math.round(mexc.score / 2))), state: 'active', reason: `${mexc.a.symbol} has the strongest live setup score (${mexc.score}/10)` });
+    }
+
+    scouts.push({ name: 'Eddie', department: 'SEC Form 4', asset: 'US equities', direction: 'NEUTRAL', confidence: 0, state: 'dormant', reason: 'collector not wired yet; requires deterministic SEC fetcher before alerts' });
+    scouts.push({ name: 'Maggie', department: '13F funds', asset: 'US equities', direction: 'NEUTRAL', confidence: 0, state: 'dormant', reason: 'collector not wired yet; requires deterministic EDGAR fetcher before alerts' });
+
+    const groups = new Map();
+    for (const s of scouts) {
+      if (s.state !== 'active' || s.direction === 'NEUTRAL') continue;
+      const key = `${s.asset}|${s.direction}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(s);
+    }
+    let best = null;
+    for (const [key, group] of groups.entries()) {
+      if (!best || group.length > best.scouts.length) {
+        const [asset, direction] = key.split('|');
+        best = { asset, direction, scouts: group };
+      }
+    }
+    const consensus = best && best.scouts.length >= 3
+      ? { status: 'CONSENSUS', asset: best.asset, direction: best.direction, scouts: best.scouts.map(s => s.name), action: 'Review only. No trade placed.' }
+      : { status: 'NO CONSENSUS', asset: null, direction: 'NEUTRAL', scouts: best ? best.scouts.map(s => s.name) : [], action: 'Need 3 independent active scouts aligned before alerting.' };
+    return { scouts, consensus, updatedAt: new Date().toISOString() };
+  }
+
+  function renderIntelScoutsPanel() {
+    const host = document.getElementById('intelScoutsPanel');
+    if (!host) return;
+    const esc = v => String(v == null ? '' : v).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const read = _buildIntelScouts();
+    const stamp = document.getElementById('intelScoutsStamp');
+    if (stamp) stamp.textContent = `${fmtTime(getGST())} GST · read-only`;
+    const color = read.consensus.status === 'CONSENSUS'
+      ? (read.consensus.direction === 'BULLISH' ? 'var(--bull)' : 'var(--bear)')
+      : 'var(--liq)';
+    const rows = read.scouts.map(s => {
+      const dirColor = s.direction === 'BULLISH' ? 'var(--bull)' : s.direction === 'BEARISH' ? 'var(--bear)' : 'var(--text-mute)';
+      const state = s.state === 'dormant' ? 'opacity:.55;' : '';
+      return `<div style="display:grid;grid-template-columns:74px 82px 72px 1fr;gap:8px;align-items:start;border-top:1px solid var(--border-soft);padding:7px 0;${state}">
+        <strong style="color:var(--text);font-family:'JetBrains Mono',monospace;">${esc(s.name)}</strong>
+        <span style="color:var(--text-mute);">${esc(s.asset)}</span>
+        <span style="color:${dirColor};font-weight:700;font-family:'JetBrains Mono',monospace;font-size:11px;">${esc(s.direction)}</span>
+        <span>${esc(s.reason)}</span>
+      </div>`;
+    }).join('');
+    host.innerHTML = `
+      <div style="display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:stretch;">
+        <div style="border:1px solid ${color};background:rgba(101,101,109,0.10);border-radius:8px;padding:12px;text-align:center;">
+          <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.08em;">Sophie</div>
+          <div style="font-size:16px;color:${color};font-weight:800;font-family:'JetBrains Mono',monospace;margin-top:4px;">${esc(read.consensus.status)}</div>
+          <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:4px;">${esc(read.consensus.scouts.length)}/3 aligned</div>
+        </div>
+        <div style="min-width:0;">
+          <div style="font-size:13px;color:var(--text);font-weight:700;margin-bottom:6px;">${esc(read.consensus.action)}</div>
+          <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-bottom:6px;">Dormant scouts are visible by design; they cannot vote until source-backed fetchers exist.</div>
+          ${rows}
         </div>
       </div>`;
   }

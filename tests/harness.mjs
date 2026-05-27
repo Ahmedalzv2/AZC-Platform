@@ -21,6 +21,7 @@ const EXPORTS = [
   'getFundingContext', 'isInvalidated',
   'getMacroBlackout', 'ECON_EVENTS', 'isMTFStale',
   'getMarketIntelligence', 'renderMarketIntelligencePanel',
+  '_azcScoutDirectionFromBias', '_buildIntelScouts', 'renderIntelScoutsPanel',
   // live stream + sparkline + backtest
   'parseTickerMessage', 'recordSignalState', 'renderSparkline',
   'SIGNAL_HISTORY_MS', 'BINANCE_WS_URL',
