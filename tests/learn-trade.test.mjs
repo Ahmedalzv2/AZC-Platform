@@ -73,6 +73,26 @@ describe('trade-learnings (pure)', () => {
     assert.match(md, /Funding:\s+\+0\.0002 USD\s+\(2 × 8h windows · held 16\.0h\)/);
   });
 
+  test('formatLearningMarkdown renders sentiment label on headlines when present', () => {
+    const md = formatLearningMarkdown({
+      timestamp: Date.UTC(2026, 4, 24, 8, 30),
+      symbol: 'BTC', side: 'long', outcome: 'win',
+      entry: 70000, sl: 69500, tp: 71000, rMultiple: 2.0,
+      context: {
+        source: 'lunarcrush',
+        headlines: [
+          { title: 'BTC squeezes higher', sentiment: 'bullish' },
+          { title: 'Hack drains exchange', sentiment: 'bearish' },
+          { title: 'Neutral commentary', sentiment: null },
+        ],
+      },
+    });
+    assert.match(md, /BTC squeezes higher.*\[bullish\]/);
+    assert.match(md, /Hack drains exchange.*\[bearish\]/);
+    // Neutral / missing sentiment renders no bracketed label
+    assert.doesNotMatch(md, /Neutral commentary.*\[/);
+  });
+
   test('formatLearningMarkdown renders Context section when payload.context has headlines', () => {
     const md = formatLearningMarkdown({
       timestamp: Date.UTC(2026, 4, 24, 8, 30),

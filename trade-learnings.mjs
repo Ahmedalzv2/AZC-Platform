@@ -95,7 +95,9 @@ export function formatContextSection(ctx) {
     const title = h.title.trim();
     const url = typeof h.url === 'string' && h.url ? ` — ${h.url}` : '';
     const ts = typeof h.publishedAt === 'string' && h.publishedAt ? ` (${h.publishedAt})` : '';
-    lines.push(`- ${title}${ts}${url}`);
+    const s = typeof h.sentiment === 'string' && h.sentiment && h.sentiment !== 'neutral'
+      ? ` [${h.sentiment}]` : '';
+    lines.push(`- ${title}${s}${ts}${url}`);
   }
   return lines;
 }
