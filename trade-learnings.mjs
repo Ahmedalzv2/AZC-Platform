@@ -81,6 +81,25 @@ export function generatePostMortem(p) {
   return lines.join(' ');
 }
 
+// Render the "Context" section if and only if there are real headlines to
+// show. Source attribution lets future-me eyeball whether the feed was
+// reliable. Headlines are bullets; URL/timestamp shown when present.
+export function formatContextSection(ctx) {
+  if (!ctx || typeof ctx !== 'object') return [];
+  const items = Array.isArray(ctx.headlines) ? ctx.headlines : [];
+  const valid = items.filter((h) => h && typeof h.title === 'string' && h.title.trim());
+  if (!valid.length) return [];
+  const lines = ['## Context (at close)'];
+  if (ctx.source) lines.push(`- Source: ${ctx.source}`);
+  for (const h of valid) {
+    const title = h.title.trim();
+    const url = typeof h.url === 'string' && h.url ? ` — ${h.url}` : '';
+    const ts = typeof h.publishedAt === 'string' && h.publishedAt ? ` (${h.publishedAt})` : '';
+    lines.push(`- ${title}${ts}${url}`);
+  }
+  return lines;
+}
+
 export function formatLearningMarkdown(p) {
   const lines = [];
   const f = (n, d = 4) => (Number.isFinite(Number(n)) ? Number(n).toFixed(d) : '—');
@@ -128,6 +147,11 @@ export function formatLearningMarkdown(p) {
   lines.push('## Analysis');
   lines.push((p?.analysis || '_(no analysis text recorded)_').trim());
   lines.push('');
+  const ctxLines = formatContextSection(p?.context);
+  if (ctxLines.length) {
+    lines.push(...ctxLines);
+    lines.push('');
+  }
   lines.push('## Post-mortem');
   const pm = (p?.postMortem && String(p.postMortem).trim()) || generatePostMortem(p);
   if (pm) {
