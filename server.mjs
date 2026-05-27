@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLearningFile } from './trade-learnings.mjs';
 import { writeInsightsFile } from './trade-insights.mjs';
+import { fetchMarketContext } from './trade-context.mjs';
 import { SIDE_GATE_SAMPLE_SINCE_TS } from './trader-config.mjs';
 import { readTailEvents } from './trader-events.mjs';
 import { buildStats } from './trade-stats.mjs';
@@ -743,6 +744,20 @@ const server = http.createServer(async (req, res) => {
         const payload = JSON.parse(body || '{}');
         if (!payload || !payload.symbol || !payload.outcome) {
           return sendJson(res, 400, { error: 'missing-fields' }, CORS_HEADERS);
+        }
+        // Snapshot market headlines at close. Internal 2s cap; null on any
+        // failure so the post-mortem still gets written even when the news
+        // provider is down or unconfigured.
+        if (!payload.context) {
+          try {
+            payload.context = await fetchMarketContext({
+              symbol: payload.symbol,
+              ts: Number(payload.timestamp) || Date.now(),
+            });
+          } catch (e) {
+            payload.context = null;
+            console.error('[context-fetch-err]', e.message);
+          }
         }
         const out = await writeLearningFile(payload, LEARN_ROOT);
         if (!out.ok) return sendJson(res, 400, { error: out.reason || 'write-failed' }, CORS_HEADERS);

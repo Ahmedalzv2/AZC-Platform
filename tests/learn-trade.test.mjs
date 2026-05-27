@@ -73,6 +73,53 @@ describe('trade-learnings (pure)', () => {
     assert.match(md, /Funding:\s+\+0\.0002 USD\s+\(2 × 8h windows · held 16\.0h\)/);
   });
 
+  test('formatLearningMarkdown renders Context section when payload.context has headlines', () => {
+    const md = formatLearningMarkdown({
+      timestamp: Date.UTC(2026, 4, 24, 8, 30),
+      symbol: 'BTC', side: 'long', outcome: 'win',
+      entry: 70000, sl: 69500, tp: 71000, rMultiple: 2.0,
+      context: {
+        source: 'cryptopanic',
+        fetchedAtMs: Date.UTC(2026, 4, 24, 8, 30),
+        headlines: [
+          { title: 'BTC squeezes higher on ETF inflows', url: 'https://x/1', publishedAt: '2026-05-24T08:00:00Z' },
+          { title: 'Macro: CPI print at 8:30 ET', url: 'https://x/2' },
+        ],
+      },
+    });
+    assert.match(md, /## Context/);
+    assert.match(md, /Source: cryptopanic/);
+    assert.match(md, /BTC squeezes higher on ETF inflows/);
+    assert.match(md, /CPI print at 8:30 ET/);
+  });
+
+  test('formatLearningMarkdown omits Context section when no context present', () => {
+    const md = formatLearningMarkdown({
+      timestamp: Date.UTC(2026, 4, 24, 8, 30),
+      symbol: 'BTC', side: 'long', outcome: 'win',
+      entry: 70000, sl: 69500, tp: 71000, rMultiple: 2.0,
+    });
+    assert.doesNotMatch(md, /## Context/);
+  });
+
+  test('formatLearningMarkdown omits Context section when context.headlines is empty / malformed', () => {
+    const md1 = formatLearningMarkdown({
+      symbol: 'BTC', side: 'long', outcome: 'win', rMultiple: 1.0,
+      context: { source: 'x', headlines: [] },
+    });
+    const md2 = formatLearningMarkdown({
+      symbol: 'BTC', side: 'long', outcome: 'win', rMultiple: 1.0,
+      context: { headlines: 'not-an-array' },
+    });
+    const md3 = formatLearningMarkdown({
+      symbol: 'BTC', side: 'long', outcome: 'win', rMultiple: 1.0,
+      context: 'not-an-object',
+    });
+    assert.doesNotMatch(md1, /## Context/);
+    assert.doesNotMatch(md2, /## Context/);
+    assert.doesNotMatch(md3, /## Context/);
+  });
+
   test('formatLearningMarkdown tolerates missing optional fields', () => {
     const md = formatLearningMarkdown({
       timestamp: Date.UTC(2026, 4, 24, 8, 30),
