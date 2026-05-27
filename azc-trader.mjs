@@ -2,7 +2,7 @@
 //
 // Honours the user's existing safety envelope:
 //   $50 micro-capital · one position max · 15-min per-symbol cooldown
-//   consecutive-loss halt · futures-only · isolated 10×
+//   drift-gated live execution · futures-only · isolated 10×
 //
 // Strategy: 5m FVG retest. Detect the last unmitigated 5m fair-value gap.
 // When price retraces into the gap mid, fire in the gap's direction with
@@ -28,6 +28,7 @@ import { buildSetup } from './trader-signal.mjs';
 import { decideGate, groupBySession } from './trader-drift-gate.mjs';
 import { decideFireAction } from './trader-fire-decision.mjs';
 import { sendTelegram, fmtFireAlert, fmtCloseAlert, fmtDriftAlert } from './trader-notify.mjs';
+import { sizeTradeByRiskAndMargin } from './trader-sizing.mjs';
 import { shouldRefreshWallet } from './trader-wallet.mjs';
 
 async function notify(text) {
@@ -517,10 +518,23 @@ async function tryFire() {
   }
 
   const equity = await getAccountUsdt();
-  let qty = Math.floor((equity * riskPct) / pick.stopDistUsdPerContract);
-  if (qty < pick.meta.minVol) qty = pick.meta.minVol;
-  const maxQtyByMargin = Math.floor((equity * 0.5 * LEVERAGE) / (pick.meta.contractSize * pick.price));
-  if (qty > maxQtyByMargin && maxQtyByMargin > 0) qty = maxQtyByMargin;
+  const sized = sizeTradeByRiskAndMargin({
+    balance: equity,
+    riskPct,
+    leverage: LEVERAGE,
+    entry: pick.entry,
+    stopDistUsdPerContract: pick.stopDistUsdPerContract,
+    contractSize: pick.meta.contractSize,
+    minVol: pick.meta.minVol,
+  });
+  if (sized.reason) {
+    return {
+      skip: sized.reason,
+      detail: `equity=${equity.toFixed(4)} entry=${pick.entry} minVol=${pick.meta.minVol} maxQty=${sized.maxQtyByMargin}`,
+      symbol: pick.symbol,
+    };
+  }
+  const qty = sized.qty;
 
   // Snap to MEXC's priceUnit grid and strip JS-float junk digits.
   // Without the .toFixed(decimals) MEXC rejects with code 2015 (e.g.
