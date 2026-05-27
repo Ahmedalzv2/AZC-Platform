@@ -39,6 +39,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { buildSetup, checkPostOnlyTtlFill } from '../trader-signal.mjs';
+import { sizeTradeByRiskAndMargin } from '../trader-sizing.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIX_DIR = path.join(__dirname, 'fixtures');
@@ -238,14 +239,15 @@ function slice1mWindow(bars1m, tStart) {
 // Compute the qty the live trader would size at given balance, mirroring
 // azc-trader.mjs's tryFire() math. Returns the qty + the resulting notional.
 function sizeTrade(meta, entry, stopDist, balance, riskPct = RISK_PCT) {
-  const stopDistUsdPerContract = meta.contractSize * stopDist;
-  const riskUsd = balance * riskPct;
-  let qty = Math.floor(riskUsd / stopDistUsdPerContract);
-  if (qty < meta.minVol) qty = meta.minVol;
-  const maxQtyByMargin = Math.floor((balance * 0.5 * LEVERAGE) / (meta.contractSize * entry));
-  if (qty > maxQtyByMargin && maxQtyByMargin > 0) qty = maxQtyByMargin;
-  const notional = qty * meta.contractSize * entry;
-  return { qty, notional };
+  return sizeTradeByRiskAndMargin({
+    balance,
+    riskPct,
+    leverage: LEVERAGE,
+    entry,
+    stopDistUsdPerContract: meta.contractSize * stopDist,
+    contractSize: meta.contractSize,
+    minVol: meta.minVol,
+  });
 }
 
 function backtestAsset(symbol, bars5) {
