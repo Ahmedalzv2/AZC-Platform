@@ -195,6 +195,7 @@ async function us100Price() {
   const tryYahoo = async () => {
     const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m', {
       headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(6_000),
     });
     if (!r.ok) throw new Error('yahoo HTTP ' + r.status);
     const j = await r.json();
@@ -207,6 +208,7 @@ async function us100Price() {
     const r = await fetch('https://scanner.tradingview.com/global/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(6_000),
       body: JSON.stringify({ symbols: { tickers: ['CME_MINI:NQ1!'] }, columns: ['lp'] }),
     });
     if (!r.ok) throw new Error('TV scanner HTTP ' + r.status);
@@ -240,6 +242,7 @@ async function telegramSend(text) {
   const r = await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(8_000),
     body: JSON.stringify({ chat_id: TG_CHAT, text: String(text).slice(0, 4000), disable_web_page_preview: true }),
   });
   const j = await r.json();

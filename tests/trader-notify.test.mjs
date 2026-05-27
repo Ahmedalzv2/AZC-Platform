@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtFireAlert, fmtCloseAlert, fmtDriftAlert } from '../trader-notify.mjs';
+import { fmtFireAlert, fmtCloseAlert, fmtDriftAlert, sendTelegram } from '../trader-notify.mjs';
 
 describe('fmtFireAlert', () => {
   it('renders the standard fire message', () => {
@@ -84,5 +84,24 @@ describe('fmtDriftAlert', () => {
     const out = fmtDriftAlert({ gate: 'side', key: 'long', fromStatus: 'enabled', toStatus: 'blocked', reason: long });
     const body = out.split('\n')[1];
     assert.equal(body.length, 220);
+  });
+});
+
+
+describe('sendTelegram', () => {
+  it('uses an abort signal so Telegram hangs cannot interrupt trader progress', async () => {
+    const originalFetch = globalThis.fetch;
+    let seenInit = null;
+    globalThis.fetch = async (_url, init) => {
+      seenInit = init;
+      return new Response('{"ok":true}', { status: 200 });
+    };
+    try {
+      const out = await sendTelegram('hello', { token: 't', chat: 'c', timeoutMs: 1234 });
+      assert.equal(out.ok, true);
+      assert.ok(seenInit.signal instanceof AbortSignal);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

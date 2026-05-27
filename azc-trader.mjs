@@ -293,7 +293,7 @@ async function mexcSigned(opts) {
 // Public klines fetch (no signing). interval default = 5m.
 async function fetchKlines(symbol, intervalMin = TF_MIN, limit = LOOKBACK_BARS) {
   const url = `https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min${intervalMin}&limit=${limit}`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
   const j = await r.json();
   const d = j.data || {};
   if (!Array.isArray(d.open)) return [];
@@ -316,7 +316,7 @@ async function htfTrend(symbol) {
 
 async function fetchTicker(symbol) {
   const url = `https://contract.mexc.com/api/v1/contract/ticker?symbol=${symbol}`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
   const j = await r.json();
   const d = j.data;
   if (!d) return null;
@@ -326,7 +326,7 @@ async function fetchTicker(symbol) {
 
 async function fetchContractMeta(symbol) {
   const url = `https://contract.mexc.com/api/v1/contract/detail?symbol=${symbol}`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
   const j = await r.json();
   const d = j.data;
   const x = Array.isArray(d) ? d[0] : d;

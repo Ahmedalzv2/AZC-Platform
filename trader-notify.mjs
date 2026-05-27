@@ -64,6 +64,7 @@ export async function sendTelegram(text, opts = {}) {
     const r = await fetch(TG_API + token + '/sendMessage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(opts.timeoutMs || 8_000),
       body: JSON.stringify({
         chat_id: chat,
         text: String(text).slice(0, MAX_LEN),

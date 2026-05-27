@@ -5,6 +5,7 @@ import {
   sign,
   buildGetQuery,
   buildSignedRequest,
+  callMexcSigned,
   MEXC_BASE,
 } from '../mexc-signer.mjs';
 
@@ -87,5 +88,31 @@ describe('buildSignedRequest', () => {
     const sigA = sign('ms', buildSignedString('mk', fixedTime, '{"x":1}'));
     const sigB = sign('ms', buildSignedString('mk', fixedTime, '{"x":1}'));
     assert.equal(sigA, sigB);
+  });
+});
+
+
+describe('callMexcSigned', () => {
+  test('passes an abort signal so exchange hangs cannot freeze callers', async () => {
+    const originalFetch = globalThis.fetch;
+    let seenInit = null;
+    globalThis.fetch = async (_url, init) => {
+      seenInit = init;
+      return new Response('{"success":true}', { status: 200 });
+    };
+    try {
+      const r = await callMexcSigned({
+        apiKey: 'mk',
+        apiSecret: 'ms',
+        path: '/api/v1/private/account/assets',
+        method: 'GET',
+        timeoutMs: 1234,
+      });
+      assert.equal(r.ok, true);
+      assert.equal(r.status, 200);
+      assert.ok(seenInit.signal instanceof AbortSignal);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
