@@ -13516,8 +13516,8 @@
   let _us100BarsLoggedFirst = false;
   function initUS100BarsPoll() {
     // First poll runs immediately so the readiness ladder fills as soon as
-    // the user lands on the page. Then every 30s — bars don't change faster
-    // than that meaningfully (1m bars complete every 60s anyway).
+    // the user lands on the page. Then every 10s — relay will hold a persistent
+    // TV WS so each call is a cached read, not a fresh handshake.
     const tick = () => {
       _us100PollBarsOnce().then(ok => {
         if (ok && !_us100BarsLoggedFirst) {
@@ -13528,7 +13528,7 @@
     };
     tick();
     if (_us100BarsPollInterval) clearInterval(_us100BarsPollInterval);
-    _us100BarsPollInterval = setInterval(tick, 30000);
+    _us100BarsPollInterval = setInterval(tick, 10000);
   }
 
   function initUS100LiveStream() {
