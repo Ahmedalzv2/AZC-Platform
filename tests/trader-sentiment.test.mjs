@@ -65,3 +65,58 @@ describe('getSentiment — no key', () => {
     assert.equal(r, null);
   });
 });
+
+import { _topicFetcher } from '../trader-sentiment.mjs';
+import { readFile } from 'node:fs/promises';
+
+const loadFixture = async (name) =>
+  JSON.parse(await readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
+
+describe('_topicFetcher', () => {
+  const fakeFetch = (response, status = 200) => async () => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => response,
+  });
+
+  it('averages types_sentiment buckets and resolves to a label', async () => {
+    const fixture = await loadFixture('lc-topic-sol.json');
+    const r = await _topicFetcher({
+      ticker: 'SOL', env: { LUNARCRUSH_API_KEY: 'k' },
+      signal: new AbortController().signal, fetchFn: fakeFetch(fixture),
+    });
+    assert.equal(r.label, 'bull');     // mean ≈ 3.95
+    assert.equal(r.source, 'topic');
+  });
+
+  it('returns null when types_sentiment is missing/empty', async () => {
+    const r1 = await _topicFetcher({
+      ticker: 'SOL', env: { LUNARCRUSH_API_KEY: 'k' },
+      signal: new AbortController().signal, fetchFn: fakeFetch({ data: {} }),
+    });
+    const r2 = await _topicFetcher({
+      ticker: 'SOL', env: { LUNARCRUSH_API_KEY: 'k' },
+      signal: new AbortController().signal, fetchFn: fakeFetch({ data: { types_sentiment: {} } }),
+    });
+    assert.equal(r1, null);
+    assert.equal(r2, null);
+  });
+
+  it('ignores non-numeric bucket values', async () => {
+    const r = await _topicFetcher({
+      ticker: 'SOL', env: { LUNARCRUSH_API_KEY: 'k' },
+      signal: new AbortController().signal,
+      fetchFn: fakeFetch({ data: { types_sentiment: { tweet: 'n/a', news: 4.0 } } }),
+    });
+    assert.equal(r.label, 'bull');
+    assert.equal(r.source, 'topic');
+  });
+
+  it('returns null on non-2xx', async () => {
+    const r = await _topicFetcher({
+      ticker: 'SOL', env: { LUNARCRUSH_API_KEY: 'k' },
+      signal: new AbortController().signal, fetchFn: fakeFetch({}, 500),
+    });
+    assert.equal(r, null);
+  });
+});

@@ -42,12 +42,37 @@ export async function _newsFetcher({ ticker, env, signal, fetchFn, now = Date.no
   return { label, source: 'news', mean, sampled: valid.length };
 }
 
+const LC_TOPIC_URL = (t) =>
+  `https://lunarcrush.com/api4/public/topic/${encodeURIComponent(t.toLowerCase())}/v1`;
+
+export async function _topicFetcher({ ticker, env, signal, fetchFn } = {}) {
+  const key = env?.LUNARCRUSH_API_KEY;
+  if (!key) return null;
+  const fn = fetchFn || globalThis.fetch;
+  let res;
+  try {
+    res = await fn(LC_TOPIC_URL(ticker), { signal, headers: { Authorization: `Bearer ${key}` } });
+  } catch { return null; }
+  if (!res || !res.ok) return null;
+  let json;
+  try { json = await res.json(); } catch { return null; }
+  const buckets = json?.data?.types_sentiment;
+  if (!buckets || typeof buckets !== 'object') return null;
+  const nums = Object.values(buckets).map(Number).filter(Number.isFinite);
+  if (!nums.length) return null;
+  const mean = nums.reduce((s, n) => s + n, 0) / nums.length;
+  const label = _resolveLabel(mean);
+  if (!label) return null;
+  return { label, source: 'topic', mean, sampled: nums.length };
+}
+
 export async function getSentiment({ ticker, env = process.env, now = Date.now(), fetchFn } = {}) {
   if (!ticker || typeof ticker !== 'string') return null;
   if (!env?.LUNARCRUSH_API_KEY) return null;
-  // News-only path lands first; topic fetcher + cache + timeout come in
-  // later tasks. Always-fresh fetch for now.
-  const news = await _newsFetcher({ ticker, env, signal: new AbortController().signal, fetchFn, now });
-  if (news) return { label: news.label, source: news.source, fetchedAtMs: now };
+  const signal = new AbortController().signal;
+  const topic = await _topicFetcher({ ticker, env, signal, fetchFn });
+  if (topic) return { label: topic.label, source: 'topic', fetchedAtMs: now };
+  const news = await _newsFetcher({ ticker, env, signal, fetchFn, now });
+  if (news)  return { label: news.label,  source: 'news',  fetchedAtMs: now };
   return null;
 }

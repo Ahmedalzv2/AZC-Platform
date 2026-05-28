@@ -1,0 +1,8 @@
+{
+  "data": [
+    { "post_title": "SOL ETF inflows hit fresh high", "post_link": "https://x/1", "post_created": 1779950000, "post_sentiment": 4.2 },
+    { "post_title": "Solana validator outage resolved",  "post_link": "https://x/2", "post_created": 1779949000, "post_sentiment": 3.6 },
+    { "post_title": "Whale moves 1M SOL to exchange",    "post_link": "https://x/3", "post_created": 1779948000, "post_sentiment": 2.0 }
+  ],
+  "config": {}
+}
