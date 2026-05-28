@@ -4,9 +4,8 @@
 // fail-open semantics.
 
 export function _resolveLabel(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || typeof value !== 'number' || n < 1 || n > 5) return null;
-  if (n <= 2.5) return 'bear';
-  if (n >= 3.5) return 'bull';
+  if (!Number.isFinite(value) || value < 1 || value > 5) return null;
+  if (value <= 2.5) return 'bear';
+  if (value >= 3.5) return 'bull';
   return 'neutral';
 }
