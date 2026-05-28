@@ -1,14 +1,16 @@
-// Restore daily counters + per-symbol cooldowns from a previous run's
-// state.json. Survives systemd restarts so trades-today and cooldowns
-// don't reset on every redeploy.
+// Restore daily counters, per-symbol cooldowns, and a still-open
+// positionContext from a previous run's state.json. Survives systemd
+// restarts so trades-today, cooldowns, and (when armed) the live trade
+// context don't reset on every redeploy.
 //
-// Deliberately does *not* restore positionContext or pendingOrder: the
-// startup-cleanup path cancels any stray maker order, and live position
-// recovery is its own concern (the trader polls MEXC for real positions,
-// not local state).
+// positionContext is returned only when posId is present — without an
+// exchange position id the trader has no way to verify the trade is
+// still alive, and the cleanest move is to drop it and let the live
+// position poller observe whatever MEXC shows. The caller is expected
+// to verify the position still exists on MEXC before applying.
 //
 // The consecutiveLosses/haltedAt cascade was removed 2026-05-26 — drift
-// gates (side + session) replace it.
+// gates (side + session + symbol-side) replace it.
 
 import { readFile } from 'node:fs/promises';
 
@@ -31,7 +33,14 @@ export async function loadTraderStateFromDisk(statePath, now = Date.now()) {
     dailyPnlUsd: Number.isFinite(Number(s.dailyPnlUsd)) ? Number(s.dailyPnlUsd) : 0,
     dailyResetAt,
     cooldownUntil: filterFutureCooldowns(s.cooldownUntil, now),
+    positionContext: pickRehydratablePosition(s.positionContext),
   };
+}
+
+function pickRehydratablePosition(ctx) {
+  if (!ctx || typeof ctx !== 'object') return null;
+  if (!ctx.posId) return null;
+  return ctx;
 }
 
 function filterFutureCooldowns(raw, now) {

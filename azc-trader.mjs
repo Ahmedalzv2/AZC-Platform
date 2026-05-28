@@ -328,7 +328,10 @@ async function writeState(extra = {}) {
     symbolSideStatus,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
-    positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp, sentiment: positionContext.sentiment || null } : null,
+    // Persist the full context so a restart mid-trade can rehydrate and
+    // still write a correct post-mortem on close. The dashboard already
+    // tolerates the extra fields — JS object access is lax.
+    positionContext: positionContext || null,
     lastScanSummary,
     lastError,
     walletUsdt,
@@ -965,6 +968,22 @@ try {
     dailyResetAt = r.dailyResetAt;
     for (const [sym, ts] of Object.entries(r.cooldownUntil)) cooldownUntil.set(sym, ts);
     log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} cooldowns=${cooldownUntil.size}`);
+
+    if (r.positionContext?.posId) {
+      // Verify the exchange still holds the position before adopting the
+      // stored context — otherwise we'd track a ghost and write a fake
+      // post-mortem the next time the close path runs.
+      try {
+        const ps = await getOpenPositions();
+        const stillOpen = ps.find(p => p.positionId === r.positionContext.posId);
+        if (stillOpen) {
+          positionContext = r.positionContext;
+          log(`[restore-position] ${positionContext.symbol} ${positionContext.dir} pos=${positionContext.posId} entry=${positionContext.entry} sl=${positionContext.sl} tp=${positionContext.tp}`);
+        } else {
+          log(`[restore-position-gone] persisted pos=${r.positionContext.posId} ${r.positionContext.symbol} no longer at MEXC — dropping`);
+        }
+      } catch (e) { log('[restore-position-fail]', e.message); }
+    }
   }
 } catch (e) { log('[restore-err]', e.message); }
 
