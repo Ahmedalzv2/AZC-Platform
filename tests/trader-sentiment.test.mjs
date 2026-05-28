@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { _resolveLabel } from '../trader-sentiment.mjs';
+import { _resolveLabel, _newsFetcher, getSentiment } from '../trader-sentiment.mjs';
 
 describe('_resolveLabel', () => {
   it('maps numeric ≤ 2.5 to bear', () => {
@@ -22,5 +22,46 @@ describe('_resolveLabel', () => {
     assert.equal(_resolveLabel('bull'), null);
     assert.equal(_resolveLabel(0.5), null);
     assert.equal(_resolveLabel(5.5), null);
+  });
+});
+
+describe('_newsFetcher', () => {
+  const stubLcResponse = (items) => ({ data: items });
+  const fakeFetch = (response, status = 200) => async () => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => response,
+  });
+
+  it('averages last 10 headlines and resolves to a label', async () => {
+    const env = { LUNARCRUSH_API_KEY: 'k' };
+    // 10 headlines averaging 4.0 → bull
+    const items = Array.from({ length: 10 }, (_, i) => ({
+      post_title: `h${i}`, post_created: 1779950000 - i * 60, post_sentiment: 4.0,
+    }));
+    const fetchFn = fakeFetch(stubLcResponse(items));
+    const r = await _newsFetcher({ ticker: 'SOL', env, signal: new AbortController().signal, fetchFn });
+    assert.equal(r.label, 'bull');
+    assert.equal(r.source, 'news');
+  });
+
+  it('returns null when no headlines have numeric sentiment', async () => {
+    const env = { LUNARCRUSH_API_KEY: 'k' };
+    const items = [{ post_title: 'x', post_sentiment: null }];
+    const r = await _newsFetcher({ ticker: 'SOL', env, signal: new AbortController().signal, fetchFn: fakeFetch(stubLcResponse(items)) });
+    assert.equal(r, null);
+  });
+
+  it('returns null on non-2xx', async () => {
+    const env = { LUNARCRUSH_API_KEY: 'k' };
+    const r = await _newsFetcher({ ticker: 'SOL', env, signal: new AbortController().signal, fetchFn: fakeFetch({}, 500) });
+    assert.equal(r, null);
+  });
+});
+
+describe('getSentiment — no key', () => {
+  it('returns null when LUNARCRUSH_API_KEY is missing', async () => {
+    const r = await getSentiment({ ticker: 'SOL', env: {}, now: 1779950000000 });
+    assert.equal(r, null);
   });
 });
