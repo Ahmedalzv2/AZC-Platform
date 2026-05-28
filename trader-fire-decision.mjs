@@ -23,6 +23,8 @@ export function decideFireAction({
   sessionStatus,     // { asia: {status, reason}, london: {...}, ... }
   currentSession,    // 'asia' | 'london' | 'ny-am' | 'late-ny' | 'off'
   riskTiers,         // { default, top2, best }
+  sentimentSnapshot = null,
+  sentimentGateMode = 'off',
 }) {
   if (pendingOrder)                            return { action: 'skip', skip: 'pending-order' };
   if (openPositions >= maxOpenPositions)       return { action: 'skip', skip: 'in-position' };
@@ -52,6 +54,19 @@ export function decideFireAction({
       detail: `${currentSession}: ${sessionState.reason}`,
     };
   }
+
+  // Sentiment gate: optional, opt-in via sentimentGateMode. Disagreement
+  // only triggers when both the FVG direction and sentiment label are
+  // non-neutral; neutral and null fail-open (other gates still apply).
+  const gateMode = sentimentGateMode || 'off';
+  const sLabel = sentimentSnapshot?.label || null;
+  const dir = pick.fvg.dir;
+  const disagree =
+    (dir === 'bull' && sLabel === 'bear') ||
+    (dir === 'bear' && sLabel === 'bull');
+  const shadowAttach = (gateMode === 'shadow' && disagree)
+    ? { gate: 'sentiment', wouldSkip: true, label: sLabel, source: sentimentSnapshot.source }
+    : null;
 
   // Tier selection:
   //   "best" = top-1 AND its distPct is meaningfully (>50%) better than #2
@@ -87,5 +102,6 @@ export function decideFireAction({
     sideKey, sessionKey: currentSession,
     candidateCount: sorted.length,
     downshifts,
+    ...(shadowAttach ? { shadow: shadowAttach } : {}),
   };
 }

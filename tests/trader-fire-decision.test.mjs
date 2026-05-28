@@ -212,3 +212,45 @@ describe('decideFireAction — sentiment gate, off mode', () => {
     assert.deepEqual(withOff, baseline);
   });
 });
+
+describe('decideFireAction — sentiment gate, shadow mode', () => {
+  it('attaches shadow.wouldSkip when sentiment disagrees with bull setup', () => {
+    const r = decideFireAction(baseInput({
+      sentimentGateMode: 'shadow',
+      sentimentSnapshot: { label: 'bear', source: 'topic', fetchedAtMs: 1 },
+    }));
+    assert.equal(r.action, 'fire');
+    assert.deepEqual(r.shadow, { gate: 'sentiment', wouldSkip: true, label: 'bear', source: 'topic' });
+    // risk + tier must be unchanged
+    const baseline = decideFireAction(baseInput());
+    assert.equal(r.tier, baseline.tier);
+    assert.equal(r.riskPct, baseline.riskPct);
+  });
+
+  it('no shadow field when sentiment agrees', () => {
+    const r = decideFireAction(baseInput({
+      sentimentGateMode: 'shadow',
+      sentimentSnapshot: { label: 'bull', source: 'topic', fetchedAtMs: 1 },
+    }));
+    assert.equal(r.action, 'fire');
+    assert.equal(r.shadow, undefined);
+  });
+
+  it('no shadow field on neutral sentiment (fail-open)', () => {
+    const r = decideFireAction(baseInput({
+      sentimentGateMode: 'shadow',
+      sentimentSnapshot: { label: 'neutral', source: 'news', fetchedAtMs: 1 },
+    }));
+    assert.equal(r.action, 'fire');
+    assert.equal(r.shadow, undefined);
+  });
+
+  it('no shadow field on null snapshot (fail-open)', () => {
+    const r = decideFireAction(baseInput({
+      sentimentGateMode: 'shadow',
+      sentimentSnapshot: null,
+    }));
+    assert.equal(r.action, 'fire');
+    assert.equal(r.shadow, undefined);
+  });
+});
