@@ -27,6 +27,7 @@ import { KILLZONES_UTC, inKillzone, currentKillzoneName } from './trader-killzon
 import { buildSetup } from './trader-signal.mjs';
 import { decideGate, groupBySession } from './trader-drift-gate.mjs';
 import { decideFireAction } from './trader-fire-decision.mjs';
+import { getSentiment } from './trader-sentiment.mjs';
 import { sendTelegram, fmtFireAlert, fmtCloseAlert, fmtDriftAlert } from './trader-notify.mjs';
 import { sizeTradeByRiskAndMargin } from './trader-sizing.mjs';
 import { shouldRefreshWallet } from './trader-wallet.mjs';
@@ -116,6 +117,14 @@ const WALLET_REFRESH_MS   = 30_000;
 // are missing). 24/7 firing remains active — the killzone label is only
 // recorded on every fire (postmortem `session` field) and used by the 3-loss
 // pause to find the next session boundary.
+const VALID_SENTIMENT_MODES = new Set(['shadow', 'live', 'off']);
+const SENTIMENT_GATE_MODE = (() => {
+  const v = String(process.env.SENTIMENT_GATE_MODE || 'shadow').toLowerCase();
+  if (VALID_SENTIMENT_MODES.has(v)) return v;
+  console.warn(`[sentiment-config] unknown SENTIMENT_GATE_MODE='${v}', falling back to 'off'`);
+  return 'off';
+})();
+
 const LEARN_ROOT = path.resolve('./trade-learnings');
 const STATE_DIR  = path.resolve('./.trader-state');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
@@ -135,6 +144,10 @@ let lastError = null;
 let lastCycleAt = 0;
 let cycleCount = 0;
 let lastScanSummary = null;           // top candidates from last scan, surfaced in state.json
+let sentimentShadowSkips24h = 0;
+let sentimentLiveSkips24h = 0;
+let lastSentimentSnapshot = null;
+let lastSentimentAt = null;
 // Cached MEXC futures wallet balance (USDT availableBalance). Refreshed
 // every WALLET_REFRESH_MS so the dashboard can render the live wallet
 // chip without each browser making a signed call. null = never fetched.
@@ -168,6 +181,8 @@ function maybeRollDay() {
     log(`[day-roll] resetting daily counters (was trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)})`);
     tradesToday = 0;
     dailyPnlUsd = 0;
+    sentimentShadowSkips24h = 0;
+    sentimentLiveSkips24h = 0;
     dailyResetAt = nextUtcMidnight();
   }
 }
@@ -491,6 +506,26 @@ async function tryFire() {
   const openPositions = await getOpenPositions();
   const valid = results.filter(r => !r.skip);
 
+  let sentimentSnapshot = null;
+  if (SENTIMENT_GATE_MODE !== 'off' && valid.length) {
+    // Locally pick the top candidate using the same comparator
+    // decideFireAction uses, so we only fetch sentiment for the one
+    // symbol we're about to vote on. Duplication is two lines.
+    const top = [...valid].sort((a, b) => a.distPct - b.distPct)[0];
+    const ticker = String(top.symbol || '').split('_')[0];
+    if (ticker) {
+      try {
+        sentimentSnapshot = await getSentiment({ ticker });
+        if (sentimentSnapshot) {
+          lastSentimentSnapshot = sentimentSnapshot;
+          lastSentimentAt = sentimentSnapshot.fetchedAtMs;
+        }
+      } catch (e) {
+        log(`[sentiment-err] ${e.message}`);
+      }
+    }
+  }
+
   const decision = decideFireAction({
     candidates: valid,
     pendingOrder: false,
@@ -500,7 +535,17 @@ async function tryFire() {
     sessionStatus,
     currentSession: currentKillzoneName() || 'off',
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
+    sentimentSnapshot,
+    sentimentGateMode: SENTIMENT_GATE_MODE,
   });
+
+  if (decision.skip === 'sentiment-disagree') {
+    sentimentLiveSkips24h += 1;
+    log(`[sentiment-veto] ${decision.detail} (source=${decision.source})`);
+  } else if (decision.shadow?.wouldSkip) {
+    sentimentShadowSkips24h += 1;
+    log(`[sentiment-shadow] would skip: ${decision.shadow.label} vs ${decision.pick.fvg.dir} (source=${decision.shadow.source})`);
+  }
 
   if (decision.action === 'skip') {
     return decision.detail
