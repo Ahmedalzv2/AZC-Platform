@@ -1049,8 +1049,10 @@ try {
     tradesToday  = r.tradesToday;
     dailyPnlUsd  = r.dailyPnlUsd;
     dailyResetAt = r.dailyResetAt;
+    sentimentShadowSkips24h = r.sentimentShadowSkips24h;
+    sentimentLiveSkips24h   = r.sentimentLiveSkips24h;
     for (const [sym, ts] of Object.entries(r.cooldownUntil)) cooldownUntil.set(sym, ts);
-    log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} cooldowns=${cooldownUntil.size}`);
+    log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} cooldowns=${cooldownUntil.size} sentiment-skips=${sentimentShadowSkips24h}/${sentimentLiveSkips24h}`);
 
     if (r.positionContext?.posId) {
       // Verify the exchange still holds the position before adopting the

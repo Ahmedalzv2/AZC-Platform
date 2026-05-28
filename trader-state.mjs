@@ -34,7 +34,18 @@ export async function loadTraderStateFromDisk(statePath, now = Date.now()) {
     dailyResetAt,
     cooldownUntil: filterFutureCooldowns(s.cooldownUntil, now),
     positionContext: pickRehydratablePosition(s.positionContext),
+    // Persisted on the same daily window as tradesToday/dailyPnlUsd — the
+    // gate window only has meaning if it survives the systemd restarts
+    // that punctuate every dev iteration. Without this, six restarts in
+    // a day silently wipe the sentiment shadow sample.
+    sentimentShadowSkips24h: pickNonNegInt(s.sentimentGate?.shadowWouldSkipCount24h),
+    sentimentLiveSkips24h:   pickNonNegInt(s.sentimentGate?.liveSkipCount24h),
   };
+}
+
+function pickNonNegInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
 }
 
 function pickRehydratablePosition(ctx) {

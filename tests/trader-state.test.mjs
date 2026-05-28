@@ -49,7 +49,33 @@ describe('loadTraderStateFromDisk', () => {
       dailyResetAt: 9_999_999,
       cooldownUntil: { SOL_USDT: 1_500_000 },
       positionContext: null,
+      sentimentShadowSkips24h: 0,
+      sentimentLiveSkips24h: 0,
     });
+  });
+
+  test('restores sentiment 24h skip counters from sentimentGate', async () => {
+    const file = await makeStateFile({
+      dailyResetAt: 9_999_999, tradesToday: 0, dailyPnlUsd: 0, cooldownUntil: {},
+      sentimentGate: {
+        mode: 'shadow',
+        shadowWouldSkipCount24h: 3,
+        liveSkipCount24h: 1,
+      },
+    });
+    const out = await loadTraderStateFromDisk(file, 1_000_000);
+    assert.equal(out.sentimentShadowSkips24h, 3);
+    assert.equal(out.sentimentLiveSkips24h, 1);
+  });
+
+  test('sentiment counters default to 0 when missing or invalid', async () => {
+    const file = await makeStateFile({
+      dailyResetAt: 9_999_999, tradesToday: 0, dailyPnlUsd: 0, cooldownUntil: {},
+      sentimentGate: { mode: 'shadow', shadowWouldSkipCount24h: 'oops', liveSkipCount24h: -2 },
+    });
+    const out = await loadTraderStateFromDisk(file, 1_000_000);
+    assert.equal(out.sentimentShadowSkips24h, 0);
+    assert.equal(out.sentimentLiveSkips24h, 0);
   });
 
   test('ignores legacy consecutiveLosses/haltedAt fields on disk', async () => {
@@ -95,6 +121,8 @@ describe('loadTraderStateFromDisk', () => {
       dailyResetAt: 9_999_999,
       cooldownUntil: {},
       positionContext: null,
+      sentimentShadowSkips24h: 0,
+      sentimentLiveSkips24h: 0,
     });
   });
 
