@@ -40,15 +40,15 @@ describe('_newsFetcher', () => {
       post_title: `h${i}`, post_created: 1779950000 - i * 60, post_sentiment: 4.0,
     }));
     const fetchFn = fakeFetch(stubLcResponse(items));
-    const r = await _newsFetcher({ ticker: 'SOL', env, signal: new AbortController().signal, fetchFn });
+    const r = await _newsFetcher({ ticker: 'SOL', env, signal: new AbortController().signal, fetchFn, now: 1779950000 * 1000 });
     assert.equal(r.label, 'bull');
     assert.equal(r.source, 'news');
   });
 
   it('returns null when no headlines have numeric sentiment', async () => {
     const env = { LUNARCRUSH_API_KEY: 'k' };
-    const items = [{ post_title: 'x', post_sentiment: null }];
-    const r = await _newsFetcher({ ticker: 'SOL', env, signal: new AbortController().signal, fetchFn: fakeFetch(stubLcResponse(items)) });
+    const items = [{ post_title: 'x', post_created: 1779950000, post_sentiment: null }];
+    const r = await _newsFetcher({ ticker: 'SOL', env, signal: new AbortController().signal, fetchFn: fakeFetch(stubLcResponse(items)), now: 1779950000 * 1000 });
     assert.equal(r, null);
   });
 

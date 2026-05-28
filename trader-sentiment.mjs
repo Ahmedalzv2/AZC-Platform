@@ -29,7 +29,10 @@ export async function _newsFetcher({ ticker, env, signal, fetchFn, now = Date.no
   const items = Array.isArray(json?.data) ? json.data : [];
   const cutoff = (now - NEWS_WINDOW_MS) / 1000;     // LC uses seconds-since-epoch
   const valid = items
-    .filter((p) => Number.isFinite(Number(p?.post_sentiment)) && Number(p?.post_created) >= cutoff)
+    .filter((p) => {
+      const s = Number(p?.post_sentiment);
+      return Number.isFinite(s) && s >= 1 && Number(p?.post_created) >= cutoff;
+    })
     .sort((a, b) => Number(b.post_created) - Number(a.post_created))
     .slice(0, NEWS_MAX_HEADLINES);
   if (!valid.length) return null;
