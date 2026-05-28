@@ -10,6 +10,11 @@ export function _resolveLabel(value) {
   return 'neutral';
 }
 
+const CACHE_TTL_MS = 15 * 60 * 1000;
+const _cache = new Map();   // ticker → { snapshot, expiresAtMs }
+
+export function _clearCache() { _cache.clear(); }
+
 const LC_NEWS_URL = (t) =>
   `https://lunarcrush.com/api4/public/coins/${encodeURIComponent(t)}/news/v1`;
 const NEWS_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -69,10 +74,18 @@ export async function _topicFetcher({ ticker, env, signal, fetchFn } = {}) {
 export async function getSentiment({ ticker, env = process.env, now = Date.now(), fetchFn } = {}) {
   if (!ticker || typeof ticker !== 'string') return null;
   if (!env?.LUNARCRUSH_API_KEY) return null;
+  const key = ticker.toUpperCase();
+  const hit = _cache.get(key);
+  if (hit && hit.expiresAtMs > now) return hit.snapshot;
   const signal = new AbortController().signal;
-  const topic = await _topicFetcher({ ticker, env, signal, fetchFn });
-  if (topic) return { label: topic.label, source: 'topic', fetchedAtMs: now };
-  const news = await _newsFetcher({ ticker, env, signal, fetchFn, now });
-  if (news)  return { label: news.label,  source: 'news',  fetchedAtMs: now };
-  return null;
+  const topic = await _topicFetcher({ ticker: key, env, signal, fetchFn });
+  let snapshot = null;
+  if (topic) {
+    snapshot = { label: topic.label, source: 'topic', fetchedAtMs: now };
+  } else {
+    const news = await _newsFetcher({ ticker: key, env, signal, fetchFn, now });
+    if (news) snapshot = { label: news.label, source: 'news', fetchedAtMs: now };
+  }
+  if (snapshot) _cache.set(key, { snapshot, expiresAtMs: now + CACHE_TTL_MS });
+  return snapshot;
 }

@@ -66,7 +66,7 @@ describe('getSentiment — no key', () => {
   });
 });
 
-import { _topicFetcher } from '../trader-sentiment.mjs';
+import { _topicFetcher, _clearCache } from '../trader-sentiment.mjs';
 import { readFile } from 'node:fs/promises';
 
 const loadFixture = async (name) =>
@@ -118,5 +118,53 @@ describe('_topicFetcher', () => {
       signal: new AbortController().signal, fetchFn: fakeFetch({}, 500),
     });
     assert.equal(r, null);
+  });
+});
+
+describe('getSentiment — cache', () => {
+  it('serves a second call within TTL from cache', async () => {
+    _clearCache();
+    let calls = 0;
+    const fetchFn = async () => {
+      calls += 1;
+      return { ok: true, status: 200, json: async () => ({ data: { types_sentiment: { tweet: 4.0 } } }) };
+    };
+    const env = { LUNARCRUSH_API_KEY: 'k' };
+    const t0 = 1779950000000;
+    const a = await getSentiment({ ticker: 'SOL', env, now: t0, fetchFn });
+    const b = await getSentiment({ ticker: 'SOL', env, now: t0 + 10_000, fetchFn });
+    assert.equal(a.label, 'bull');
+    assert.deepEqual(b, a);
+    assert.equal(calls, 1);
+  });
+
+  it('re-fetches after TTL expiry', async () => {
+    _clearCache();
+    let calls = 0;
+    const fetchFn = async () => {
+      calls += 1;
+      return { ok: true, status: 200, json: async () => ({ data: { types_sentiment: { tweet: 4.0 } } }) };
+    };
+    const env = { LUNARCRUSH_API_KEY: 'k' };
+    const t0 = 1779950000000;
+    await getSentiment({ ticker: 'SOL', env, now: t0, fetchFn });
+    await getSentiment({ ticker: 'SOL', env, now: t0 + 15 * 60 * 1000 + 1, fetchFn });
+    assert.equal(calls, 2);
+  });
+
+  it('does NOT cache a null result', async () => {
+    _clearCache();
+    let calls = 0;
+    const fetchFn = async () => {
+      calls += 1;
+      return { ok: false, status: 500, json: async () => ({}) };
+    };
+    const env = { LUNARCRUSH_API_KEY: 'k' };
+    const t0 = 1779950000000;
+    const a = await getSentiment({ ticker: 'SOL', env, now: t0, fetchFn });
+    const b = await getSentiment({ ticker: 'SOL', env, now: t0 + 100, fetchFn });
+    assert.equal(a, null);
+    assert.equal(b, null);
+    assert.equal(calls, 4);    // not 2 — null was not cached; 2 getSentiment calls × 2 fetchers each
   });
 });
