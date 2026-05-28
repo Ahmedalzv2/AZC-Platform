@@ -57,3 +57,29 @@ Every closed position writes a markdown post-mortem under
 `trade-learnings/{wins,losses,be}/YYYY-MM-DD-HHMM-SYM-SIDE.md`. The trader
 itself does the write (via the same `writeLearningFile` helper the dashboard
 uses), so no UI is required for the audit trail to populate.
+
+## Sentiment gate (LunarCrush)
+
+Optional pre-fire filter using LunarCrush sentiment. Controlled by
+`SENTIMENT_GATE_MODE` in `relay.env`:
+
+- `shadow` (default) — logs `[sentiment-shadow] would skip: ...` lines when
+  sentiment disagrees with the FVG direction, but still fires. Lets the
+  bot accumulate "would-veto" data into post-mortems and INSIGHTS.md
+  without changing trade behaviour.
+- `live` — actual veto. Skips fires with `skip: sentiment-disagree` when
+  sentiment is bear vs a bull setup, or bull vs a bear setup. Neutral and
+  no-data fail-open (other gates still apply).
+- `off` — no LunarCrush lookup. The lane runs without the gate.
+
+`LUNARCRUSH_API_KEY` must be set in `relay.env` for `shadow` or `live` to
+do anything; otherwise the gate silently fails open. Inspect runtime
+state with:
+
+```bash
+curl https://tv-relay.srv1688368.hstgr.cloud/trader-state | jq .sentimentGate
+```
+
+Rollback to neutral behaviour: set `SENTIMENT_GATE_MODE=off` and restart
+`azc-trader.service` — but only while `positionContext` is null
+(`feedback_no_restart_during_position`).

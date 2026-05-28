@@ -1003,6 +1003,23 @@ const server = http.createServer(async (req, res) => {
             console.error('[context-fetch-err]', e.message);
           }
         }
+        // Stitch the last-fire sentiment from trader state if available.
+        // positionContext is cleared on close, so we read lastFireSentiment
+        // (which survives until the next fire). Match by orderId so we
+        // never attach the wrong fire's sentiment to a post-mortem.
+        if (!payload.sentiment) {
+          try {
+            const txt = await readFile(TRADER_STATE_FILE, 'utf8');
+            const ts = JSON.parse(txt);
+            const lfs = ts?.lastFireSentiment;
+            if (lfs && payload.orderId && String(lfs.orderId) === String(payload.orderId)) {
+              const { orderId: _, ...rest } = lfs;
+              payload.sentiment = rest;
+            }
+          } catch (e) {
+            // best-effort; never block the post-mortem
+          }
+        }
         const out = await writeLearningFile(payload, LEARN_ROOT);
         if (!out.ok) return sendJson(res, 400, { error: out.reason || 'write-failed' }, CORS_HEADERS);
         // Refresh INSIGHTS.md so the dashboard sees the new edge/leak

@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   splitPostMortemSentences,
@@ -8,6 +8,8 @@ import {
   buildInsights,
   formatInsightsMarkdown,
   binByPct,
+  formatShadowCohortBlock,
+  extractSentimentMeta,
 } from '../trade-insights.mjs';
 
 const sampleBody = (postMortem) => [
@@ -188,5 +190,42 @@ describe('binByPct', () => {
     const md = formatInsightsMarkdown(insights);
     assert.match(md, /By FVG body size/);
     assert.match(md, /0\.10-0\.15%/);
+  });
+});
+
+describe('formatShadowCohortBlock', () => {
+  test('shows expR for would-vetoed vs the rest on the same cohort', () => {
+    const trades = [
+      { rMultiple:  1.8, sentiment: { agree: false, shadowWouldSkip: true } },
+      { rMultiple: -1.0, sentiment: { agree: false, shadowWouldSkip: true } },
+      { rMultiple: -1.0, sentiment: { agree: false, shadowWouldSkip: true } },
+      { rMultiple:  1.8, sentiment: { agree: true,  shadowWouldSkip: false } },
+      { rMultiple:  1.8, sentiment: { agree: true,  shadowWouldSkip: false } },
+      { rMultiple: -1.0, sentiment: { agree: true,  shadowWouldSkip: false } },
+    ];
+    const block = formatShadowCohortBlock(trades);
+    assert.match(block, /Shadow gate — would-veto outcomes/);
+    assert.match(block, /would-veto.*n= *3/);
+    assert.match(block, /rest.*n= *3/);
+    assert.match(block, /would-veto.*expR/);
+    assert.match(block, /rest.*expR/);
+  });
+
+  test('returns empty string when no trades carry sentiment', () => {
+    const block = formatShadowCohortBlock([{ rMultiple: 1, sentiment: null }]);
+    assert.equal(block, '');
+  });
+});
+
+describe('extractSentimentMeta', () => {
+  test('parses a complete sentiment block', () => {
+    const body = `# whatever\n\n## Sentiment (at fire)\n- source: topic\n- label:  bear\n- agree:  no\n- shadow gate would have vetoed\n\n## Post-mortem\nstuff\n`;
+    const r = extractSentimentMeta(body);
+    assert.deepEqual(r, { label: 'bear', source: 'topic', agree: false, shadowWouldSkip: true });
+  });
+
+  test('returns null when section absent', () => {
+    const r = extractSentimentMeta('# x\n## Post-mortem\nstuff\n');
+    assert.equal(r, null);
   });
 });
