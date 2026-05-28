@@ -148,6 +148,7 @@ let sentimentShadowSkips24h = 0;
 let sentimentLiveSkips24h = 0;
 let lastSentimentSnapshot = null;
 let lastSentimentAt = null;
+let lastFireSentiment = null;   // { orderId, label, source, agree, shadowWouldSkip } — survives close so the relay can stitch into the post-mortem
 // Cached MEXC futures wallet balance (USDT availableBalance). Refreshed
 // every WALLET_REFRESH_MS so the dashboard can render the live wallet
 // chip without each browser making a signed call. null = never fetched.
@@ -299,7 +300,7 @@ async function writeState(extra = {}) {
     sessionStatus,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
-    positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp } : null,
+    positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp, sentiment: positionContext.sentiment || null } : null,
     lastScanSummary,
     lastError,
     walletUsdt,
@@ -313,6 +314,7 @@ async function writeState(extra = {}) {
       shadowWouldSkipCount24h: sentimentShadowSkips24h,
       liveSkipCount24h: sentimentLiveSkips24h,
     },
+    lastFireSentiment,
     // Inspect from prod: curl https://tv-relay.srv1688368.hstgr.cloud/trader-state | jq .sentimentGate
     ...extra,
   };
@@ -637,7 +639,18 @@ async function tryFire() {
     tier, riskPct, priceAtCall: pick.price,
     distPct: pick.distPct, fvgBody: pick.fvg.body, fvgBodyPct: pick.fvg.body / pick.price,
     session: currentKillzoneName(),
+    sentiment: sentimentSnapshot
+      ? {
+          label: sentimentSnapshot.label,
+          source: sentimentSnapshot.source,
+          agree: !(decision.shadow?.wouldSkip),
+          shadowWouldSkip: !!decision.shadow?.wouldSkip,
+        }
+      : null,
   };
+  lastFireSentiment = positionContext.sentiment
+    ? { orderId, ...positionContext.sentiment }
+    : null;
   return { fired: true, orderId, symbol: pick.symbol, entry, sl: slSnap, tp: tpSnap };
 }
 

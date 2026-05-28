@@ -102,6 +102,18 @@ export function formatContextSection(ctx) {
   return lines;
 }
 
+export function formatSentimentSection(s) {
+  if (!s || typeof s !== 'object') return [];
+  const label = String(s.label || '').toLowerCase();
+  if (!label) return [];
+  const lines = ['## Sentiment (at fire)'];
+  lines.push(`- source: ${s.source || '—'}`);
+  lines.push(`- label:  ${label}`);
+  lines.push(`- agree:  ${s.agree ? 'yes' : 'no'}`);
+  if (s.shadowWouldSkip) lines.push('- shadow gate would have vetoed');
+  return lines;
+}
+
 export function formatLearningMarkdown(p) {
   const lines = [];
   const f = (n, d = 4) => (Number.isFinite(Number(n)) ? Number(n).toFixed(d) : '—');
@@ -152,6 +164,11 @@ export function formatLearningMarkdown(p) {
   const ctxLines = formatContextSection(p?.context);
   if (ctxLines.length) {
     lines.push(...ctxLines);
+    lines.push('');
+  }
+  const sentLines = formatSentimentSection(p?.sentiment);
+  if (sentLines.length) {
+    lines.push(...sentLines);
     lines.push('');
   }
   lines.push('## Post-mortem');

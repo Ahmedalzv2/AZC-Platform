@@ -9429,6 +9429,7 @@
       analysis: je.analysis,
       outcomeChecks: je.outcomeChecks,
       accounting,   // { grossUsd, feeUsdOpen, feeUsdClose, fundingUsd, windowsCrossed, holdMs, netUsd } or null
+      sentiment: je.sentiment || null,
     };
     // Stash the computed net back on the journal entry so the local
     // dashboard's win-rate / total-USD stats stay consistent with the

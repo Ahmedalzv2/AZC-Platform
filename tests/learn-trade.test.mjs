@@ -223,6 +223,41 @@ describe('writeLearningFile', () => {
   });
 });
 
+describe('formatLearningMarkdown — ## Sentiment section', () => {
+  const base = {
+    symbol: 'SOL_USDT', side: 'long', outcome: 'win',
+    entry: 100, sl: 99, tp: 102, priceAtCall: 100,
+    realizedUsd: 1, rMultiple: 1, timestamp: 1779950000000,
+    analysis: 'x',
+  };
+
+  test('emits section when sentiment present', () => {
+    const md = formatLearningMarkdown({
+      ...base,
+      sentiment: { label: 'bull', source: 'topic', agree: true, shadowWouldSkip: false },
+    });
+    assert.match(md, /## Sentiment \(at fire\)/);
+    assert.match(md, /source: topic/);
+    assert.match(md, /label: +bull/);
+    assert.match(md, /agree: +yes/);
+    assert.doesNotMatch(md, /shadow gate would have vetoed/);
+  });
+
+  test('flags shadow would-veto when shadowWouldSkip true', () => {
+    const md = formatLearningMarkdown({
+      ...base,
+      sentiment: { label: 'bear', source: 'news', agree: false, shadowWouldSkip: true },
+    });
+    assert.match(md, /agree: +no/);
+    assert.match(md, /shadow gate would have vetoed/);
+  });
+
+  test('omits section entirely when sentiment absent', () => {
+    const md = formatLearningMarkdown({ ...base, sentiment: null });
+    assert.doesNotMatch(md, /## Sentiment \(at fire\)/);
+  });
+});
+
 describe('generatePostMortem', () => {
   test('clean -1R loss returns clean-SL line', () => {
     const pm = generatePostMortem({ outcome: 'loss', rMultiple: -1.0, side: 'long', bias: 'bear', session: 'ny' });
