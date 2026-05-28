@@ -22,6 +22,7 @@ export function decideFireAction({
   sideStatus,        // { long: {status, reason}, short: {status, reason} }
   sessionStatus,     // { asia: {status, reason}, london: {...}, ... }
   symbolSideStatus = null, // { "SOL_USDT:long": {status, reason}, ... }
+  sessionSideStatus = null, // { "off:long": {status, reason}, ... }
   currentSession,    // 'asia' | 'london' | 'ny-am' | 'late-ny' | 'off'
   riskTiers,         // { default, top2, best }
   sentimentSnapshot = null,
@@ -33,19 +34,34 @@ export function decideFireAction({
     return { action: 'skip', skip: 'no-candidates' };
   }
 
-  // Symbol-side gate filters candidates BEFORE pick. Unlike side/session
+  // Intersection gates filter candidates BEFORE pick. Unlike side/session
   // (which gate the global top-1 and skip the whole cycle on block),
-  // symbol-side exists precisely to let a healthy XRP:short fire when
-  // SOL:short is bleeding. Missing keys fail-open.
-  const symSideKey = c => `${c.symbol}:${c.fvg.dir === 'bull' ? 'long' : 'short'}`;
-  const surviving = symbolSideStatus
-    ? candidates.filter(c => symbolSideStatus[symSideKey(c)]?.status !== 'blocked')
-    : candidates;
-  if (!surviving.length) {
-    return {
-      action: 'skip', skip: 'symbol-side-blocked-all',
-      detail: `${candidates.length} candidate(s) blocked by symbol-side gate`,
-    };
+  // intersection gates exist precisely to let a healthy XRP:short fire
+  // when SOL:short is bleeding, or to keep firing bears in london when
+  // longs in london don't work. Missing keys fail-open.
+  const sideOf       = c => c.fvg.dir === 'bull' ? 'long' : 'short';
+  const symSideKey   = c => `${c.symbol}:${sideOf(c)}`;
+  const sessSideKey  = c => `${currentSession}:${sideOf(c)}`;
+
+  let surviving = candidates;
+  if (symbolSideStatus) {
+    surviving = surviving.filter(c => symbolSideStatus[symSideKey(c)]?.status !== 'blocked');
+    if (!surviving.length) {
+      return {
+        action: 'skip', skip: 'symbol-side-blocked-all',
+        detail: `${candidates.length} candidate(s) blocked by symbol-side gate`,
+      };
+    }
+  }
+  if (sessionSideStatus) {
+    const beforeN = surviving.length;
+    surviving = surviving.filter(c => sessionSideStatus[sessSideKey(c)]?.status !== 'blocked');
+    if (!surviving.length) {
+      return {
+        action: 'skip', skip: 'session-side-blocked-all',
+        detail: `${beforeN} candidate(s) blocked by session-side gate`,
+      };
+    }
   }
 
   // Closest to FVG mid wins. Stable sort by distPct ascending so ties
@@ -124,6 +140,11 @@ export function decideFireAction({
   if (symSideState?.status === 'downshifted') {
     riskPct *= 0.5;
     downshifts.push({ source: 'symbol-side', key: symSideKey(pick), reason: symSideState.reason });
+  }
+  const sessSideState = sessionSideStatus?.[sessSideKey(pick)];
+  if (sessSideState?.status === 'downshifted') {
+    riskPct *= 0.5;
+    downshifts.push({ source: 'session-side', key: sessSideKey(pick), reason: sessSideState.reason });
   }
 
   return {
