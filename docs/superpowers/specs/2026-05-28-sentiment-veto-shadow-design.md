@@ -85,8 +85,8 @@ Public surface:
 
 Internals:
 - `_resolveLabel({ topicScore, newsHeadlines })` — pure label collapse.
-- `_topicFetcher({ ticker, env, signal })` — LunarCrush `/api4/public/topic/{ticker}/v1`. Maps topic sentiment score to `bull` (≥ 60) · `bear` (≤ 40) · `neutral` (else). Thresholds named constants at file top.
-- `_newsFetcher({ ticker, env, signal })` — delegates to existing `parseLunarCrushNews` from `trade-context.mjs`. Averages `post_sentiment` of the last N=10 headlines from the past 24h. Maps with the same 1–5 → bull/neutral/bear bands already in `sentimentLabel()`.
+- `_topicFetcher({ ticker, env, signal })` — LunarCrush `/api4/public/topic/{ticker_lowercase}/v1`. Reads `data.types_sentiment` (LC's per-bucket 1–5 sentiment object, e.g. `{tweet: 3.4, news: 4.1, reddit: 2.9}`), averages across present numeric buckets, then maps with the existing `sentimentLabel()` from `trade-context.mjs` (≤2.5 → `bear`, ≥3.5 → `bull`, else `neutral`). Reusing the canonical mapper keeps both providers on one scale.
+- `_newsFetcher({ ticker, env, signal })` — delegates to existing `parseLunarCrushNews` from `trade-context.mjs`. Averages `post_sentiment` of the last N=10 headlines from the past 24h, then maps with the same `sentimentLabel()`.
 - `_cache: Map<ticker, {snapshot, expiresAtMs}>` with 15-min TTL.
 - 2s per-call timeout via AbortController. Mirrors `trade-context.mjs`.
 - Outage / malformed JSON / 4xx / 5xx → `null` (never throws). Nulls never cached.
@@ -185,8 +185,8 @@ The gate never:
 
 **`tests/trader-sentiment.test.mjs` (new)**
 - Returns null when no API key.
-- Topic fetcher success → `{ label: 'bull', source: 'topic' }`; thresholds at 40, 50, 60 exact-value boundaries.
-- Topic empty → falls back to news. News headline avg maps correctly at 1.0, 2.5, 3.0, 3.5, 5.0.
+- Topic fetcher success → `{ label: 'bull', source: 'topic' }`; thresholds at 1.0, 2.5, 3.0, 3.5, 5.0 boundary values (same 1–5 scale as news).
+- Topic empty (`data.types_sentiment` missing or all non-numeric) → falls back to news. News headline avg maps correctly at 1.0, 2.5, 3.0, 3.5, 5.0.
 - Both empty → null.
 - Timeout >2s → null; AbortController called.
 - Cache hit within TTL → no fetcher call.
