@@ -64,6 +64,15 @@ export function decideFireAction({
   const disagree =
     (dir === 'bull' && sLabel === 'bear') ||
     (dir === 'bear' && sLabel === 'bull');
+
+  if (disagree && gateMode === 'live') {
+    return {
+      action: 'skip',
+      skip: 'sentiment-disagree',
+      detail: `${sLabel} sentiment vs ${dir} setup`,
+      source: sentimentSnapshot.source,
+    };
+  }
   const shadowAttach = (gateMode === 'shadow' && disagree)
     ? { gate: 'sentiment', wouldSkip: true, label: sLabel, source: sentimentSnapshot.source }
     : null;

@@ -254,3 +254,52 @@ describe('decideFireAction — sentiment gate, shadow mode', () => {
     assert.equal(r.shadow, undefined);
   });
 });
+
+describe('decideFireAction — sentiment gate, live mode', () => {
+  it('skips with sentiment-disagree when bear sentiment vs bull setup', () => {
+    const r = decideFireAction(baseInput({
+      sentimentGateMode: 'live',
+      sentimentSnapshot: { label: 'bear', source: 'topic', fetchedAtMs: 1 },
+    }));
+    assert.equal(r.action, 'skip');
+    assert.equal(r.skip, 'sentiment-disagree');
+    assert.match(r.detail, /bear sentiment vs bull setup/);
+    assert.equal(r.source, 'topic');
+  });
+
+  it('skips with sentiment-disagree when bull sentiment vs bear setup', () => {
+    const r = decideFireAction(baseInput({
+      candidates: [cand('SOL_USDT', 'bear', 0.0001)],
+      sentimentGateMode: 'live',
+      sentimentSnapshot: { label: 'bull', source: 'news', fetchedAtMs: 1 },
+    }));
+    assert.equal(r.action, 'skip');
+    assert.equal(r.skip, 'sentiment-disagree');
+    assert.match(r.detail, /bull sentiment vs bear setup/);
+  });
+
+  it('fires normally when sentiment agrees', () => {
+    const r = decideFireAction(baseInput({
+      sentimentGateMode: 'live',
+      sentimentSnapshot: { label: 'bull', source: 'topic', fetchedAtMs: 1 },
+    }));
+    assert.equal(r.action, 'fire');
+  });
+
+  it('fail-open on null snapshot in live mode', () => {
+    const r = decideFireAction(baseInput({
+      sentimentGateMode: 'live',
+      sentimentSnapshot: null,
+    }));
+    assert.equal(r.action, 'fire');
+  });
+
+  it('side-blocked beats sentiment-disagree (gate ordering)', () => {
+    const r = decideFireAction(baseInput({
+      sideStatus: { long: { status: 'blocked', reason: 'side gone' }, short: enabled('SHORT') },
+      sentimentGateMode: 'live',
+      sentimentSnapshot: { label: 'bear', source: 'topic', fetchedAtMs: 1 },
+    }));
+    assert.equal(r.skip, 'side-blocked');
+  });
+});
