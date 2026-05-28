@@ -387,6 +387,76 @@ describe('decideFireAction — per-symbol-side gate', () => {
     assert.deepEqual(r.downshifts, []);
   });
 
+  it('session-side: omitted is a no-op (fail-open)', () => {
+    const r = decideFireAction(baseInput());
+    assert.equal(r.action, 'fire');
+  });
+
+  it('session-side: blocked for current session+side filters all bulls when session is london', () => {
+    const r = decideFireAction(baseInput({
+      candidates: [
+        cand('SOL_USDT', 'bull', 0.0001),
+        cand('XRP_USDT', 'bear', 0.0002),
+      ],
+      currentSession: 'london',
+      sessionSideStatus: {
+        'london:long':  { status: 'blocked', reason: 'live -0.40R after 22' },
+        'london:short': { status: 'enabled', reason: '+0.15R over 20' },
+      },
+    }));
+    assert.equal(r.action, 'fire');
+    // Bull is filtered; bear survives and wins.
+    assert.equal(r.pick.symbol, 'XRP_USDT');
+    assert.equal(r.candidateCount, 1);
+  });
+
+  it('session-side: all candidates filtered → session-side-blocked-all', () => {
+    const r = decideFireAction(baseInput({
+      candidates: [
+        cand('SOL_USDT', 'bull', 0.0001),
+        cand('XRP_USDT', 'bull', 0.0002),
+      ],
+      currentSession: 'off',
+      sessionSideStatus: {
+        'off:long':  { status: 'blocked', reason: 'off-bull bleeds' },
+      },
+    }));
+    assert.equal(r.action, 'skip');
+    assert.equal(r.skip, 'session-side-blocked-all');
+    assert.match(r.detail, /2 candidate/);
+  });
+
+  it('session-side: downshifted halves risk and records source=session-side', () => {
+    const r = decideFireAction(baseInput({
+      currentSession: 'off',
+      sessionSideStatus: {
+        'off:long': { status: 'downshifted', reason: 'live -0.08R after 20' },
+      },
+    }));
+    assert.equal(r.action, 'fire');
+    assert.equal(r.riskPct, RISK.top2 * 0.5);
+    assert.equal(r.downshifts.some(d => d.source === 'session-side' && d.key === 'off:long'), true);
+  });
+
+  it('session-side: all four downshift sources compound to 1/16 risk', () => {
+    const r = decideFireAction(baseInput({
+      sideStatus: { long: { status: 'downshifted', reason: 's' }, short: enabled('SHORT') },
+      sessionStatus: { ...baseInput().sessionStatus, london: { status: 'downshifted', reason: 's' } },
+      symbolSideStatus: { 'SOL_USDT:long': { status: 'downshifted', reason: 's' } },
+      sessionSideStatus: { 'london:long': { status: 'downshifted', reason: 's' } },
+    }));
+    assert.equal(r.riskPct, RISK.top2 * 0.5 * 0.5 * 0.5 * 0.5);
+    assert.equal(r.downshifts.length, 4);
+  });
+
+  it('session-side: missing key fails open (treated as enabled)', () => {
+    const r = decideFireAction(baseInput({
+      currentSession: 'asia',
+      sessionSideStatus: { 'london:long': { status: 'blocked', reason: 'unrelated' } },
+    }));
+    assert.equal(r.action, 'fire');
+  });
+
   it('symbol-side filter runs before side-blocked check (so a blocked side does not mask a survivor)', () => {
     // SOL:short blocked by symbol-side, XRP:short survives. Even if a
     // hypothetical global SHORT side state were degraded later we still

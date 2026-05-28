@@ -177,6 +177,11 @@ let sessionStatus = {};
 // blocks. Filtering happens at candidate-list level inside
 // decideFireAction, so a blocked combo never wins over a healthy peer.
 let symbolSideStatus = {};
+// Per-session-side live drift — keyed "<session>:long" / "<session>:short".
+// 365d backtest: off+bull -0.019R, london+bull -0.053R, ny-am+bull -0.004R
+// while every BEAR bucket is profitable. Same filter shape as
+// symbolSideStatus so a blocked off:long never masks a healthy off:short.
+let sessionSideStatus = {};
 
 function nextUtcMidnight() {
   const d = new Date();
@@ -311,6 +316,32 @@ async function recomputeSideStatus() {
     }
   }
   symbolSideStatus = nextSymbolSideStatus;
+
+  // Same logic, keyed by "<session>:long" / "<session>:short". Sessions
+  // come from the live trade records; bucket is created on first
+  // observed (session, side) pair rather than seeded with all combos so
+  // dormant pairs (asia:long with 0 samples) don't clutter trader-state.
+  const nextSessionSideStatus = {};
+  for (const t of trades) {
+    const sess = (t.session && t.session !== 'no-killzone') ? t.session : 'off';
+    const sd   = String(t.side).toUpperCase() === 'LONG' ? 'long' : 'short';
+    const key  = `${sess}:${sd}`;
+    (nextSessionSideStatus[key] ||= []).push(t);
+  }
+  const nextSessionSideGates = {};
+  for (const [key, group] of Object.entries(nextSessionSideStatus)) {
+    nextSessionSideGates[key] = decideGate(summarise(group), GATE_THRESHOLDS);
+  }
+  for (const [k, state] of Object.entries(nextSessionSideGates)) {
+    const prev = sessionSideStatus[k]?.status;
+    if (prev !== state.status) {
+      log(`[session-side-gate] ${k}: ${prev || '(new)'} → ${state.status} (${state.reason})`);
+      if (prev) {
+        notify(fmtDriftAlert({ gate: 'session-side', key: k, fromStatus: prev, toStatus: state.status, reason: state.reason }));
+      }
+    }
+  }
+  sessionSideStatus = nextSessionSideGates;
 }
 
 async function writeState(extra = {}) {
@@ -327,6 +358,7 @@ async function writeState(extra = {}) {
     sideStatus,
     sessionStatus,
     symbolSideStatus,
+    sessionSideStatus,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
     // Persist the full context so a restart mid-trade can rehydrate and
@@ -577,6 +609,7 @@ async function tryFire() {
     sideStatus,
     sessionStatus,
     symbolSideStatus,
+    sessionSideStatus,
     currentSession: currentKillzoneName() || 'off',
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     sentimentSnapshot,
@@ -603,6 +636,8 @@ async function tryFire() {
       log(`[side-downshift] ${d.key.toUpperCase()} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
     } else if (d.source === 'symbol-side') {
       log(`[symbol-side-downshift] ${d.key} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
+    } else if (d.source === 'session-side') {
+      log(`[session-side-downshift] ${d.key} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
     } else {
       log(`[session-downshift] ${d.key} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
     }
@@ -1045,6 +1080,9 @@ for (const [label, state] of Object.entries(sessionStatus)) {
 }
 for (const [k, state] of Object.entries(symbolSideStatus)) {
   log(`[symbol-side-gate-boot] ${k}=${state.status} (${state.reason})`);
+}
+for (const [k, state] of Object.entries(sessionSideStatus)) {
+  log(`[session-side-gate-boot] ${k}=${state.status} (${state.reason})`);
 }
 
 // If the stop flag is set at startup, refuse to launch — operator must
