@@ -1,0 +1,1855 @@
+//@version=6
+// =====================================================================
+// AZC Combined Trading Suite
+// =====================================================================
+// Single indicator merging five modules behind master toggles.
+//
+// Module attribution and licensing:
+//   1. ICT Toolkit module      — adapted from "dmn's ICT Toolkit" © fxdmn
+//                                (Mozilla Public License 2.0)
+//   2. Liquidity Delta module  — adapted from "Liquidity Delta Profiler"
+//                                © LuxAlgo (CC BY-NC-SA 4.0).
+//                                This combined work is also CC BY-NC-SA 4.0
+//                                for the Liquidity Delta module portion.
+//   3. Ichimoku module         — fresh implementation of the public
+//                                Ichimoku Kinko Hyo system (Goichi Hosoda)
+//                                with layered TK-cross signal categories.
+//   4. Silver Context module   — fresh implementation of a trend-EMA +
+//                                macro-stress (DXY/US10Y EMA breakout) +
+//                                volatility-flush (ATR / % move) gate.
+//                                Silver-specific; off by default.
+//   5. Multi-TF FVG module     — fresh implementation of the public ICT
+//                                3-candle Fair Value Gap pattern with
+//                                higher-TF support and mitigation tracking.
+//
+// The two original strategies that inspired modules 3 and 4 are converted
+// to indicator visuals + alertconditions (Pine permits only one strategy()
+// per script). A simulated position state drives SL/TP line drawing.
+// =====================================================================
+
+indicator("AZC Combined ICT/Ichimoku/Silver/Liquidity/FVG",
+     shorttitle="AZC Suite",
+     overlay=true,
+     max_lines_count=500,
+     max_boxes_count=500,
+     max_labels_count=500)
+
+// =====================================================================
+// MASTER MODULE TOGGLES
+// =====================================================================
+var string gMaster = "Master Toggles"
+useIchimoku  = input.bool(true,  "Ichimoku",        group=gMaster)
+useSilver    = input.bool(false, "Silver Context",  group=gMaster, tooltip="Silver-specific: gates on DXY/US10Y. Disable on non-precious-metals charts.")
+useLiquidity = input.bool(true,  "Liquidity Delta", group=gMaster)
+useIct       = input.bool(true,  "ICT Toolkit",     group=gMaster)
+useFvg       = input.bool(true,  "Multi-TF FVG",    group=gMaster)
+
+// =====================================================================
+// SHARED HELPERS
+// =====================================================================
+var int   DECIMALS = int(math.log10(1/syminfo.mintick))
+var float PIP      = math.pow(10, DECIMALS - 1)
+
+// ICT helpers (kept in original form for ICT Toolkit module compatibility)
+hours(int h, int m=0) =>
+    time + (3600000 * h) + (60000 * m)
+
+stringToHour(string s)    => math.round(str.tonumber(str.substring(s, 0, 2)))
+stringToMinutes(string s) => math.round(str.tonumber(str.substring(s, 2, 4)))
+
+averageRange(float h, float l, int n) =>
+    float r = 0.0
+    for i = 1 to n
+        r += h[i] - l[i]
+    PIP * r / n
+
+addLines(array<line> a, int x1, int x2, float y, color c, int n, string s, int w) =>
+    for i = 0 to n - 1
+        array.push(a, line.new(x1, y, x2, y, xloc=xloc.bar_time, color=c, style=s, width=w))
+
+delLines(array<line> a) =>
+    if array.size(a) > 0
+        for i = 0 to array.size(a) - 1
+            line.delete(array.get(a, i))
+
+setLineArrayY(array<line> a, float y, float spacing, int m) =>
+    for [i, l] in a
+        float step = (i + 1) * spacing * m
+        line.set_y1(l, y + step)
+        line.set_y2(l, y + step)
+
+lineset_y(line l, float y) =>
+    line.set_y1(l, y)
+    line.set_y2(l, y)
+
+inSession(string sessionTime, string sessionTimeZone=syminfo.timezone) =>
+    not na(time(timeframe.period, sessionTime, sessionTimeZone))
+
+getBrightness(color c) =>
+    r = color.r(c)
+    g = color.g(c)
+    b = color.b(c)
+    math.sqrt(r*r*0.241 + g*g*0.691 + b*b*0.068)
+
+blackOrWhiteText(color c) => getBrightness(c) > 130 ? color.black : color.white
+
+getLineStyle(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dotted" => line.style_dotted
+        "Dashed" => line.style_dashed
+
+// Shared 14-period ATR (used by Silver flush logic and LuxAlgo zone sizing)
+float atr14 = ta.atr(14)
+
+f_persist(bool cond, int bars) =>
+    bool ok = true
+    for i = 0 to bars - 1
+        ok := ok and cond[i] == true
+    ok
+
+
+// =====================================================================
+// MODULE 3: ICHIMOKU
+// Fresh implementation of public Ichimoku Kinko Hyo with layered signals
+// =====================================================================
+var string gIch     = "Ichimoku"
+var string gIchSig  = "Ichimoku · Signal Filters"
+var string gIchRisk = "Ichimoku · Risk Management"
+
+tenkanPeriod      = input.int(9,  "Tenkan-Sen Period",    minval=1, group=gIch)
+kijunPeriod       = input.int(26, "Kijun-Sen Period",     minval=1, group=gIch)
+senkouSpanBPeriod = input.int(52, "Senkou Span B Period", minval=1, group=gIch)
+displacement      = input.int(26, "Displacement",         minval=1, group=gIch)
+
+useCloudFilter        = input.bool(true,  "Cloud Position Filter",            group=gIchSig)
+useChikouConfirmation = input.bool(true,  "Chikou Span Confirmation",         group=gIchSig)
+strongSignalsOnly     = input.bool(false, "Strong Signals Only",              group=gIchSig, tooltip="Require price above/below cloud")
+multiSignalDisplay    = input.bool(true,  "Show Multiple Signal Layers",      group=gIchSig)
+
+useSL          = input.bool(true,  "Use Stop Loss", group=gIchRisk)
+slType         = input.string("Recent Low/High", "Stop Loss Type", options=["Kijun-Sen", "Recent Low/High", "Percentage", "Trailing Low"], group=gIchRisk)
+slPercent      = input.float(2.0,  "Stop Loss %",              minval=0.1, maxval=10, step=0.1,  group=gIchRisk)
+slOffset       = input.float(0.1,  "SL Offset %",              minval=0,   maxval=2,  step=0.05, group=gIchRisk)
+recentLookback = input.int(10,     "Recent Low/High Lookback", minval=5,   maxval=50, step=1,    group=gIchRisk)
+useTP          = input.bool(true,  "Use Take Profit",                                            group=gIchRisk)
+tpRatio        = input.float(2.0,  "Risk/Reward Ratio",        minval=0.5, maxval=10, step=0.5,  group=gIchRisk)
+trailingStop   = input.bool(false, "Use Trailing Stop",                                          group=gIchRisk)
+trailOffset    = input.float(1.5,  "Trailing Stop % Offset",   minval=0.1, maxval=5,  step=0.1,  group=gIchRisk)
+
+// Core Ichimoku calculations
+tenkanSen   = (ta.highest(high, tenkanPeriod)      + ta.lowest(low, tenkanPeriod))      / 2
+kijunSen    = (ta.highest(high, kijunPeriod)       + ta.lowest(low, kijunPeriod))       / 2
+senkouSpanA = (tenkanSen + kijunSen) / 2
+senkouSpanB = (ta.highest(high, senkouSpanBPeriod) + ta.lowest(low, senkouSpanBPeriod)) / 2
+chikouSpan  = close
+
+senkouA_disp = senkouSpanA[displacement]
+senkouB_disp = senkouSpanB[displacement]
+kumoGreen    = senkouSpanA > senkouSpanB
+kumoRed      = senkouSpanA < senkouSpanB
+cloudTop     = math.max(senkouA_disp, senkouB_disp)
+cloudBottom  = math.min(senkouA_disp, senkouB_disp)
+
+priceAboveCloud = close > cloudTop
+priceBelowCloud = close < cloudBottom
+
+bullishTKCross = ta.crossover(tenkanSen, kijunSen)
+bearishTKCross = ta.crossunder(tenkanSen, kijunSen)
+chikouBullish  = chikouSpan > close[displacement]
+chikouBearish  = chikouSpan < close[displacement]
+
+// Long entry filter chain
+longCondition = bullishTKCross
+if useCloudFilter
+    longCondition := longCondition and kumoGreen
+if strongSignalsOnly
+    longCondition := longCondition and priceAboveCloud
+if useChikouConfirmation
+    longCondition := longCondition and chikouBullish
+
+// Short entry filter chain
+shortCondition = bearishTKCross
+if useCloudFilter
+    shortCondition := shortCondition and kumoRed
+if strongSignalsOnly
+    shortCondition := shortCondition and priceBelowCloud
+if useChikouConfirmation
+    shortCondition := shortCondition and chikouBearish
+
+// Exit signals
+longExit       = bearishTKCross
+shortExit      = bullishTKCross
+longExitCloud  = ta.crossunder(close, cloudBottom)
+shortExitCloud = ta.crossover(close, cloudTop)
+
+ichCalcSL(bool isLong, float entryPrice) =>
+    float sl = 0.0
+    if slType == "Kijun-Sen"
+        sl := isLong ? kijunSen * (1 - slOffset/100) : kijunSen * (1 + slOffset/100)
+    else if slType == "Recent Low/High" or slType == "Trailing Low"
+        sl := isLong ? ta.lowest(low, recentLookback) * (1 - slOffset/100) : ta.highest(high, recentLookback) * (1 + slOffset/100)
+    else
+        sl := isLong ? entryPrice * (1 - slPercent/100) : entryPrice * (1 + slPercent/100)
+    sl
+
+ichCalcTP(bool isLong, float entryPrice, float stopLoss) =>
+    float risk = math.abs(entryPrice - stopLoss)
+    isLong ? entryPrice + risk * tpRatio : entryPrice - risk * tpRatio
+
+// Simulated position state for SL/TP line drawing
+var int   ichPos        = 0
+var float ichLongEntry  = na
+var float ichLongSL     = na
+var float ichLongTP     = na
+var float ichShortEntry = na
+var float ichShortSL    = na
+var float ichShortTP    = na
+
+if useIchimoku
+    // Enter
+    if longCondition and ichPos == 0
+        ichPos        := 1
+        ichLongEntry  := close
+        ichLongSL     := useSL ? ichCalcSL(true, close) : na
+        ichLongTP     := useTP ? ichCalcTP(true, close, ichLongSL) : na
+    else if shortCondition and ichPos == 0
+        ichPos        := -1
+        ichShortEntry := close
+        ichShortSL    := useSL ? ichCalcSL(false, close) : na
+        ichShortTP    := useTP ? ichCalcTP(false, close, ichShortSL) : na
+
+    // Trailing for long
+    if ichPos == 1 and slType == "Trailing Low"
+        float newSL = low * (1 - slOffset/100)
+        if newSL > ichLongSL
+            ichLongSL := newSL
+    if ichPos == -1 and slType == "Trailing Low"
+        float newSL = high * (1 + slOffset/100)
+        if newSL < ichShortSL
+            ichShortSL := newSL
+
+    // Generic trailing stop
+    if trailingStop and ichPos == 1
+        float newSL = close * (1 - trailOffset/100)
+        if na(ichLongSL) or newSL > ichLongSL
+            ichLongSL := newSL
+    if trailingStop and ichPos == -1
+        float newSL = close * (1 + trailOffset/100)
+        if na(ichShortSL) or newSL < ichShortSL
+            ichShortSL := newSL
+
+    // Exits
+    if ichPos == 1 and (low <= nz(ichLongSL, low - 1) or high >= nz(ichLongTP, high + 1) or longExit or longExitCloud)
+        ichPos        := 0
+        ichLongEntry  := na
+        ichLongSL     := na
+        ichLongTP     := na
+    if ichPos == -1 and (high >= nz(ichShortSL, high + 1) or low <= nz(ichShortTP, low - 1) or shortExit or shortExitCloud)
+        ichPos        := 0
+        ichShortEntry := na
+        ichShortSL    := na
+        ichShortTP    := na
+
+// Ichimoku plots (gated by master toggle)
+plot(useIchimoku ? tenkanSen : na, "Tenkan-Sen", color=color.new(#2962FF, 0), linewidth=2)
+plot(useIchimoku ? kijunSen  : na, "Kijun-Sen",  color=color.new(#FF6D00, 0), linewidth=2)
+
+p1 = plot(useIchimoku ? senkouSpanA : na, "Senkou Span A", offset=displacement, color=color.new(#00E676, 0), linewidth=1)
+p2 = plot(useIchimoku ? senkouSpanB : na, "Senkou Span B", offset=displacement, color=color.new(#FF1744, 0), linewidth=1)
+cloudColor = kumoGreen ? color.new(#00E676, 85) : color.new(#FF1744, 85)
+fill(p1, p2, color=useIchimoku ? cloudColor : na, title="Kumo Cloud")
+
+plot(useIchimoku ? chikouSpan : na, "Chikou Span", offset=-displacement, color=color.new(#9C27B0, 0), linewidth=2)
+
+// Layered signal classification
+basicBull    = bullishTKCross and not priceAboveCloud and not chikouBullish
+strongBull   = bullishTKCross and priceAboveCloud     and not chikouBullish
+chikouBull   = bullishTKCross and chikouBullish       and not priceAboveCloud
+ultimateBull = bullishTKCross and priceAboveCloud     and chikouBullish
+
+basicBear    = bearishTKCross and not priceBelowCloud and not chikouBearish
+strongBear   = bearishTKCross and priceBelowCloud     and not chikouBearish
+chikouBear   = bearishTKCross and chikouBearish       and not priceBelowCloud
+ultimateBear = bearishTKCross and priceBelowCloud     and chikouBearish
+
+showBasicBull    = useIchimoku and (multiSignalDisplay ? basicBull    : (bullishTKCross and not strongSignalsOnly))
+showStrongBull   = useIchimoku and (multiSignalDisplay ? strongBull   : (bullishTKCross and priceAboveCloud and strongSignalsOnly))
+showChikouBull   = useIchimoku and  multiSignalDisplay and chikouBull
+showUltimateBull = useIchimoku and  multiSignalDisplay and ultimateBull
+
+showBasicBear    = useIchimoku and (multiSignalDisplay ? basicBear    : (bearishTKCross and not strongSignalsOnly))
+showStrongBear   = useIchimoku and (multiSignalDisplay ? strongBear   : (bearishTKCross and priceBelowCloud and strongSignalsOnly))
+showChikouBear   = useIchimoku and  multiSignalDisplay and chikouBear
+showUltimateBear = useIchimoku and  multiSignalDisplay and ultimateBear
+
+plotshape(showBasicBull,    title="Basic Bullish TK Cross", location=location.belowbar, color=color.new(#00E676, 0), style=shape.triangleup,   size=size.small,  text="BUY")
+plotshape(showStrongBull,   title="Strong Bullish",         location=location.belowbar, color=color.new(#2962FF, 0), style=shape.triangleup,   size=size.small,  text="STRONG")
+plotshape(showChikouBull,   title="Chikou Confirmation",    location=location.belowbar, color=color.new(#FFEB3B, 0), style=shape.triangleup,   size=size.small,  text="CHIKOU")
+plotshape(showUltimateBull, title="Ultimate Bullish",       location=location.belowbar, color=color.new(#FFD700, 0), style=shape.diamond,      size=size.normal, text="ULT")
+
+plotshape(showBasicBear,    title="Basic Bearish TK Cross",      location=location.abovebar, color=color.new(#FF1744, 0), style=shape.triangledown, size=size.small,  text="SELL")
+plotshape(showStrongBear,   title="Strong Bearish",              location=location.abovebar, color=color.new(#FF6D00, 0), style=shape.triangledown, size=size.small,  text="STRONG")
+plotshape(showChikouBear,   title="Chikou Confirmation Bearish", location=location.abovebar, color=color.new(#FFEB3B, 0), style=shape.triangledown, size=size.small,  text="CHIKOU")
+plotshape(showUltimateBear, title="Ultimate Bearish",            location=location.abovebar, color=color.new(#8B0000, 0), style=shape.diamond,      size=size.normal, text="ULT")
+
+plot(useIchimoku and ichPos ==  1 ? ichLongSL    : na, "Long Stop Loss",   color=color.new(color.red,    0),  style=plot.style_linebr, linewidth=2)
+plot(useIchimoku and ichPos ==  1 ? ichLongTP    : na, "Long Take Profit", color=color.new(color.green,  0),  style=plot.style_linebr, linewidth=2)
+plot(useIchimoku and ichPos ==  1 ? ichLongEntry : na, "Long Entry",       color=color.new(color.blue,   50), style=plot.style_linebr, linewidth=1)
+plot(useIchimoku and ichPos == -1 ? ichShortSL    : na, "Short Stop Loss",   color=color.new(color.red,   0),  style=plot.style_linebr, linewidth=2)
+plot(useIchimoku and ichPos == -1 ? ichShortTP    : na, "Short Take Profit", color=color.new(color.green, 0),  style=plot.style_linebr, linewidth=2)
+plot(useIchimoku and ichPos == -1 ? ichShortEntry : na, "Short Entry",       color=color.new(color.orange,50), style=plot.style_linebr, linewidth=1)
+
+bgcolor(useIchimoku and priceAboveCloud and kumoGreen ? color.new(color.green, 95) : na, title="Bullish Zone")
+bgcolor(useIchimoku and priceBelowCloud and kumoRed   ? color.new(color.red,   95) : na, title="Bearish Zone")
+
+alertcondition(useIchimoku and longCondition,                      title="ICH Long",         message="ICHIMOKU LONG | Price: {{close}}")
+alertcondition(useIchimoku and shortCondition,                     title="ICH Short",        message="ICHIMOKU SHORT | Price: {{close}}")
+alertcondition(useIchimoku and longExit,                           title="ICH Long Exit",    message="ICHIMOKU: Close LONG | Price: {{close}}")
+alertcondition(useIchimoku and shortExit,                          title="ICH Short Exit",   message="ICHIMOKU: Close SHORT | Price: {{close}}")
+alertcondition(useIchimoku and bullishTKCross and priceAboveCloud, title="ICH Strong Long",  message="STRONG BULL | Price: {{close}}")
+alertcondition(useIchimoku and bearishTKCross and priceBelowCloud, title="ICH Strong Short", message="STRONG BEAR | Price: {{close}}")
+
+
+// =====================================================================
+// MODULE 4: SILVER CONTEXT
+// Fresh implementation: trend EMA + DXY/US10Y macro stress + flush detect
+// =====================================================================
+var string gSilver      = "Silver Context"
+var string gSilverFlush = "Silver · Flush Protection"
+
+silverStartDate     = input.time(timestamp("2021-01-01 00:00 +0000"), "Start date", group=gSilver)
+useDateFilter       = input.bool(true,  "Use start date filter",                    group=gSilver)
+silverSlowLen       = input.int(150,    "Silver EMA slow",          minval=1,       group=gSilver)
+silverRecoveryLen   = input.int(75,     "Silver recovery EMA",      minval=1,       group=gSilver)
+useSilverTrendExit  = input.bool(true,  "Use silver trend exit",                    group=gSilver)
+silverExitBufferPct = input.float(0.0,  "Silver exit buffer % under EMA", minval=0.0, step=0.1, group=gSilver)
+
+dxySymbol           = input.symbol("TVC:DXY",   "DXY symbol",                       group=gSilver)
+useDxyExit          = input.bool(false, "Use DXY exit",                             group=gSilver)
+dxyLen              = input.int(50,     "DXY EMA length",            minval=1,      group=gSilver)
+dxyBreakoutLookback = input.int(20,     "DXY breakout lookback",     minval=2,      group=gSilver)
+dxyMaxAboveEmaPct   = input.float(1.0,  "DXY % above EMA for exit",  minval=0.0, step=0.1, group=gSilver)
+
+us10ySymbol           = input.symbol("TVC:US10Y", "US10Y symbol",                   group=gSilver)
+useUs10yExit          = input.bool(true,  "Use US10Y exit",                         group=gSilver)
+us10yLen              = input.int(50,     "US10Y EMA length",       minval=1,       group=gSilver)
+us10yBreakoutLookback = input.int(20,     "US10Y breakout lookback", minval=2,      group=gSilver)
+us10yMaxAboveEmaPct   = input.float(1.35, "US10Y % above EMA for exit", minval=0.0, step=0.05, group=gSilver)
+
+macroExitBars = input.int(3, "Bars macro stress before exit", minval=1, group=gSilver)
+reEntryBars   = input.int(1, "Bars calm before re-entry",     minval=1, group=gSilver)
+
+useFlushExit      = input.bool(true,  "Use silver flush exit",            group=gSilverFlush)
+oneDayFlushPct    = input.float(4.5,  "One day flush %",   minval=0.1, step=0.1, group=gSilverFlush)
+twoDayFlushPct    = input.float(8.0,  "Two day flush %",   minval=0.1, step=0.1, group=gSilverFlush)
+silverAtrLen      = input.int(14,     "ATR length",        minval=1,             group=gSilverFlush)
+atrShockMult      = input.float(1.8,  "ATR shock multiplier", minval=0.1, step=0.1, group=gSilverFlush)
+flushCooldownBars = input.int(3,      "Bars after flush before normal entry", minval=1, group=gSilverFlush)
+volCalmBars       = input.int(2,      "Bars volatility calm before re-entry", minval=1, group=gSilverFlush)
+
+silverShowTable = input.bool(true, "Show status table", group=gSilver)
+silverTablePos  = input.string("Top Left", "Status table position", options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group=gSilver)
+
+inTradeWindow     = not useDateFilter or time >= silverStartDate
+
+silverEmaSlow     = ta.ema(close, silverSlowLen)
+silverRecoveryEma = ta.ema(close, silverRecoveryLen)
+silverBelowSlow   = close < silverEmaSlow * (1.0 - silverExitBufferPct / 100.0)
+silverTrendExit   = useSilverTrendExit and silverBelowSlow
+
+dxyClose    = request.security(dxySymbol, timeframe.period, close,                           barmerge.gaps_off, barmerge.lookahead_off)
+dxyEma      = request.security(dxySymbol, timeframe.period, ta.ema(close, dxyLen),           barmerge.gaps_off, barmerge.lookahead_off)
+dxyHighPrev = request.security(dxySymbol, timeframe.period, ta.highest(high[1], dxyBreakoutLookback), barmerge.gaps_off, barmerge.lookahead_off)
+
+us10yClose    = request.security(us10ySymbol, timeframe.period, close,                              barmerge.gaps_off, barmerge.lookahead_off)
+us10yEma      = request.security(us10ySymbol, timeframe.period, ta.ema(close, us10yLen),            barmerge.gaps_off, barmerge.lookahead_off)
+us10yHighPrev = request.security(us10ySymbol, timeframe.period, ta.highest(high[1], us10yBreakoutLookback), barmerge.gaps_off, barmerge.lookahead_off)
+
+dxyAbovePct   = dxyEma   != 0 ? (dxyClose   - dxyEma)   / dxyEma   * 100.0 : 0.0
+us10yAbovePct = us10yEma != 0 ? (us10yClose - us10yEma) / us10yEma * 100.0 : 0.0
+
+dxyStress   = useDxyExit   and dxyClose   > dxyEma   and dxyAbovePct   > dxyMaxAboveEmaPct   and dxyClose   > dxyHighPrev
+us10yStress = useUs10yExit and us10yClose > us10yEma and us10yAbovePct > us10yMaxAboveEmaPct and us10yClose > us10yHighPrev
+
+macroStressNow     = dxyStress or us10yStress
+macroStressPersist = f_persist(macroStressNow, macroExitBars)
+
+dxyCalm      = not useDxyExit   or dxyClose   <= dxyEma   or dxyAbovePct   <= dxyMaxAboveEmaPct
+us10yCalm    = not useUs10yExit or us10yClose <= us10yEma or us10yAbovePct <= us10yMaxAboveEmaPct
+macroCalmNow = dxyCalm and us10yCalm
+macroCalmPersist = f_persist(macroCalmNow, reEntryBars)
+
+oneDayMovePct = close[1] != 0 ? (close / close[1] - 1.0) * 100.0 : 0.0
+twoDayMovePct = close[2] != 0 ? (close / close[2] - 1.0) * 100.0 : 0.0
+
+silverAtr    = ta.atr(silverAtrLen)
+silverAtrPct = close != 0 ? silverAtr / close * 100.0 : 0.0
+rangePct     = close != 0 ? (high - low) / close * 100.0 : 0.0
+
+oneDayFlush = oneDayMovePct <= -oneDayFlushPct
+twoDayFlush = twoDayMovePct <= -twoDayFlushPct
+atrShock    = rangePct > silverAtrPct * atrShockMult and close < open
+flushShockNow = useFlushExit and (oneDayFlush or twoDayFlush or atrShock)
+
+barsSinceFlush     = ta.barssince(flushShockNow)
+flushRecently      = useFlushExit and not na(barsSinceFlush) and barsSinceFlush <= flushCooldownBars
+volCalmNow         = not useFlushExit or rangePct <= silverAtrPct * atrShockMult
+volCalmPersist     = f_persist(volCalmNow, volCalmBars)
+flushRecoveryReady = not useFlushExit or not flushRecently or (close > silverRecoveryEma and volCalmPersist)
+
+var bool silverInLong = false
+silverExitCondition  = inTradeWindow and (silverTrendExit or macroStressPersist or flushShockNow)
+silverEntryCondition = inTradeWindow and not silverInLong and not silverTrendExit and macroCalmPersist and flushRecoveryReady
+
+if useSilver
+    if silverInLong and silverExitCondition
+        silverInLong := false
+    else if silverEntryCondition
+        silverInLong := true
+
+plot(useSilver ? silverEmaSlow     : na, "Silver EMA slow",     color=color.blue,   linewidth=2)
+plot(useSilver ? silverRecoveryEma : na, "Silver recovery EMA", color=color.orange, linewidth=1)
+
+plotshape(useSilver and silverEntryCondition,                 title="Silver Long entry",  style=shape.triangleup,   location=location.belowbar, color=color.lime,   size=size.small, text="Long")
+plotshape(useSilver and silverExitCondition  and silverInLong, title="Silver Exit",        style=shape.triangledown, location=location.abovebar, color=color.red,    size=size.small, text="Exit")
+plotshape(useSilver and flushShockNow,                        title="Silver flush shock", style=shape.diamond,      location=location.abovebar, color=color.yellow, size=size.small, text="Flush")
+
+bgcolor(useSilver and macroStressNow ? color.new(color.red,    88) : na, title="Macro stress background")
+bgcolor(useSilver and flushRecently  ? color.new(color.orange, 88) : na, title="Flush cooldown background")
+
+alertcondition(useSilver and silverEntryCondition,                 title="Silver Long Entry", message="Silver: Entry | Price: {{close}}")
+alertcondition(useSilver and silverExitCondition and silverInLong, title="Silver Exit",       message="Silver: Exit | Price: {{close}}")
+alertcondition(useSilver and flushShockNow,                        title="Silver Flush",      message="Silver: Flush shock | Price: {{close}}")
+
+var float bhStartPrice = na
+var int   bhStartTime  = na
+if useSilver and inTradeWindow and na(bhStartPrice)
+    bhStartPrice := close
+    bhStartTime  := time
+buyHoldReturnPct = not na(bhStartPrice) ? (close / bhStartPrice - 1.0) * 100.0 : na
+
+silverTablePosition = silverTablePos == "Top Left" ? position.top_left : silverTablePos == "Top Right" ? position.top_right : silverTablePos == "Bottom Left" ? position.bottom_left : position.bottom_right
+var table silverStatusTable = table.new(silverTablePosition, 2, 12, border_width=1)
+
+if useSilver and silverShowTable and barstate.islast
+    table.cell(silverStatusTable, 0, 0,  "Silver Status",  text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 0,  silverInLong ? "Long" : "Flat", text_color=color.white, bgcolor=silverInLong ? color.green : color.red)
+    table.cell(silverStatusTable, 0, 1,  "Buy & Hold",     text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 1,  not na(buyHoldReturnPct) ? str.tostring(buyHoldReturnPct, "#.##") + "%" : "n/a", text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 0, 2,  "BH start",       text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 2,  not na(bhStartTime) ? str.format("{0,date,yyyy-MM-dd}", bhStartTime) : "n/a", text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 0, 3,  "Silver trend",   text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 3,  silverTrendExit ? "Weak" : "OK", text_color=color.white, bgcolor=silverTrendExit ? color.red : color.green)
+    table.cell(silverStatusTable, 0, 4,  "Macro stress",   text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 4,  macroStressNow ? "Yes" : "No", text_color=color.white, bgcolor=macroStressNow ? color.red : color.green)
+    table.cell(silverStatusTable, 0, 5,  "DXY stress",     text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 5,  dxyStress ? "Yes" : "No", text_color=color.white, bgcolor=dxyStress ? color.red : color.green)
+    table.cell(silverStatusTable, 0, 6,  "US10Y stress",   text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 6,  us10yStress ? "Yes" : "No", text_color=color.white, bgcolor=us10yStress ? color.red : color.green)
+    table.cell(silverStatusTable, 0, 7,  "Flush shock",    text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 7,  flushShockNow ? "Yes" : "No", text_color=color.white, bgcolor=flushShockNow ? color.orange : color.green)
+    table.cell(silverStatusTable, 0, 8,  "Flush cooldown", text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 8,  flushRecently ? "Active" : "No", text_color=color.white, bgcolor=flushRecently ? color.orange : color.green)
+    table.cell(silverStatusTable, 0, 9,  "Re-entry ready", text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 9,  flushRecoveryReady and macroCalmPersist ? "Yes" : "No", text_color=color.white, bgcolor=flushRecoveryReady and macroCalmPersist ? color.green : color.red)
+    table.cell(silverStatusTable, 0, 10, "US10Y above EMA", text_color=color.white, bgcolor=color.black)
+    table.cell(silverStatusTable, 1, 10, str.tostring(us10yAbovePct, "#.##") + "%", text_color=color.white, bgcolor=color.black)
+else if not useSilver
+    table.clear(silverStatusTable, 0, 0, 1, 10)
+
+
+// =====================================================================
+// MODULE 5: MULTI-TF FAIR VALUE GAP
+// Fresh implementation of public ICT 3-candle gap pattern.
+// Bullish FVG: low[0] > high[2]   (gap left between bar 2's high and bar 0's low)
+// Bearish FVG: high[0] < low[2]
+// =====================================================================
+var string gFvg = "FVG (Multi-TF)"
+
+fvgTimeframe       = input.timeframe("",   "FVG Timeframe (empty = chart TF)", group=gFvg)
+fvgMaxBoxes        = input.int(15,         "Max active FVG boxes",       minval=1, maxval=50, group=gFvg)
+fvgExtendBars      = input.int(50,         "Extend right (bars)",        minval=1,            group=gFvg)
+fvgBullColor       = input.color(color.new(color.green, 75), "Bullish FVG fill",   group=gFvg)
+fvgBearColor       = input.color(color.new(color.red,   75), "Bearish FVG fill",   group=gFvg)
+fvgBullBorder      = input.color(color.new(color.green, 0),  "Bullish FVG border", group=gFvg)
+fvgBearBorder      = input.color(color.new(color.red,   0),  "Bearish FVG border", group=gFvg)
+fvgShowSignals     = input.bool(true,      "Show buy/sell signal shapes", group=gFvg)
+fvgRemoveMitigated = input.bool(true,      "Remove mitigated FVGs",       group=gFvg)
+
+fvgTf = fvgTimeframe == "" ? timeframe.period : fvgTimeframe
+[fvgH2, fvgL2, fvgH0, fvgL0] = request.security(syminfo.tickerid, fvgTf, [high[2], low[2], high, low], lookahead=barmerge.lookahead_off)
+
+bullFvgFormed = useFvg and not na(fvgH2) and not na(fvgL0) and fvgL0 > fvgH2
+bearFvgFormed = useFvg and not na(fvgL2) and not na(fvgH0) and fvgH0 < fvgL2
+
+var array<box>   bullFvgBoxes   = array.new<box>()
+var array<float> bullFvgBottoms = array.new<float>()
+var array<box>   bearFvgBoxes   = array.new<box>()
+var array<float> bearFvgTops    = array.new<float>()
+
+if bullFvgFormed
+    box b = box.new(bar_index - 1, fvgL0, bar_index + fvgExtendBars, fvgH2, border_color=fvgBullBorder, bgcolor=fvgBullColor)
+    array.push(bullFvgBoxes, b)
+    array.push(bullFvgBottoms, fvgH2)
+    if array.size(bullFvgBoxes) > fvgMaxBoxes
+        box.delete(array.shift(bullFvgBoxes))
+        array.shift(bullFvgBottoms)
+
+if bearFvgFormed
+    box b = box.new(bar_index - 1, fvgH0, bar_index + fvgExtendBars, fvgL2, border_color=fvgBearBorder, bgcolor=fvgBearColor)
+    array.push(bearFvgBoxes, b)
+    array.push(bearFvgTops, fvgL2)
+    if array.size(bearFvgBoxes) > fvgMaxBoxes
+        box.delete(array.shift(bearFvgBoxes))
+        array.shift(bearFvgTops)
+
+if useFvg and fvgRemoveMitigated
+    if array.size(bullFvgBoxes) > 0
+        for i = array.size(bullFvgBoxes) - 1 to 0
+            if i < array.size(bullFvgBoxes)
+                if low < array.get(bullFvgBottoms, i)
+                    box.delete(array.get(bullFvgBoxes, i))
+                    array.remove(bullFvgBoxes, i)
+                    array.remove(bullFvgBottoms, i)
+    if array.size(bearFvgBoxes) > 0
+        for i = array.size(bearFvgBoxes) - 1 to 0
+            if i < array.size(bearFvgBoxes)
+                if high > array.get(bearFvgTops, i)
+                    box.delete(array.get(bearFvgBoxes, i))
+                    array.remove(bearFvgBoxes, i)
+                    array.remove(bearFvgTops, i)
+
+plotshape(useFvg and fvgShowSignals and bullFvgFormed, title="FVG Buy",  location=location.belowbar, color=color.new(color.green, 0), style=shape.labelup,   size=size.tiny, text="FVG")
+plotshape(useFvg and fvgShowSignals and bearFvgFormed, title="FVG Sell", location=location.abovebar, color=color.new(color.red,   0), style=shape.labeldown, size=size.tiny, text="FVG")
+
+alertcondition(useFvg and bullFvgFormed, title="FVG Bull", message="Bullish FVG formed | Price: {{close}}")
+alertcondition(useFvg and bearFvgFormed, title="FVG Bear", message="Bearish FVG formed | Price: {{close}}")
+
+
+// =====================================================================
+// MODULE 2: LIQUIDITY DELTA PROFILER
+// Adapted from "Liquidity Delta Profiler [LuxAlgo]" © LuxAlgo
+// Licensed CC BY-NC-SA 4.0 — https://creativecommons.org/licenses/by-nc-sa/4.0/
+// This combined work's Liquidity Delta module portion is also CC BY-NC-SA 4.0.
+// Toggle: useLiquidity
+// =====================================================================
+var string gLq      = "Liquidity Delta"
+var string gLqStyle = "Liquidity Delta · Style"
+var string gLqDash  = "Liquidity Delta · Dashboard"
+
+color LQ_DATA       = #DBDBDB
+color LQ_HEADERS    = #808080
+color LQ_BACKGROUND = #161616
+color LQ_BORDERS    = #2E2E2E
+
+string LQ_TOP_RIGHT    = 'Top Right'
+string LQ_BOTTOM_RIGHT = 'Bottom Right'
+string LQ_BOTTOM_LEFT  = 'Bottom Left'
+string LQ_TINY    = 'Tiny'
+string LQ_SMALL   = 'Small'
+string LQ_NORMAL  = 'Normal'
+string LQ_LARGE   = 'Large'
+string LQ_HUGE    = 'Huge'
+
+lqLength         = input.int(15,   "Pivot Length",        minval=2,            group=gLq, tooltip="Lookback and lookforward length for detecting major swing highs/lows.")
+lqMaxZones       = input.int(10,   "Max Zones per Type",  minval=1, maxval=40, group=gLq, tooltip="Maximum number of active/historical buy and sell zones to keep on the chart.")
+lqShowSwept      = input.bool(true, "Show Swept Zones",   group=gLq, tooltip="Keep zones visible after price sweeps them.")
+lqFilterOverlaps = input.bool(true, "Filter Overlapping Zones", group=gLq, tooltip="Prevents creating new zones that overlap with existing active zones.")
+
+lqShowDecay      = input.bool(true, "Show Zone Decay",       group=gLq, tooltip="Displays remaining 'health' of active zones based on volume traded inside them.")
+lqZoneCapacity   = input.float(5.0, "Zone Volume Capacity", minval=1.0, group=gLq, tooltip="Multiplier for average volume to determine zone capacity.")
+
+lqEnableReversals = input.bool(true, "Enable Reversal Detection", group=gLq, tooltip="Detects unusual volume delta patterns during liquidity sweeps. Plots ABS/EXH/DIV/REJ labels.")
+
+lqDashboard         = input.bool(true,         "Show Dashboard", group=gLqDash)
+lqDashboardPosition = input.string(LQ_TOP_RIGHT, "Position",     options=[LQ_TOP_RIGHT, LQ_BOTTOM_RIGHT, LQ_BOTTOM_LEFT], group=gLqDash)
+lqDashboardSize     = input.string(LQ_TINY,    "Size",           options=[LQ_TINY, LQ_SMALL, LQ_NORMAL, LQ_LARGE, LQ_HUGE], group=gLqDash)
+lqDashboardWindow   = input.int(10,            "Eval Window (Bars)", minval=1, group=gLqDash)
+lqDashboardHold     = input.int(3,             "Hold Time (Bars)",   minval=1, group=gLqDash)
+lqDashboardHilite   = input.bool(false,        "Highlight Eval Bars", group=gLqDash)
+
+lqBslColor       = input.color(color.new(#f23645, 0), "BSL Outline Color", group=gLqStyle)
+lqSslColor       = input.color(color.new(#089981, 0), "SSL Outline Color", group=gLqStyle)
+lqBuyDeltaColor  = input.color(color.new(#089981, 0), "Buy Delta Fill",    group=gLqStyle)
+lqSellDeltaColor = input.color(color.new(#f23645, 0), "Sell Delta Fill",   group=gLqStyle)
+
+type LqZone
+    float top
+    float bottom
+    int   left
+    int   right
+    bool  swept
+    bool  signaled
+    array<box>   quads
+    array<float> deltas
+    box   outline
+    float volumeTraded
+    float capacity
+    bool  wasHit
+    label decayLabel
+
+type LqTrade
+    string type
+    int    dir
+    float  entry
+    int    entryBar
+    bool   active
+    bool   won
+    int    consecBars
+
+var array<LqZone>  bslZones      = array.new<LqZone>()
+var array<LqZone>  sslZones      = array.new<LqZone>()
+var array<LqTrade> activeTrades  = array.new<LqTrade>()
+
+var int absTotal = 0
+var int absWins  = 0
+var int exhTotal = 0
+var int exhWins  = 0
+var int divTotal = 0
+var int divWins  = 0
+var int rejTotal = 0
+var int rejWins  = 0
+
+var string parsedDashboardPosition = switch lqDashboardPosition
+    LQ_TOP_RIGHT    => position.top_right
+    LQ_BOTTOM_RIGHT => position.bottom_right
+    LQ_BOTTOM_LEFT  => position.bottom_left
+    => position.top_right
+
+var string parsedDashboardSize = switch lqDashboardSize
+    LQ_TINY   => size.tiny
+    LQ_SMALL  => size.small
+    LQ_NORMAL => size.normal
+    LQ_LARGE  => size.large
+    LQ_HUGE   => size.huge
+    => size.normal
+
+var table lqTable = table.new(parsedDashboardPosition, 4, 11, bgcolor=lqDashboard and useLiquidity ? LQ_BACKGROUND : na, border_width=0, frame_color=lqDashboard and useLiquidity ? LQ_BORDERS : na, frame_width=1, force_overlay=true)
+
+lqCell(table t, int col, int r, string data, color txtColor=color.white, string align=text.align_right, color background=na, float h=0) =>
+    t.cell(col, r, data, text_color=txtColor, text_size=parsedDashboardSize, text_halign=align, bgcolor=background, height=h)
+
+lqDivider(table t, int r, int lastColumn) =>
+    string rowDivider = '----------------'
+    t.merge_cells(0, r, lastColumn, r)
+    lqCell(t, 0, r, rowDivider, txtColor=LQ_BORDERS, align=text.align_center, h=0.5)
+
+method lqEvaluateReversals(LqZone z, bool isBsl, float barH, float barL, float barC, float barO, float barDelta, float barVol) =>
+    if lqEnableReversals and not z.signaled
+        float totalD    = 0.0
+        float absTotalD = 0.0
+        for d in z.deltas
+            totalD    += d
+            absTotalD += math.abs(d)
+
+        if absTotalD > 0
+            int   outerIdx = isBsl ? 3 : 0
+            float outerD   = z.deltas.get(outerIdx)
+
+            bool isSweeping     = isBsl ? barH > z.top : barL < z.bottom
+            bool closesInside   = isBsl ? (barC <= z.top and barC >= z.bottom) : (barC >= z.bottom and barC <= z.top)
+            float midPoint      = (z.top + z.bottom) / 2
+            bool closesRejecting = isBsl ? barC < midPoint : barC > midPoint
+
+            string signalType = ""
+            string tooltipTxt = ""
+            float  significance = 0.0
+            color  sigColor   = isBsl ? color.red : color.green
+
+            // Absorption at extreme
+            if isSweeping and ((isBsl and outerD < 0) or (not isBsl and outerD > 0))
+                float ratio = math.abs(outerD) / (absTotalD + 0.0001)
+                if ratio > 0.2
+                    signalType   := "ABS"
+                    tooltipTxt   := "Absorption at Extreme\n" + (isBsl ? "Sellers" : "Buyers") + " aggressively absorbed the sweep.\nOuter Quadrant Delta: " + str.tostring(outerD, format.volume)
+                    significance := ratio * 2
+
+            // Exhaustion (dry sweep)
+            if signalType == "" and isSweeping
+                float ratio = math.abs(outerD) / (absTotalD + 0.0001)
+                if ratio < 0.1
+                    signalType   := "EXH"
+                    tooltipTxt   := "Exhaustion (Dry Sweep)\nMinimal volume at the extreme edge.\nOuter Quadrant Delta: " + str.tostring(outerD, format.volume)
+                    significance := 1.0 - (ratio * 5)
+
+            // Delta divergence (FOMO trap)
+            if signalType == "" and closesInside
+                float ratio = math.abs(outerD) / (absTotalD + 0.0001)
+                if ratio > 0.6 and ((isBsl and outerD > 0) or (not isBsl and outerD < 0))
+                    signalType   := "DIV"
+                    tooltipTxt   := "Delta Divergence (FOMO)\nHigh volume trapped at the extreme, but price failed to breakout.\nOuter Quadrant Delta: " + str.tostring(outerD, format.volume)
+                    significance := ratio
+
+            // Snapback rejection
+            if signalType == "" and isSweeping and closesRejecting
+                float barRatio = math.abs(barDelta) / (barVol + 0.0001)
+                if ((isBsl and barDelta < 0) or (not isBsl and barDelta > 0)) and barRatio > 0.2
+                    signalType   := "REJ"
+                    tooltipTxt   := "Snapback Rejection\nSweep followed by immediate strong rejection.\nBar Delta: " + str.tostring(barDelta, format.volume)
+                    significance := barRatio * 2
+
+            if signalType != ""
+                z.signaled := true
+                alert("Reversal Signal (" + signalType + ") detected at " + str.tostring(barC), alert.freq_once_per_bar)
+
+                significance := math.min(math.max(significance, 0.0), 1.0)
+                string sSize = size.tiny
+                int    trans = 50
+
+                if significance > 0.7
+                    sSize := size.normal
+                    trans := 10
+                else if significance > 0.4
+                    sSize := size.small
+                    trans := 30
+
+                color  finalColor  = color.new(sigColor, trans)
+                float  yLoc        = isBsl ? barH : barL
+                string labelStyle  = isBsl ? label.style_label_down : label.style_label_up
+
+                label.new(bar_index, yLoc, text=signalType, color=finalColor, style=labelStyle, textcolor=color.white, size=sSize, tooltip=tooltipTxt)
+
+                activeTrades.push(LqTrade.new(signalType, isBsl ? -1 : 1, barC, bar_index, true, false, 0))
+
+method lqUpdateVisuals(LqZone z, bool isBsl, bool showS, color buyC, color sellC, color bslC, color sslC) =>
+    float maxD = 0.0
+    for d in z.deltas
+        maxD := math.max(maxD, math.abs(d))
+
+    for i = 0 to 3
+        float d   = z.deltas.get(i)
+        color c   = na
+        string txt = ""
+        color tColor = na
+        if maxD > 0 and math.abs(d) > 0.001
+            color baseC = d > 0 ? buyC : sellC
+            int trans = z.swept ? 90 : 100 - int((math.abs(d) / maxD) * 60)
+            c := color.rgb(color.r(baseC), color.g(baseC), color.b(baseC), trans)
+            txt := (d > 0 ? "+" : d < 0 ? "-" : "") + str.tostring(math.abs(d), format.volume)
+            tColor := color.new(baseC, z.swept ? 50 : 0)
+        else
+            color baseC = isBsl ? bslC : sslC
+            int defaultTrans = 60 + (isBsl ? (3 - i) : i) * 10
+            c := color.rgb(color.r(baseC), color.g(baseC), color.b(baseC), z.swept ? 90 : defaultTrans)
+            txt := "0"
+            tColor := color.new(baseC, z.swept ? 80 : 50)
+
+        box q = z.quads.get(i)
+        q.set_bgcolor(not showS and z.swept ? na : c)
+        q.set_text(not showS and z.swept ? "" : txt)
+        q.set_text_color(not showS and z.swept ? na : tColor)
+
+        if z.swept
+            q.set_border_color(not showS ? na : color.new(isBsl ? bslC : sslC, 80))
+            q.set_border_style(line.style_dashed)
+        else
+            q.set_border_color(color.new(isBsl ? bslC : sslC, 60))
+            q.set_border_style(line.style_solid)
+
+    if z.swept
+        if showS
+            z.outline.set_border_style(line.style_dashed)
+            z.outline.set_border_color(color.new(isBsl ? bslC : sslC, 80))
+        else
+            z.outline.set_border_color(na)
+
+lqBarOverlap(float barH, float barL, float qTop, float qBot) =>
+    float overlapTop = math.min(barH, qTop)
+    float overlapBot = math.max(barL, qBot)
+    overlapTop > overlapBot ? (overlapTop - overlapBot) : 0.0
+
+float lqAtr = atr14
+float lqPh  = ta.pivothigh(high, lqLength, lqLength)
+float lqPl  = ta.pivotlow(low,  lqLength, lqLength)
+float lqAvgVol = nz(ta.sma(volume, lqLength))
+if lqAvgVol == 0
+    lqAvgVol := 1
+float lqZoneCap = lqAvgVol * lqZoneCapacity
+
+if useLiquidity and not na(lqPh) and bar_index >= lqLength
+    int   pivotIdx = bar_index - lqLength
+    float pHigh    = high[lqLength]
+    float pBot     = math.max(close[lqLength], open[lqLength])
+    if pHigh - pBot < lqAtr[lqLength] * 0.1
+        pBot := pHigh - lqAtr[lqLength] * 0.1
+
+    bool skip = false
+    if lqFilterOverlaps and bslZones.size() > 0
+        for i = bslZones.size() - 1 to 0
+            if i < bslZones.size()
+                LqZone ex = bslZones.get(i)
+                if not ex.swept
+                    bool overlaps = math.max(pBot, ex.bottom) <= math.min(pHigh, ex.top)
+                    if overlaps
+                        if pHigh > ex.top
+                            for b in ex.quads
+                                b.delete()
+                            ex.outline.delete()
+                            ex.decayLabel.delete()
+                            bslZones.remove(i)
+                        else
+                            skip := true
+                            break
+
+    if not skip
+        array<box>   quads  = array.new<box>(4)
+        array<float> deltas = array.new<float>(4, 0.0)
+        float step = (pHigh - pBot) / 4
+        for i = 0 to 3
+            float qBot = pBot + i * step
+            float qTop = pBot + (i + 1) * step
+            color baseC = lqBslColor
+            int trans = 60 + (3 - i) * 10
+            color c = color.rgb(color.r(baseC), color.g(baseC), color.b(baseC), trans)
+            float gap = step * 0.05
+            float bTop = qTop - gap
+            float bBot = qBot + gap
+            if i == 0
+                bBot := qBot
+            if i == 3
+                bTop := qTop
+            quads.set(i, box.new(pivotIdx, bTop, pivotIdx, bBot, border_color=color.new(baseC, 60), bgcolor=c, text="0", text_color=color.new(baseC, 50), text_halign=text.align_right, text_size=size.auto))
+
+        box outline = box.new(pivotIdx, pHigh, pivotIdx, pBot, border_color=color.new(lqBslColor, 80), bgcolor=na)
+        label dLabel = label.new(bar_index, pBot + (pHigh - pBot)/2, text="100%", style=label.style_label_left, color=color.new(lqBslColor, 80), textcolor=color.white, size=size.small)
+        if not lqShowDecay
+            dLabel.set_x(na)
+
+        LqZone z = LqZone.new(pHigh, pBot, pivotIdx, pivotIdx, false, false, quads, deltas, outline, 0.0, lqZoneCap, false, dLabel)
+        bslZones.unshift(z)
+        if bslZones.size() > lqMaxZones
+            LqZone removed = bslZones.pop()
+            for b in removed.quads
+                b.delete()
+            removed.outline.delete()
+            removed.decayLabel.delete()
+
+if useLiquidity and not na(lqPl) and bar_index >= lqLength
+    int   pivotIdx = bar_index - lqLength
+    float pLow     = low[lqLength]
+    float pTop     = math.min(close[lqLength], open[lqLength])
+    if pTop - pLow < lqAtr[lqLength] * 0.1
+        pTop := pLow + lqAtr[lqLength] * 0.1
+
+    bool skip = false
+    if lqFilterOverlaps and sslZones.size() > 0
+        for i = sslZones.size() - 1 to 0
+            if i < sslZones.size()
+                LqZone ex = sslZones.get(i)
+                if not ex.swept
+                    bool overlaps = math.max(pLow, ex.bottom) <= math.min(pTop, ex.top)
+                    if overlaps
+                        if pLow < ex.bottom
+                            for b in ex.quads
+                                b.delete()
+                            ex.outline.delete()
+                            ex.decayLabel.delete()
+                            sslZones.remove(i)
+                        else
+                            skip := true
+                            break
+
+    if not skip
+        array<box>   quads  = array.new<box>(4)
+        array<float> deltas = array.new<float>(4, 0.0)
+        float step = (pTop - pLow) / 4
+        for i = 0 to 3
+            float qBot = pLow + i * step
+            float qTop = pLow + (i + 1) * step
+            color baseC = lqSslColor
+            int trans = 60 + i * 10
+            color c = color.rgb(color.r(baseC), color.g(baseC), color.b(baseC), trans)
+            float gap = step * 0.05
+            float bTop = qTop - gap
+            float bBot = qBot + gap
+            if i == 0
+                bBot := qBot
+            if i == 3
+                bTop := qTop
+            quads.set(i, box.new(pivotIdx, bTop, pivotIdx, bBot, border_color=color.new(baseC, 60), bgcolor=c, text="0", text_color=color.new(baseC, 50), text_halign=text.align_right, text_size=size.auto))
+
+        box outline = box.new(pivotIdx, pTop, pivotIdx, pLow, border_color=color.new(lqSslColor, 80), bgcolor=na)
+        label dLabel = label.new(bar_index, pLow + (pTop - pLow)/2, text="100%", style=label.style_label_left, color=color.new(lqSslColor, 80), textcolor=color.white, size=size.small)
+        if not lqShowDecay
+            dLabel.set_x(na)
+
+        LqZone z = LqZone.new(pTop, pLow, pivotIdx, pivotIdx, false, false, quads, deltas, outline, 0.0, lqZoneCap, false, dLabel)
+        sslZones.unshift(z)
+        if sslZones.size() > lqMaxZones
+            LqZone removed = sslZones.pop()
+            for b in removed.quads
+                b.delete()
+            removed.outline.delete()
+            removed.decayLabel.delete()
+
+float lqVol      = nz(volume)
+float lqTotalR   = high - low
+float lqBarDelta = lqTotalR == 0 ? 0 : lqVol * (close - open) / lqTotalR
+
+if useLiquidity and bslZones.size() > 0
+    for i = bslZones.size() - 1 to 0
+        if i < bslZones.size()
+            LqZone z = bslZones.get(i)
+            if not z.swept
+                z.right := bar_index
+                z.outline.set_right(bar_index)
+                for b in z.quads
+                    b.set_right(bar_index)
+
+                bool hit = false
+                float step = (z.top - z.bottom) / 4
+                for j = 0 to 3
+                    float qBot = z.bottom + j * step
+                    float qTop = z.bottom + (j + 1) * step
+                    float overlap = lqBarOverlap(high, low, qTop, qBot)
+                    if overlap > 0
+                        hit := true
+                        float overlapRatio = lqTotalR == 0 ? 0 : overlap / lqTotalR
+                        float qDelta = lqBarDelta * overlapRatio
+                        z.deltas.set(j, z.deltas.get(j) + qDelta)
+                        z.volumeTraded += lqVol * overlapRatio
+
+                if hit and not z.wasHit
+                    alert("Price testing Resistance BSL Zone at " + str.tostring(z.top), alert.freq_once_per_bar)
+
+                if high > z.top
+                    z.swept := true
+                    alert("Resistance BSL Zone Swept at " + str.tostring(z.top), alert.freq_once_per_bar)
+
+                if not z.swept
+                    if lqShowDecay
+                        int health = int(math.max(0, 100 - (z.volumeTraded / z.capacity * 100)))
+                        z.decayLabel.set_x(bar_index + 1)
+                        z.decayLabel.set_text(str.tostring(health) + "%")
+                    else
+                        z.decayLabel.set_x(na)
+                else
+                    z.decayLabel.delete()
+
+                z.wasHit := hit
+
+                if hit or z.swept
+                    z.lqEvaluateReversals(true, high, low, close, open, lqBarDelta, lqVol)
+                    z.lqUpdateVisuals(true, lqShowSwept, lqBuyDeltaColor, lqSellDeltaColor, lqBslColor, lqSslColor)
+
+if useLiquidity and sslZones.size() > 0
+    for i = sslZones.size() - 1 to 0
+        if i < sslZones.size()
+            LqZone z = sslZones.get(i)
+            if not z.swept
+                z.right := bar_index
+                z.outline.set_right(bar_index)
+                for b in z.quads
+                    b.set_right(bar_index)
+
+                bool hit = false
+                float step = (z.top - z.bottom) / 4
+                for j = 0 to 3
+                    float qBot = z.bottom + j * step
+                    float qTop = z.bottom + (j + 1) * step
+                    float overlap = lqBarOverlap(high, low, qTop, qBot)
+                    if overlap > 0
+                        hit := true
+                        float overlapRatio = lqTotalR == 0 ? 0 : overlap / lqTotalR
+                        float qDelta = lqBarDelta * overlapRatio
+                        z.deltas.set(j, z.deltas.get(j) + qDelta)
+                        z.volumeTraded += lqVol * overlapRatio
+
+                if hit and not z.wasHit
+                    alert("Price testing Support SSL Zone at " + str.tostring(z.bottom), alert.freq_once_per_bar)
+
+                if low < z.bottom
+                    z.swept := true
+                    alert("Support SSL Zone Swept at " + str.tostring(z.bottom), alert.freq_once_per_bar)
+
+                if not z.swept
+                    if lqShowDecay
+                        int health = int(math.max(0, 100 - (z.volumeTraded / z.capacity * 100)))
+                        z.decayLabel.set_x(bar_index + 1)
+                        z.decayLabel.set_text(str.tostring(health) + "%")
+                    else
+                        z.decayLabel.set_x(na)
+                else
+                    z.decayLabel.delete()
+
+                z.wasHit := hit
+
+                if hit or z.swept
+                    z.lqEvaluateReversals(false, high, low, close, open, lqBarDelta, lqVol)
+                    z.lqUpdateVisuals(false, lqShowSwept, lqBuyDeltaColor, lqSellDeltaColor, lqBslColor, lqSslColor)
+
+color lqBarHighlight = na
+if useLiquidity and activeTrades.size() > 0
+    for i = activeTrades.size() - 1 to 0
+        if i < activeTrades.size()
+            LqTrade t = activeTrades.get(i)
+            if t.active
+                if bar_index > t.entryBar
+                    bool inProfit = (t.dir == 1 and close > t.entry) or (t.dir == -1 and close < t.entry)
+                    if inProfit
+                        t.consecBars += 1
+                        if na(lqBarHighlight) or lqBarHighlight == color.yellow
+                            lqBarHighlight := color.aqua
+                    else
+                        t.consecBars := 0
+                        if na(lqBarHighlight)
+                            lqBarHighlight := color.yellow
+
+                    if t.consecBars >= lqDashboardHold
+                        t.active := false
+                        t.won    := true
+                    else if bar_index - t.entryBar >= lqDashboardWindow
+                        t.active := false
+
+                    if not t.active
+                        if t.type == "ABS"
+                            absTotal += 1
+                            if t.won
+                                absWins += 1
+                        else if t.type == "EXH"
+                            exhTotal += 1
+                            if t.won
+                                exhWins += 1
+                        else if t.type == "DIV"
+                            divTotal += 1
+                            if t.won
+                                divWins += 1
+                        else if t.type == "REJ"
+                            rejTotal += 1
+                            if t.won
+                                rejWins += 1
+                        activeTrades.remove(i)
+
+barcolor(useLiquidity and lqDashboardHilite ? lqBarHighlight : na)
+
+if barstate.islast
+    if useLiquidity and lqDashboard
+        lqTable.merge_cells(0, 0, 3, 0)
+        lqCell(lqTable, 0, 0, 'Reversal Performance (Time-Based)', txtColor=LQ_DATA, align=text.align_center)
+        lqDivider(lqTable, 1, 3)
+        lqCell(lqTable, 0, 2, 'Signal', txtColor=LQ_HEADERS, align=text.align_left)
+        lqCell(lqTable, 1, 2, 'Total',  txtColor=LQ_HEADERS, align=text.align_right)
+        lqCell(lqTable, 2, 2, 'Wins',   txtColor=LQ_HEADERS, align=text.align_right)
+        lqCell(lqTable, 3, 2, 'Win %',  txtColor=LQ_HEADERS, align=text.align_right)
+        lqDivider(lqTable, 3, 3)
+
+        float absRate = absTotal > 0 ? (absWins / absTotal) * 100 : 0
+        lqCell(lqTable, 0, 4, 'ABS', txtColor=LQ_DATA, align=text.align_left)
+        lqCell(lqTable, 1, 4, str.tostring(absTotal), txtColor=LQ_DATA, align=text.align_right)
+        lqCell(lqTable, 2, 4, str.tostring(absWins),  txtColor=LQ_DATA, align=text.align_right)
+        lqCell(lqTable, 3, 4, str.tostring(absRate, '#.##') + '%', txtColor=absTotal > 0 ? (absRate >= 50 ? color.green : color.red) : LQ_DATA, align=text.align_right)
+        lqDivider(lqTable, 5, 3)
+
+        float exhRate = exhTotal > 0 ? (exhWins / exhTotal) * 100 : 0
+        lqCell(lqTable, 0, 6, 'EXH', txtColor=LQ_DATA, align=text.align_left)
+        lqCell(lqTable, 1, 6, str.tostring(exhTotal), txtColor=LQ_DATA, align=text.align_right)
+        lqCell(lqTable, 2, 6, str.tostring(exhWins),  txtColor=LQ_DATA, align=text.align_right)
+        lqCell(lqTable, 3, 6, str.tostring(exhRate, '#.##') + '%', txtColor=exhTotal > 0 ? (exhRate >= 50 ? color.green : color.red) : LQ_DATA, align=text.align_right)
+        lqDivider(lqTable, 7, 3)
+
+        float divRate = divTotal > 0 ? (divWins / divTotal) * 100 : 0
+        lqCell(lqTable, 0, 8, 'DIV', txtColor=LQ_DATA, align=text.align_left)
+        lqCell(lqTable, 1, 8, str.tostring(divTotal), txtColor=LQ_DATA, align=text.align_right)
+        lqCell(lqTable, 2, 8, str.tostring(divWins),  txtColor=LQ_DATA, align=text.align_right)
+        lqCell(lqTable, 3, 8, str.tostring(divRate, '#.##') + '%', txtColor=divTotal > 0 ? (divRate >= 50 ? color.green : color.red) : LQ_DATA, align=text.align_right)
+        lqDivider(lqTable, 9, 3)
+
+        float rejRate = rejTotal > 0 ? (rejWins / rejTotal) * 100 : 0
+        lqCell(lqTable, 0, 10, 'REJ', txtColor=LQ_DATA, align=text.align_left)
+        lqCell(lqTable, 1, 10, str.tostring(rejTotal), txtColor=LQ_DATA, align=text.align_right)
+        lqCell(lqTable, 2, 10, str.tostring(rejWins),  txtColor=LQ_DATA, align=text.align_right)
+        lqCell(lqTable, 3, 10, str.tostring(rejRate, '#.##') + '%', txtColor=rejTotal > 0 ? (rejRate >= 50 ? color.green : color.red) : LQ_DATA, align=text.align_right)
+    else
+        lqTable.clear(0, 0, 3, 10)
+
+
+// =====================================================================
+// MODULE 1: ICT TOOLKIT
+// Adapted from "dmn's ICT Toolkit" © fxdmn — Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// Toggle: useIct
+// =====================================================================
+
+// Session string constants
+var string CBDR_SESSION                  = "1400-2000"
+var string FLOUT_SESSION                 = "1500-2400"
+var string ASIA_SESSION                  = "2000-2400"
+var string TRUEDAY_SESSION               = "0000-0100"
+var string SUNDAY_SESSION                = "1700-1701:1"
+var string DAILY_OPEN_SESSION            = "1700-1704"
+var string GMT_OPEN_SESSION              = "1900-1901"
+var string FOUR_OPEN_SESSION             = "0400-0401"
+var string LONDON_OPEN_KILLZONE_SESSION  = "0200-0500"
+var string NY_OPEN_KILLZONE_SESSION      = "0700-0900"
+var string LONDON_CLOSE_KILLZONE_SESSION = "1030-1200"
+var string ASIAN_OPEN_KILLZONE_SESSION   = "2000-2200"
+var string NY_LUNCH_SESSION              = "1200-1300"
+
+var string CBDR_LABEL_NAME  = "CBDR"
+var string FLOUT_LABEL_NAME = "Flout"
+var string ASIA_LABEL_NAME  = "AR"
+
+var string NEW_YORK_MIDNIGHT_LABEL_TEXT  = "NY Midnight Open"
+var string NEW_YORK_MIDNIGHT_LABEL_SHORT = "NYM"
+var string GMT_LABEL_TEXT                = "GMT Midnight Open"
+var string GMT_LABEL_SHORT               = "GMT"
+var string FOUR_OPEN_LABEL_TEXT          = "4am Open"
+var string FOUR_OPEN_LABEL_SHORT         = "4am"
+var string DAILY_OPEN_LABEL_TEXT         = "Daily Open"
+var string DAILY_OPEN_LABEL_SHORT        = "DO"
+var string PDH_LABEL_TEXT                = "Previous Day High"
+var string PDH_LABEL_SHORT               = "PDH"
+var string PDL_LABEL_TEXT                = "Previous Day Low"
+var string PDL_LABEL_SHORT               = "PDL"
+var string PMH_LABEL_TEXT                = "Previous Month High"
+var string PMH_LABEL_SHORT               = "PMH"
+var string PML_LABEL_TEXT                = "Previous Month Low"
+var string PML_LABEL_SHORT               = "PML"
+
+// ICT inputs
+var string gIctTz       = "ICT · Timezone"
+var string gIctAdr      = "ICT · ADR / Stats"
+var string gIctRange    = "ICT · Range Calc"
+var string gIctCbdr     = "ICT · CBDR"
+var string gIctFlout    = "ICT · Flout"
+var string gIctAsia     = "ICT · Asian Range"
+var string gIctLevels   = "ICT · Levels and Lines"
+var string gIctHtf      = "ICT · HTF Levels"
+var string gIctKz       = "ICT · Killzones"
+var string gIctWeekdays = "ICT · Weekdays"
+var string gIctSession  = "ICT · Session Times"
+
+sessionZoneInput           = input.string('GMT-5', "New York Time Zone", options=['GMT-11','GMT-10','GMT-9','GMT-8','GMT-7','GMT-6','GMT-5','GMT-4','GMT-3','GMT-2','GMT-1','GMT','GMT+1','GMT+2','GMT+3','GMT+4','GMT+5','GMT+6','GMT+7','GMT+8','GMT+9','GMT+10','GMT+11','GMT+12'], inline="tz", group=gIctTz)
+sessionZoneAutoToggleInput = input.bool(true, "Automatic", inline="tz", group=gIctTz)
+
+adrLookbackInput            = input.int(5, "ADR Lookback", 1, group=gIctAdr)
+tableToggleInput            = input.bool(true, "Stats box", "", inline="table2", group=gIctAdr)
+tableDynamicTextInputToggle = input.bool(true, "Dynamic Text Color", inline="table2", group=gIctAdr)
+tableBgInput                = input.color(color.new(#ffffff, 5), "", inline="table", group=gIctAdr)
+tableLocInput               = input.string("Top Right", "", ["Top Left", "Bottom Left", "Top Right", "Bottom Right", "Top Center", "Bottom Center"], inline="table", group=gIctAdr)
+tableOrientationInput       = input.string("Vertical", "", ["Horizontal", "Vertical"], inline="table", group=gIctAdr)
+
+useWicksToggleInput = input.string("Bodies", "Range calculation source", ["Bodies", "Wicks"], group=gIctRange)
+timeframeInput      = input.timeframe("60", "Range calculation timeframe", group=gIctRange)
+
+cbdrBoxColorInput         = input.color(color.new(color.green, 85), "", group=gIctCbdr, inline="CBDR_show")
+cbdrBoxToggleInput        = input.bool(true,"Box", group=gIctCbdr, inline="CBDR_show")
+cbdrHistoryInput          = input.bool(true, "History", group=gIctCbdr, inline="CBDR_show")
+cbdrBorderColorInput      = input.color(color.green, "", group=gIctCbdr, inline="CBDR_border")
+cbdrBorderSizeInput       = input.int(1, "Border", minval=0, maxval=3, group=gIctCbdr, inline="CBDR_border")
+cbdrBorderTypeInput       = input.string("Dotted", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctCbdr, inline="CBDR_border")
+cbdrLabelColorInput       = input.color(color.green, "", group=gIctCbdr, inline="CBDR_label")
+cbdrRangeToggleInput      = input.bool(true,"Pips", group=gIctCbdr, inline="CBDR_label")
+cbdrNameToggleInput       = input.bool(false,"Name", group=gIctCbdr, inline="CBDR_label")
+cbdrProjectionColorInput  = input.color(color.green, "", group=gIctCbdr, inline="CBDR_ext")
+cbdrProjectionToggleInput = input.bool(false, "Std. Deviations", group=gIctCbdr, inline="CBDR_ext")
+cbdrProjectionHistoryInput = input.bool(false, "History", group=gIctCbdr, inline="CBDR_ext")
+cbdrLineWidthInput        = input.int(1, "Std. dev. Line Width", minval=1, maxval=3, group=gIctCbdr, inline="CBDR_ext2")
+cbdrLineStyleInput        = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctCbdr, inline="CBDR_ext2")
+
+floutBoxColorInput          = input.color(color.rgb(76, 122, 175, 85), "", group=gIctFlout, inline="flout_show")
+floutToggleInput            = input.bool(false,"Box", group=gIctFlout, inline="flout_show")
+floutHistoryToggleInput     = input.bool(true, "History", group=gIctFlout, inline="flout_show")
+floutBorderColorInput       = input.color(color.rgb(76, 122, 175), "", group=gIctFlout, inline="flout_border")
+floutBorderSizeInput        = input.int(1, "Border", minval=0, maxval=3, group=gIctFlout, inline="flout_border")
+floutBorderTypeInput        = input.string("Dotted", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctFlout, inline="flout_border")
+floutLabelColorInput        = input.color(color.rgb(76, 122, 175), "", group=gIctFlout, inline="flout_label")
+floutRangeToggleInput       = input.bool(true,"Pips", group=gIctFlout, inline="flout_label")
+floutNameToggleInput        = input.bool(false,"Name", group=gIctFlout, inline="flout_label")
+floutProjectionColorInput   = input.color(color.rgb(76, 122, 175), "", group=gIctFlout, inline="floutExt")
+floutProjectionToggleInput  = input.bool(false, "Std. Deviations", group=gIctFlout, inline="floutExt")
+floutProjectionHistoryInput = input.bool(false, "History", group=gIctFlout, inline="floutExt")
+floutLineWidthInput         = input.int(1, "Std. dev. Line Width", minval=1, maxval=3, group=gIctFlout, inline="floutExt2")
+floutLineStyleInput         = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctFlout, inline="floutExt2")
+
+asiaBoxColorInput          = input.color(color.new(color.purple, 85), "", group=gIctAsia, inline="asia_show")
+asiaToggleInput            = input.bool(true,"Box", group=gIctAsia, inline="asia_show")
+asiaHistoryInput           = input.bool(true, "History", group=gIctAsia, inline="asia_show")
+asiaBorderColorInput       = input.color(color.purple, "", group=gIctAsia, inline="AR_border")
+asiaBorderSizeInput        = input.int(1, "Border", minval=0, maxval=3, group=gIctAsia, inline="AR_border")
+asiaBorderTypeInput        = input.string("Dotted", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctAsia, inline="AR_border")
+asiaLabelColorInput        = input.color(color.purple, "", group=gIctAsia, inline="asia_label")
+asiaRangeToggleInput       = input.bool(true,"Pips", group=gIctAsia, inline="asia_label")
+asiaNameToggleInput        = input.bool(false,"Name", group=gIctAsia, inline="asia_label")
+asiaProjectionColorInput   = input.color(color.purple, "", group=gIctAsia, inline="asiaExt")
+asiaProjectionToggle       = input.bool(false, "Std. Deviations", group=gIctAsia, inline="asiaExt")
+asiaProjectionHistoryInput = input.bool(false, "History", group=gIctAsia, inline="asiaExt")
+asiaLineWidthInput         = input.int(1, "Std. dev. Line Width", minval=1, maxval=3, group=gIctAsia, inline="asiaExt2")
+asiaLineStyleInput         = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctAsia, inline="asiaExt2")
+
+levelLabelsShortFormatInput = input.bool(false, "Short format Name Labels", group=gIctLevels, inline="trueDay3")
+staticLabelColorInput       = input.bool(false, "Colored", group=gIctLevels, inline="trueDay3")
+truedayColorInput           = input.color(color.new(#838383, 18), "", group=gIctLevels, inline="trueDay")
+truedayToggleInput          = input.bool(true,"True Day", group=gIctLevels, inline="trueDay")
+sundayLineToggleInput       = input.bool(true,"Sunday Line", group=gIctLevels, inline="trueDay")
+truedayHistoryToggleInput   = input.bool(true, "History", group=gIctLevels, inline="trueDay")
+truedayWidthInput           = input.int(1, "", 1, 3, group=gIctLevels, inline="trueDay2")
+truedayLineStyleInput       = input.string("Dashed", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctLevels, inline="trueDay2")
+
+midnightColorInput         = input.color(color.new(#ffcb3b, 5), "", group=gIctLevels, inline="midnight")
+midnightToggleInput        = input.bool(true,"Midnight", group=gIctLevels, inline="midnight")
+midnightHistoryToggleInput = input.bool(true, "History", group=gIctLevels, inline="midnight")
+midnightLabelToggleInput   = input.bool(false, "Name", group=gIctLevels, inline="midnight")
+midnightWidthInput         = input.int(2, "", 1, 3, group=gIctLevels, inline="midnight2")
+midnightLineStyleInput     = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctLevels, inline="midnight2")
+
+dailyOpenColorInput         = input.color(color.new(#e75845, 5), "", group=gIctLevels, inline="daily")
+dailyOpenToggleInput        = input.bool(false,"Daily Open", inline="daily", group=gIctLevels)
+dailyOpenHistoryToggleInput = input.bool(true, "History", group=gIctLevels, inline="daily")
+dailyOpenLabelToggleInput   = input.bool(false, "Name", group=gIctLevels, inline="daily")
+dailyOpenWidthInput         = input.int(2, "", 1, 3, group=gIctLevels, inline="daily2")
+dailyOpenLineStyleInput     = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctLevels, inline="daily2")
+
+gmtOpenColorInput         = input.color(color.new(#45c1e7, 5), "", group=gIctLevels, inline="gmt")
+gmtOpenToggleInput        = input.bool(false,"GMT Midnight", group=gIctLevels, inline="gmt")
+gmtOpenHistoryToggleInput = input.bool(true, "History", group=gIctLevels, inline="gmt")
+gmtOpenLabelToggleInput   = input.bool(false, "Name", group=gIctLevels, inline="gmt")
+gmtOpenWidthInput         = input.int(2, "", 1, 3, group=gIctLevels, inline="gmt2")
+gmtOpenLineStyleInput     = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctLevels, inline="gmt2")
+
+fourOpenColorInput         = input.color(color.new(#3c49ff, 5), "", group=gIctLevels, inline="four")
+fourOpenToggleInput        = input.bool(false,"4am ", group=gIctLevels, inline="four")
+fourOpenHistoryToggleInput = input.bool(true, "History", group=gIctLevels, inline="four")
+fourOpenLabelToggleInput   = input.bool(false, "Name", group=gIctLevels, inline="four")
+fourOpenWidthInput         = input.int(2, "", 1, 3, group=gIctLevels, inline="four2")
+fourOpenLineStyleInput     = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctLevels, inline="four2")
+
+pdhColorInput          = input.color(color.new(#663cff, 5), "", "Previous true day high", group=gIctHtf, inline="pdh")
+pdhToggleInput         = input.bool(false,"PDH ", group=gIctHtf, inline="pdh")
+pdhHistoryToggleInput  = input.bool(false, "History", group=gIctHtf, inline="pdh")
+pdhLabelToggleInput    = input.bool(true, "Name", group=gIctHtf, inline="pdh")
+pdhWidthInput          = input.int(2, "", 1, 3, group=gIctHtf, inline="pdh2")
+pdhLineStyleInput      = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctHtf, inline="pdh2")
+
+pdlColorInput          = input.color(color.new(#663cff, 5), "", "Previous true day low", group=gIctHtf, inline="pdl")
+pdlToggleInput         = input.bool(false,"PDL ", group=gIctHtf, inline="pdl")
+pdlHistoryToggleInput  = input.bool(false, "History", group=gIctHtf, inline="pdl")
+pdlLabelToggleInput    = input.bool(true, "Name", group=gIctHtf, inline="pdl")
+pdlWidthInput          = input.int(2, "", 1, 3, group=gIctHtf, inline="pdl2")
+pdlLineStyleInput      = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctHtf, inline="pdl2")
+
+pmhColorInput          = input.color(color.new(#663cff, 5), "", group=gIctHtf, inline="pmh")
+pmhToggleInput         = input.bool(false,"PMH ", group=gIctHtf, inline="pmh")
+pmhHistoryToggleInput  = input.bool(false, "History", group=gIctHtf, inline="pmh")
+pmhLabelToggleInput    = input.bool(true, "Name", group=gIctHtf, inline="pmh")
+pmhWidthInput          = input.int(2, "", 1, 3, group=gIctHtf, inline="pmh2")
+pmhLineStyleInput      = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctHtf, inline="pmh2")
+
+pmlColorInput          = input.color(color.new(#663cff, 5), "", group=gIctHtf, inline="pml")
+pmlToggleInput         = input.bool(false,"PML ", group=gIctHtf, inline="pml")
+pmlHistoryToggleInput  = input.bool(false, "History", group=gIctHtf, inline="pml")
+pmlLabelToggleInput    = input.bool(true, "Name", group=gIctHtf, inline="pml")
+pmlWidthInput          = input.int(2, "", 1, 3, group=gIctHtf, inline="pml2")
+pmlLineStyleInput      = input.string("Solid", "", options=['Solid', 'Dotted', 'Dashed'], group=gIctHtf, inline="pml2")
+
+killzoneLineWidthInput          = input.float(2, "Size", 0.1, 500, 0.1, group=gIctKz, inline="kzToggle")
+killzoneToggleInput             = input.bool(true, "Killzones", group=gIctKz, inline="kzToggle")
+killzoneOldStyleToggleInput     = input.bool(false, "Old style", group=gIctKz, inline="kzToggle")
+killzoneYoffsetInput            = input.int(4, "Y-offset", 1, 200, group=gIctKz, inline="kzToggle2")
+killzoneHistoryToggleInput      = input.bool(true, "History", group=gIctKz, inline="kzToggle2")
+killzoneTextToggleInput         = input.bool(true, "Text Labels", group=gIctKz, inline="kzToggle2")
+
+killzoneLondonOpenColorInput    = input.color(color.new(#515cbb, 5), "", group=gIctKz, inline="kzLO")
+killzoneLondonOpenSessionInput  = input.session(LONDON_OPEN_KILLZONE_SESSION, "", group=gIctKz, inline="kzLO")
+killzoneLondonOpenToggleInput   = input.bool(true, "London", group=gIctKz, inline="kzLO")
+killzoneNyColorInput            = input.color(color.new(#f3c547, 5), "", group=gIctKz, inline="kzNY")
+killzoneNyOpenSessionInput      = input.session(NY_OPEN_KILLZONE_SESSION, "", group=gIctKz, inline="kzNY")
+killzoneNyToggleInput           = input.bool(true, "New York", group=gIctKz, inline="kzNY")
+killzoneLondonCloseColorInput   = input.color(color.new(#515cbb, 5), "", group=gIctKz, inline="kzLC")
+killzoneLondonCloseSessionInput = input.session(LONDON_CLOSE_KILLZONE_SESSION, "", group=gIctKz, inline="kzLC")
+killzoneLondonCloseToggleInput  = input.bool(true, "London Close", group=gIctKz, inline="kzLC")
+killzoneAsianOpenColorInput     = input.color(color.purple, "", group=gIctKz, inline="kzAO")
+killzoneAsianOpenSessionInput   = input.session(ASIAN_OPEN_KILLZONE_SESSION, "", group=gIctKz, inline="kzAO")
+killzoneAsianOpenToggleInput    = input.bool(true, "Asian Open", group=gIctKz, inline="kzAO")
+killzoneNyLunchColorInput       = input.color(color.red, "", group=gIctKz, inline="kzNyL")
+killzoneNyLunchSessionInput     = input.session(NY_LUNCH_SESSION, "", group=gIctKz, inline="kzNyL")
+killzoneNyLunchToggleInput      = input.bool(false, "New York Lunch", group=gIctKz, inline="kzNyL")
+
+weekdaysColorInput             = input.color(color.gray, "", group=gIctWeekdays, inline="weekdays")
+weekdaysLocationInput          = input.string("Bottom", "", ["Top", "Bottom"], group=gIctWeekdays, inline="weekdays")
+weekdaysToggleInput            = input.bool(true, "Weekdays", group=gIctWeekdays, inline="weekdays")
+weekdaysShortFormatToggleInput = input.bool(false, "Short format", group=gIctWeekdays, inline="weekdays")
+weekdayOffsetInput             = input.int(0, "Horizontal position offset", group=gIctWeekdays)
+
+cbdrSessionInput  = input.session(CBDR_SESSION,  "CBDR",         group=gIctSession)
+floutSessionInput = input.session(FLOUT_SESSION, "Flout",        group=gIctSession)
+asiaSessionInput  = input.session(ASIA_SESSION,  "Asian Range",  group=gIctSession)
+stdvNumLinesInput = input.int(4, "Standard Deviations", 1, 10,   group=gIctSession)
+
+var bool useWicks = useWicksToggleInput == "Bodies" ? false : true
+var string sessionZone = sessionZoneAutoToggleInput ? "America/New_York" : sessionZoneInput
+
+// ICT state
+var float cbdrHighPrice         = 0.0
+var float cbdrLowPrice          = 0.0
+var float cbdrRange             = 0.0
+var box   cbdrBox               = na
+var string cbdrBorderStyle      = getLineStyle(cbdrBorderTypeInput)
+var label cbdrLabel             = na
+var string cbdrLabelText        = cbdrNameToggleInput and cbdrRangeToggleInput ? CBDR_LABEL_NAME + ": " : cbdrNameToggleInput ? CBDR_LABEL_NAME : ""
+var array<line> cbdrLinesHi     = array.new<line>()
+var array<line> cbdrLinesLo     = array.new<line>()
+var string cbdrLineStyle        = getLineStyle(cbdrLineStyleInput)
+var int    cbdrLineWidth        = cbdrLineWidthInput
+
+var float floutHighPrice        = 0.0
+var float floutLowPrice         = 0.0
+var float floutRange            = 0.0
+var box   floutBox              = na
+var string floutBorderStyle     = getLineStyle(floutBorderTypeInput)
+var label floutLabel            = na
+var string floutLabelText       = floutNameToggleInput and floutRangeToggleInput ? FLOUT_LABEL_NAME + ": " : floutNameToggleInput ? FLOUT_LABEL_NAME : ""
+var line   floutLineMid         = na
+var array<line> floutLinesHi    = array.new<line>()
+var array<line> floutLinesLo    = array.new<line>()
+var string floutLineStyle       = getLineStyle(floutLineStyleInput)
+var int    floutLineWidth       = floutLineWidthInput
+
+var float asiaHighPrice         = 0.0
+var float asiaLowPrice          = 0.0
+var float asiaRange             = 0.0
+var box   asiaBox               = na
+var string asiaBorderStyle      = getLineStyle(asiaBorderTypeInput)
+var label asiaLabel             = na
+var string asiaLabelText        = asiaNameToggleInput and asiaRangeToggleInput ? ASIA_LABEL_NAME + ": " : asiaNameToggleInput ? ASIA_LABEL_NAME : ""
+var array<line> asiaLinesHi     = array.new<line>()
+var array<line> asiaLinesLo     = array.new<line>()
+var string asiaLineStyle        = getLineStyle(asiaLineStyleInput)
+var int    asiaLineWidth        = asiaLineWidthInput
+
+var float killzoneHighPrice = 0.0
+var float killzoneLowPrice  = 0.0
+var line  kzLoLine1  = na
+var line  kzLoLine2  = na
+var line  kzNYLine1  = na
+var line  kzNYLine2  = na
+var line  kzLCLine1  = na
+var line  kzLCLine2  = na
+var line  kzAOLine1  = na
+var line  kzAOLine2  = na
+var line  kzNyLLine1 = na
+var line  kzNyLLine2 = na
+
+var box kzLoBox1  = na
+var box kzLoBox2  = na
+var box kzNyBox1  = na
+var box kzNyBox2  = na
+var box kzLcBox1  = na
+var box kzLcBox2  = na
+var box kzAoBox1  = na
+var box kzAoBox2  = na
+var box kzNyLBox1 = na
+var box kzNyLBox2 = na
+
+var line dailyOpenLine = na
+var line fourOpenLine  = na
+var line gmtOpenLine   = na
+var line midnightLine  = na
+var line truedayLine   = na
+var line pdhLine       = na
+var line pdlLine       = na
+var line pmhLine       = na
+var line pmlLine       = na
+
+var label dailyOpenLabel = na
+var label fourOpenLabel  = na
+var label gmtOpenLabel   = na
+var label midnightLabel  = na
+var label pdhLabel       = na
+var label pdlLabel       = na
+var label pmhLabel       = na
+var label pmlLabel       = na
+
+var string levelsLabelTextSize = size.small
+
+var color dailyOpenLabelColor = dailyOpenColorInput
+var color fourOpenLabelColor  = fourOpenColorInput
+var color gmtOpenLabelColor   = gmtOpenColorInput
+var color midnightLabelColor  = midnightColorInput
+var color pdhLabelColor       = pdhColorInput
+var color pdlLabelColor       = pdlColorInput
+var color pmhLabelColor       = pmhColorInput
+var color pmlLabelColor       = pmlColorInput
+
+var string dailyOpenStyle = getLineStyle(dailyOpenLineStyleInput)
+var string fourOpenStyle  = getLineStyle(fourOpenLineStyleInput)
+var string gmtOpenStyle   = getLineStyle(gmtOpenLineStyleInput)
+var string midnightStyle  = getLineStyle(midnightLineStyleInput)
+var string truedayStyle   = getLineStyle(truedayLineStyleInput)
+var string pdhStyle       = getLineStyle(pdhLineStyleInput)
+var string pdlStyle       = getLineStyle(pdlLineStyleInput)
+var string pmhStyle       = getLineStyle(pmhLineStyleInput)
+var string pmlStyle       = getLineStyle(pmlLineStyleInput)
+
+var float tdHigh    = high
+var float tdLow     = low
+var float ptdHigh   = na
+var float ptdLow    = na
+var int   tdLowX    = na
+var int   tdHighX   = na
+var int   ptdHighX  = na
+var int   ptdLowX   = na
+
+var string LONDON_OPEN_KILLZONE_START  = str.substring(killzoneLondonOpenSessionInput, 0, 4)
+var string LONDON_OPEN_KILLZONE_END    = str.substring(killzoneLondonOpenSessionInput, 5, 9)
+var string NY_OPEN_KILLZONE_START      = str.substring(killzoneNyOpenSessionInput, 0, 4)
+var string NY_OPEN_KILLZONE_END        = str.substring(killzoneNyOpenSessionInput, 5, 9)
+var string LONDON_CLOSE_KILLZONE_START = str.substring(killzoneLondonCloseSessionInput, 0, 4)
+var string LONDON_CLOSE_KILLZONE_END   = str.substring(killzoneLondonCloseSessionInput, 5, 9)
+var string ASIAN_OPEN_KILLZONE_START   = str.substring(killzoneAsianOpenSessionInput, 0, 4)
+var string ASIAN_OPEN_KILLZONE_END     = str.substring(killzoneAsianOpenSessionInput, 5, 9)
+var string NY_LUNCH_START              = str.substring(killzoneNyLunchSessionInput, 0, 4)
+var string NY_LUNCH_END                = str.substring(killzoneNyLunchSessionInput, 5, 9)
+
+var int weekdaysLocation       = weekdaysLocationInput == "Top" ? location.top : location.bottom
+var color invisible            = color.rgb(0,0,0,100)
+var bool weekdayCondition      = weekdaysToggleInput and timeframe.isintraday and timeframe.multiplier <= 60
+var int weekdayOffset          = weekdayOffsetInput/timeframe.multiplier
+
+[tfOpen, tfClose, tfHigh, tfLow] = request.security(syminfo.tickerid, timeframeInput, [open, close, high, low], lookahead=barmerge.lookahead_on)
+[pmHigh, pmLow]                  = request.security(syminfo.tickerid, "M", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+
+if not staticLabelColorInput
+    var color c = getBrightness(chart.bg_color) > 130 ? color.black : color.white
+    gmtOpenLabelColor   := c
+    fourOpenLabelColor  := c
+    dailyOpenLabelColor := c
+    midnightLabelColor  := c
+    pdhLabelColor       := c
+    pdlLabelColor       := c
+    pmhLabelColor       := c
+    pmlLabelColor       := c
+
+// Session start checks
+inCbdrSession      = inSession(cbdrSessionInput, sessionZone) and timeframe.isintraday
+cbdrStart          = inCbdrSession and not inCbdrSession[1]
+inFloutSession     = inSession(floutSessionInput, sessionZone) and timeframe.isintraday
+floutStart         = inFloutSession and not inFloutSession[1]
+inasiaSession      = inSession(asiaSessionInput, sessionZone) and timeframe.isintraday
+asiaStart          = inasiaSession and not inasiaSession[1]
+intruedaySession   = inSession(TRUEDAY_SESSION, sessionZone) and timeframe.isintraday
+truedayStart       = intruedaySession and not intruedaySession[1]
+insundaySession    = inSession(SUNDAY_SESSION, sessionZone) and timeframe.isintraday
+sundayStart        = insundaySession and not insundaySession[1]
+indailyOpenSession = inSession(DAILY_OPEN_SESSION, sessionZone) and timeframe.isintraday
+dailyOpenStart     = indailyOpenSession and not indailyOpenSession[1]
+ingmtOpenSession   = inSession(GMT_OPEN_SESSION, sessionZone) and timeframe.isintraday
+gmtOpenStart       = ingmtOpenSession and not ingmtOpenSession[1]
+infourOpenSession  = inSession(FOUR_OPEN_SESSION, sessionZone) and timeframe.isintraday
+fourOpenStart      = infourOpenSession and not infourOpenSession[1]
+
+if useIct and cbdrStart
+    if not cbdrHistoryInput
+        box.delete(cbdrBox)
+        label.delete(cbdrLabel)
+    if not cbdrProjectionHistoryInput or not cbdrHistoryInput
+        delLines(cbdrLinesHi)
+        delLines(cbdrLinesLo)
+    array.clear(cbdrLinesHi)
+    array.clear(cbdrLinesLo)
+    cbdrHighPrice := tfOpen
+    cbdrLowPrice  := tfOpen
+    cbdrRange     := 0.0
+    asiaRange     := 0.0
+else if useIct and inCbdrSession
+    if useWicks
+        cbdrHighPrice := math.max(cbdrHighPrice, tfHigh)
+        cbdrLowPrice  := math.min(cbdrLowPrice, tfLow)
+    else
+        cbdrHighPrice := math.max(cbdrHighPrice, math.max(tfOpen, tfClose))
+        cbdrLowPrice  := math.min(cbdrLowPrice, math.min(tfOpen, tfClose))
+    cbdrRange := PIP * (cbdrHighPrice - cbdrLowPrice)
+
+if useIct and floutStart
+    if not floutHistoryToggleInput
+        box.delete(floutBox)
+        label.delete(floutLabel)
+    if not floutProjectionHistoryInput or not floutHistoryToggleInput
+        line.delete(floutLineMid)
+        delLines(floutLinesHi)
+        delLines(floutLinesLo)
+    array.clear(floutLinesHi)
+    array.clear(floutLinesLo)
+    floutHighPrice := tfOpen
+    floutLowPrice  := tfOpen
+else if useIct and inFloutSession
+    if useWicks
+        floutHighPrice := math.max(floutHighPrice, tfHigh)
+        floutLowPrice  := math.min(floutLowPrice, tfLow)
+    else
+        floutHighPrice := math.max(floutHighPrice, math.max(tfOpen, tfClose))
+        floutLowPrice  := math.min(floutLowPrice, math.min(tfOpen, tfClose))
+    floutRange := PIP * (floutHighPrice - floutLowPrice)
+
+if useIct and asiaStart
+    if not asiaHistoryInput
+        box.delete(asiaBox)
+        label.delete(asiaLabel)
+    if not asiaProjectionHistoryInput or not asiaHistoryInput
+        delLines(asiaLinesHi)
+        delLines(asiaLinesLo)
+    array.clear(asiaLinesHi)
+    array.clear(asiaLinesLo)
+    asiaHighPrice := tfOpen
+    asiaLowPrice  := tfOpen
+else if useIct and inasiaSession
+    if useWicks
+        asiaHighPrice := math.max(asiaHighPrice, tfHigh)
+        asiaLowPrice  := math.min(asiaLowPrice, tfLow)
+    else
+        asiaHighPrice := math.max(asiaHighPrice, math.max(tfOpen, tfClose))
+        asiaLowPrice  := math.min(asiaLowPrice, math.min(tfOpen, tfClose))
+    asiaRange := PIP * (asiaHighPrice - asiaLowPrice)
+
+if useIct and dailyOpenStart
+    label.delete(pmhLabel)
+    label.delete(pmlLabel)
+
+    if not pmhHistoryToggleInput
+        line.delete(pmhLine)
+    if pmhToggleInput
+        pmhLine := line.new(time, pmHigh, dayofweek(time) == 6 ? hours(72) : hours(24), pmHigh, xloc=xloc.bar_time, color=pmhColorInput, style=pmhStyle, width=pmhWidthInput)
+        if pmhLabelToggleInput
+            pmhLabel := label.new(dayofweek(time) == 6 ? hours(72) : hours(24), pmHigh, levelLabelsShortFormatInput ? PMH_LABEL_SHORT : PMH_LABEL_TEXT, xloc.bar_time, yloc.price, invisible, label.style_none, pmhLabelColor, levelsLabelTextSize)
+
+    if not pmlHistoryToggleInput
+        line.delete(pmlLine)
+    if pmlToggleInput
+        pmlLine := line.new(time, pmLow, dayofweek(time) == 6 ? hours(72) : hours(24), pmLow, xloc=xloc.bar_time, color=pmlColorInput, style=pmlStyle, width=pmlWidthInput)
+        if pmlLabelToggleInput
+            pmlLabel := label.new(dayofweek(time) == 6 ? hours(72) : hours(24), pmLow, levelLabelsShortFormatInput ? PML_LABEL_SHORT : PML_LABEL_TEXT, xloc.bar_time, yloc.price, invisible, label.style_none, pmlLabelColor, levelsLabelTextSize)
+
+    if not dailyOpenHistoryToggleInput
+        line.delete(dailyOpenLine)
+        label.delete(dailyOpenLabel)
+    if dailyOpenToggleInput
+        dailyOpenLine := line.new(time, open, dayofweek(time) == 6 ? hours(72) : hours(24), open, xloc=xloc.bar_time, color=dailyOpenColorInput, style=dailyOpenStyle, width=dailyOpenWidthInput)
+        if dailyOpenLabelToggleInput
+            dailyOpenLabel := label.new(dayofweek(time) == 6 ? hours(72) : hours(24), open, levelLabelsShortFormatInput ? DAILY_OPEN_LABEL_SHORT : DAILY_OPEN_LABEL_TEXT, xloc.bar_time, yloc.price, invisible, label.style_none, dailyOpenLabelColor, levelsLabelTextSize)
+
+if useIct and fourOpenStart
+    if not fourOpenHistoryToggleInput
+        line.delete(fourOpenLine)
+        label.delete(fourOpenLabel)
+    if fourOpenToggleInput
+        fourOpenLine := line.new(time, open, dayofweek(time) == 6 ? hours(72) : hours(24), open, xloc=xloc.bar_time, color=fourOpenColorInput, style=fourOpenStyle, width=fourOpenWidthInput)
+        if fourOpenLabelToggleInput
+            fourOpenLabel := label.new(dayofweek(time) == 6 ? hours(72) : hours(24), open, levelLabelsShortFormatInput ? FOUR_OPEN_LABEL_SHORT : FOUR_OPEN_LABEL_TEXT, xloc.bar_time, yloc.price, invisible, label.style_none, fourOpenLabelColor, levelsLabelTextSize)
+
+if useIct and gmtOpenStart
+    if not gmtOpenHistoryToggleInput
+        line.delete(gmtOpenLine)
+        label.delete(gmtOpenLabel)
+    if gmtOpenToggleInput
+        gmtOpenLine := line.new(time, open, dayofweek(time) == 6 ? hours(72) : hours(24), open, xloc=xloc.bar_time, color=gmtOpenColorInput, style=gmtOpenStyle, width=gmtOpenWidthInput)
+        if gmtOpenLabelToggleInput
+            gmtOpenLabel := label.new(dayofweek(time) == 6 ? hours(72) : hours(24), open, levelLabelsShortFormatInput ? GMT_LABEL_SHORT : GMT_LABEL_TEXT, xloc.bar_time, yloc.price, invisible, label.style_none, gmtOpenLabelColor, levelsLabelTextSize)
+
+if useIct and truedayStart
+    ptdHigh   := tdHigh
+    ptdLow    := tdLow
+    tdHigh    := high
+    tdLow     := low
+    ptdHighX  := tdHighX
+    ptdLowX   := tdLowX
+    tdLowX    := time
+    tdHighX   := time
+    int _h = dayofweek == dayofweek.friday ? hours(72) : hours(24)
+
+    if not pdhHistoryToggleInput
+        label.delete(pdhLabel)
+        line.delete(pdhLine)
+    if pdhToggleInput
+        pdhLine := line.new(ptdHighX, ptdHigh, _h, ptdHigh, xloc=xloc.bar_time, color=pdhColorInput, style=pdhStyle, width=pdhWidthInput)
+        if pdhLabelToggleInput
+            pdhLabel := label.new(_h, ptdHigh, levelLabelsShortFormatInput ? PDH_LABEL_SHORT : PDH_LABEL_TEXT, xloc.bar_time, yloc.price, invisible, label.style_none, pdhLabelColor, levelsLabelTextSize)
+    if not pdlHistoryToggleInput
+        label.delete(pdlLabel)
+        line.delete(pdlLine)
+    if pdlToggleInput
+        pdlLine := line.new(ptdLowX, ptdLow, _h, ptdLow, xloc=xloc.bar_time, color=pdlColorInput, style=pdlStyle, width=pdlWidthInput)
+        if pdlLabelToggleInput
+            pdlLabel := label.new(_h, ptdLow, levelLabelsShortFormatInput ? PDL_LABEL_SHORT : PDL_LABEL_TEXT, xloc.bar_time, yloc.price, invisible, label.style_none, pdlLabelColor, levelsLabelTextSize)
+
+    if not midnightHistoryToggleInput
+        line.delete(midnightLine)
+        label.delete(midnightLabel)
+    if not truedayHistoryToggleInput
+        line.delete(truedayLine)
+    if not killzoneHistoryToggleInput
+        if killzoneOldStyleToggleInput
+            line.delete(kzLoLine1)
+            line.delete(kzLoLine2)
+            line.delete(kzLCLine1)
+            line.delete(kzLCLine2)
+            line.delete(kzNYLine1)
+            line.delete(kzNYLine2)
+            line.delete(kzAOLine1)
+            line.delete(kzAOLine2)
+            line.delete(kzNyLLine1)
+            line.delete(kzNyLLine2)
+        else
+            box.delete(kzLoBox1)
+            box.delete(kzLoBox2)
+            box.delete(kzNyBox1)
+            box.delete(kzNyBox2)
+            box.delete(kzLcBox1)
+            box.delete(kzLcBox2)
+            box.delete(kzAoBox1)
+            box.delete(kzAoBox2)
+            box.delete(kzNyLBox1)
+            box.delete(kzNyLBox2)
+
+    killzoneHighPrice := high
+    killzoneLowPrice  := low
+
+    if killzoneToggleInput
+        if killzoneLondonOpenToggleInput
+            if killzoneOldStyleToggleInput
+                kzLoLine1 := line.new(hours(stringToHour(LONDON_OPEN_KILLZONE_START), stringToMinutes(LONDON_OPEN_KILLZONE_START)), killzoneHighPrice, hours(stringToHour(LONDON_OPEN_KILLZONE_END), stringToMinutes(LONDON_OPEN_KILLZONE_END)), killzoneHighPrice, xloc=xloc.bar_time, color=killzoneLondonOpenColorInput, style=line.style_solid, width=math.round(killzoneLineWidthInput))
+                kzLoLine2 := line.copy(kzLoLine1)
+            else
+                kzLoBox1 := box.new(hours(stringToHour(LONDON_OPEN_KILLZONE_START), stringToMinutes(LONDON_OPEN_KILLZONE_START)), killzoneHighPrice, hours(stringToHour(LONDON_OPEN_KILLZONE_END), stringToMinutes(LONDON_OPEN_KILLZONE_END)), killzoneHighPrice, xloc=xloc.bar_time, bgcolor=killzoneLondonOpenColorInput, border_width=0)
+                kzLoBox2 := box.copy(kzLoBox1)
+
+        if killzoneNyToggleInput
+            if killzoneOldStyleToggleInput
+                kzNYLine1 := line.new(hours(stringToHour(NY_OPEN_KILLZONE_START), stringToMinutes(NY_OPEN_KILLZONE_START)), killzoneHighPrice, hours(stringToHour(NY_OPEN_KILLZONE_END), stringToMinutes(NY_OPEN_KILLZONE_END)), killzoneHighPrice, xloc=xloc.bar_time, color=killzoneNyColorInput, style=line.style_solid, width=math.round(killzoneLineWidthInput))
+                kzNYLine2 := line.copy(kzNYLine1)
+            else
+                kzNyBox1 := box.new(hours(stringToHour(NY_OPEN_KILLZONE_START), stringToMinutes(NY_OPEN_KILLZONE_START)), killzoneHighPrice, hours(stringToHour(NY_OPEN_KILLZONE_END), stringToMinutes(NY_OPEN_KILLZONE_END)), killzoneHighPrice, xloc=xloc.bar_time, bgcolor=killzoneNyColorInput, border_width=0)
+                kzNyBox2 := box.copy(kzNyBox1)
+
+        if killzoneLondonCloseToggleInput
+            if killzoneOldStyleToggleInput
+                kzLCLine1 := line.new(hours(stringToHour(LONDON_CLOSE_KILLZONE_START), stringToMinutes(LONDON_CLOSE_KILLZONE_START)), killzoneHighPrice, hours(stringToHour(LONDON_CLOSE_KILLZONE_END), stringToMinutes(LONDON_CLOSE_KILLZONE_END)), killzoneHighPrice, xloc=xloc.bar_time, color=killzoneLondonCloseColorInput, style=line.style_solid, width=math.round(killzoneLineWidthInput))
+                kzLCLine2 := line.copy(kzLCLine1)
+            else
+                kzLcBox1 := box.new(hours(stringToHour(LONDON_CLOSE_KILLZONE_START), stringToMinutes(LONDON_CLOSE_KILLZONE_START)), killzoneHighPrice, hours(stringToHour(LONDON_CLOSE_KILLZONE_END), stringToMinutes(LONDON_CLOSE_KILLZONE_END)), killzoneHighPrice, xloc=xloc.bar_time, bgcolor=killzoneLondonCloseColorInput, border_width=0)
+                kzLcBox2 := box.copy(kzLcBox1)
+
+        if killzoneAsianOpenToggleInput
+            if killzoneOldStyleToggleInput
+                kzAOLine1 := line.new(hours(stringToHour(ASIAN_OPEN_KILLZONE_START), stringToMinutes(ASIAN_OPEN_KILLZONE_START)), killzoneHighPrice, hours(stringToHour(ASIAN_OPEN_KILLZONE_END), stringToMinutes(ASIAN_OPEN_KILLZONE_END)), killzoneHighPrice, xloc=xloc.bar_time, color=killzoneAsianOpenColorInput, style=line.style_solid, width=math.round(killzoneLineWidthInput))
+                kzAOLine2 := line.copy(kzAOLine1)
+            else
+                kzAoBox1 := box.new(hours(stringToHour(ASIAN_OPEN_KILLZONE_START), stringToMinutes(ASIAN_OPEN_KILLZONE_START)), killzoneHighPrice, hours(stringToHour(ASIAN_OPEN_KILLZONE_END), stringToMinutes(ASIAN_OPEN_KILLZONE_END)), killzoneHighPrice, xloc=xloc.bar_time, bgcolor=killzoneAsianOpenColorInput, border_width=0, text_color=blackOrWhiteText(killzoneAsianOpenColorInput))
+                kzAoBox2 := box.copy(kzAoBox1)
+
+        if killzoneNyLunchToggleInput
+            if killzoneOldStyleToggleInput
+                kzNyLLine1 := line.new(hours(stringToHour(NY_LUNCH_START), stringToMinutes(NY_LUNCH_START)), killzoneHighPrice, hours(stringToHour(NY_LUNCH_END), stringToMinutes(NY_LUNCH_END)), killzoneHighPrice, xloc=xloc.bar_time, color=killzoneNyLunchColorInput, style=line.style_solid, width=math.round(killzoneLineWidthInput))
+                kzNyLLine2 := line.copy(kzNyLLine1)
+            else
+                kzNyLBox1 := box.new(hours(stringToHour(NY_LUNCH_START), stringToMinutes(NY_LUNCH_START)), killzoneHighPrice, hours(stringToHour(NY_LUNCH_END), stringToMinutes(NY_LUNCH_END)), killzoneHighPrice, xloc=xloc.bar_time, bgcolor=killzoneNyLunchColorInput, border_width=0)
+                kzNyLBox2 := box.copy(kzNyLBox1)
+
+        if killzoneTextToggleInput
+            color c = blackOrWhiteText(killzoneLondonOpenColorInput)
+            box.set_text(kzLoBox1, "LONDON OPEN KZ")
+            box.set_text(kzLoBox2, "LONDON OPEN KZ")
+            box.set_text_color(kzLoBox1, c)
+            box.set_text_color(kzLoBox2, c)
+
+            c := blackOrWhiteText(killzoneNyColorInput)
+            box.set_text(kzNyBox1, "NEW YORK KZ")
+            box.set_text(kzNyBox2, "NEW YORK KZ")
+            box.set_text_color(kzNyBox1, c)
+            box.set_text_color(kzNyBox2, c)
+
+            c := blackOrWhiteText(killzoneLondonCloseColorInput)
+            box.set_text(kzLcBox1, "LONDON CLOSE KZ")
+            box.set_text_color(kzLcBox1, c)
+            box.set_text(kzLcBox2, "LONDON CLOSE KZ")
+            box.set_text_color(kzLcBox2, c)
+
+            c := blackOrWhiteText(killzoneAsianOpenColorInput)
+            box.set_text(kzAoBox1, "ASIAN OPEN KZ")
+            box.set_text(kzAoBox2, "ASIAN OPEN KZ")
+            box.set_text_color(kzAoBox1, c)
+            box.set_text_color(kzAoBox2, c)
+
+            c := blackOrWhiteText(killzoneNyLunchColorInput)
+            box.set_text(kzNyLBox1, "NEW YORK LUNCH")
+            box.set_text(kzNyLBox2, "NEW YORK LUNCH")
+            box.set_text_color(kzNyLBox1, c)
+            box.set_text_color(kzNyLBox2, c)
+
+    if midnightToggleInput
+        midnightLine := line.new(time, open, dayofweek(time) == 6 ? hours(72) : hours(24), open, xloc=xloc.bar_time, color=midnightColorInput, style=midnightStyle, width=midnightWidthInput)
+        if midnightLabelToggleInput
+            midnightLabel := label.new(dayofweek(time) == 6 ? hours(72) : hours(24), open, levelLabelsShortFormatInput ? NEW_YORK_MIDNIGHT_LABEL_SHORT : NEW_YORK_MIDNIGHT_LABEL_TEXT, xloc.bar_time, yloc.price, invisible, label.style_none, midnightLabelColor, levelsLabelTextSize)
+    if truedayToggleInput
+        truedayLine := line.new(time, open, time, open+1, xloc=xloc.bar_time, extend=extend.both, color=truedayColorInput, style=truedayStyle, width=truedayWidthInput)
+
+if useIct
+    if high > tdHigh
+        tdHigh  := high
+        tdHighX := time
+    if low < tdLow
+        tdLow  := low
+        tdLowX := time
+
+if useIct and sundayStart
+    if not truedayHistoryToggleInput
+        line.delete(truedayLine)
+    if sundayLineToggleInput
+        truedayLine := line.new(time, open, time, open+1, xloc=xloc.bar_time, extend=extend.both, color=truedayColorInput, style=truedayStyle, width=truedayWidthInput)
+
+if useIct and cbdrStart and cbdrBoxToggleInput
+    cbdrBox   := box.new(bar_index, na, na, na, cbdrBorderColorInput, cbdrBorderSizeInput, cbdrBorderStyle, bgcolor=cbdrBoxColorInput)
+    cbdrLabel := label.new(bar_index, high, "", style=label.style_none, textcolor=cbdrLabelColorInput, textalign=text.align_center)
+    if cbdrProjectionToggleInput
+        int s = dayofweek == dayofweek.friday ? hours(54) : hours(6)
+        int h = dayofweek == dayofweek.friday ? hours(72) : hours(24)
+        addLines(cbdrLinesHi, s, h, open, cbdrProjectionColorInput, stdvNumLinesInput, cbdrLineStyle, cbdrLineWidth)
+        addLines(cbdrLinesLo, s, h, open, cbdrProjectionColorInput, stdvNumLinesInput, cbdrLineStyle, cbdrLineWidth)
+
+if useIct and floutStart and floutToggleInput
+    floutBox   := box.new(bar_index, na, na, na, floutBorderColorInput, floutBorderSizeInput, floutBorderStyle, bgcolor=floutBoxColorInput)
+    floutLabel := label.new(bar_index, high, "", xloc.bar_time, style=label.style_none, textcolor=floutLabelColorInput, textalign=text.align_center)
+    if floutProjectionToggleInput
+        int s = dayofweek == dayofweek.friday ? hours(57) : hours(9)
+        int h = dayofweek == dayofweek.friday ? hours(71) : hours(23)
+        floutLineMid := line.new(s, high, h, high, xloc.bar_time, color=floutProjectionColorInput, style=line.style_dashed, width=1)
+        addLines(floutLinesHi, s, h, open, floutProjectionColorInput, stdvNumLinesInput, floutLineStyle, floutLineWidth)
+        addLines(floutLinesLo, s, h, open, floutProjectionColorInput, stdvNumLinesInput, floutLineStyle, floutLineWidth)
+
+if useIct and asiaStart and asiaToggleInput
+    asiaBox   := box.new(bar_index, na, na, na, asiaBorderColorInput, asiaBorderSizeInput, asiaBorderStyle, bgcolor=asiaBoxColorInput)
+    asiaLabel := label.new(bar_index, high, "", style=label.style_none, textcolor=asiaLabelColorInput, textalign=text.align_left)
+    if asiaProjectionToggle
+        int s = hours(4)
+        int h = hours(18)
+        addLines(asiaLinesHi, s, h, high, asiaProjectionColorInput, stdvNumLinesInput, asiaLineStyle, asiaLineWidth)
+        addLines(asiaLinesLo, s, h, high, asiaProjectionColorInput, stdvNumLinesInput, asiaLineStyle, asiaLineWidth)
+
+if useIct and inCbdrSession and cbdrBoxToggleInput
+    float true_cbdr = cbdrHighPrice - cbdrLowPrice
+    box.set_top(cbdrBox, cbdrHighPrice)
+    box.set_bottom(cbdrBox, cbdrLowPrice)
+    box.set_right(cbdrBox, bar_index + 1)
+    label.set_text(cbdrLabel, cbdrRangeToggleInput ? cbdrLabelText + str.tostring(cbdrRange) : cbdrLabelText)
+    label.set_x(cbdrLabel, bar_index)
+    label.set_y(cbdrLabel, cbdrHighPrice)
+    setLineArrayY(cbdrLinesHi, cbdrHighPrice, true_cbdr, 1)
+    setLineArrayY(cbdrLinesLo, cbdrLowPrice, true_cbdr, -1)
+
+if useIct and inFloutSession and floutToggleInput
+    float true_flout = (floutHighPrice - floutLowPrice) / 2
+    box.set_top(floutBox, floutHighPrice)
+    box.set_bottom(floutBox, floutLowPrice)
+    box.set_right(floutBox, bar_index + 1)
+    label.set_text(floutLabel, floutRangeToggleInput ? floutLabelText + str.tostring(floutRange) : floutLabelText)
+    label.set_x(floutLabel, hours(-1))
+    label.set_y(floutLabel, floutHighPrice)
+    lineset_y(floutLineMid, floutHighPrice - true_flout)
+    setLineArrayY(floutLinesHi, floutHighPrice, true_flout, 1)
+    setLineArrayY(floutLinesLo, floutLowPrice, true_flout, -1)
+
+if useIct and inasiaSession and asiaToggleInput
+    float true_asia = asiaHighPrice - asiaLowPrice
+    box.set_top(asiaBox, asiaHighPrice)
+    box.set_bottom(asiaBox, asiaLowPrice)
+    box.set_right(asiaBox, bar_index + 1)
+    label.set_text(asiaLabel, asiaRangeToggleInput ? asiaLabelText + str.tostring(asiaRange) : asiaLabelText)
+    label.set_x(asiaLabel, bar_index - 1)
+    label.set_y(asiaLabel, asiaHighPrice)
+    setLineArrayY(asiaLinesHi, asiaHighPrice, true_asia, 1)
+    setLineArrayY(asiaLinesLo, asiaLowPrice, true_asia, -1)
+
+if useIct
+    killzoneHighPrice := math.max(killzoneHighPrice, high)
+    killzoneLowPrice  := math.min(killzoneLowPrice, low)
+    int   scaleModifier  = DECIMALS == 0 ? 10 : 1
+    float kzUpperBoxTop    = killzoneHighPrice + (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput + killzoneLineWidthInput/PIP/scaleModifier
+    float kzUpperBoxBottom = killzoneHighPrice + (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput
+    float kzLowerBoxTop    = killzoneLowPrice  - (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput
+    float kzLowerBoxBottom = killzoneLowPrice  - (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput - killzoneLineWidthInput/PIP/scaleModifier
+
+    if killzoneOldStyleToggleInput
+        lineset_y(kzLoLine1, killzoneHighPrice + (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzLoLine2, killzoneLowPrice  - (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzNYLine1, killzoneHighPrice + (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzNYLine2, killzoneLowPrice  - (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzLCLine1, killzoneHighPrice + (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzLCLine2, killzoneLowPrice  - (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzAOLine1, killzoneHighPrice + (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzAOLine2, killzoneLowPrice  - (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzNyLLine1, killzoneHighPrice + (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+        lineset_y(kzNyLLine2, killzoneLowPrice  - (killzoneHighPrice - killzoneLowPrice) / killzoneYoffsetInput)
+    else
+        box.set_top(kzLoBox1, kzUpperBoxTop)
+        box.set_bottom(kzLoBox1, kzUpperBoxBottom)
+        box.set_top(kzLoBox2, kzLowerBoxTop)
+        box.set_bottom(kzLoBox2, kzLowerBoxBottom)
+        box.set_top(kzNyBox1, kzUpperBoxTop)
+        box.set_bottom(kzNyBox1, kzUpperBoxBottom)
+        box.set_top(kzNyBox2, kzLowerBoxTop)
+        box.set_bottom(kzNyBox2, kzLowerBoxBottom)
+        box.set_top(kzLcBox1, kzUpperBoxTop)
+        box.set_bottom(kzLcBox1, kzUpperBoxBottom)
+        box.set_top(kzLcBox2, kzLowerBoxTop)
+        box.set_bottom(kzLcBox2, kzLowerBoxBottom)
+        box.set_top(kzAoBox1, kzUpperBoxTop)
+        box.set_bottom(kzAoBox1, kzUpperBoxBottom)
+        box.set_top(kzAoBox2, kzLowerBoxTop)
+        box.set_bottom(kzAoBox2, kzLowerBoxBottom)
+        box.set_top(kzNyLBox1, kzUpperBoxTop)
+        box.set_bottom(kzNyLBox1, kzUpperBoxBottom)
+        box.set_top(kzNyLBox2, kzLowerBoxTop)
+        box.set_bottom(kzNyLBox2, kzLowerBoxBottom)
+
+// ADR Table
+float averageDailyRangeRounded = useIct ? math.round(request.security(syminfo.tickerid, "1D", averageRange(high, low, adrLookbackInput)), 1) : na
+[currentDailyLow, currentDailyHigh] = request.security(syminfo.tickerid, "1D", [low, high])
+float currentDailyRangeRounded = useIct ? math.round(PIP * (currentDailyHigh - currentDailyLow), 1) : na
+
+var int adrTablePosition = tableLocInput == "Top Left" ? position.top_left : tableLocInput == "Bottom Left" ? position.bottom_left : tableLocInput == "Top Right" ? position.top_right : tableLocInput == "Top Center" ? position.top_center : tableLocInput == "Bottom Center" ? position.bottom_center : position.bottom_right
+var table adrTable = table.new(adrTablePosition, tableOrientationInput == "Vertical" ? 2 : 4, tableOrientationInput == "Vertical" ? 4 : 1, tableBgInput, border_width=1)
+
+if useIct and tableToggleInput and barstate.islast
+    float bgBrightness = getBrightness(tableBgInput)
+    color staticTextColor        = blackOrWhiteText(tableBgInput)
+    color dynamicGreen           = staticTextColor
+    color dynamicRed             = staticTextColor
+    color dynamicOrange          = staticTextColor
+    color currentDailyRangeColor = staticTextColor
+
+    if tableDynamicTextInputToggle
+        dynamicGreen           := bgBrightness > 130 ? color.green                   : color.rgb(0, 255, 0)
+        dynamicRed             := bgBrightness > 130 ? color.rgb(155, 0, 0)          : color.rgb(255, 0, 0)
+        dynamicOrange          := bgBrightness > 130 ? color.rgb(255, 152, 0)        : color.rgb(255, 200, 0)
+        currentDailyRangeColor := currentDailyRangeRounded/averageDailyRangeRounded < 0.5 ? dynamicGreen : currentDailyRangeRounded/averageDailyRangeRounded < 1.0 ? dynamicOrange : dynamicRed
+
+    if tableOrientationInput == "Vertical"
+        table.cell(adrTable, 0, 0, str.tostring(adrLookbackInput) + "ADR:", text_color=staticTextColor, text_halign=text.align_right, text_size=size.small)
+        table.cell(adrTable, 1, 0, str.tostring(averageDailyRangeRounded), text_color=staticTextColor, text_halign=text.align_left, text_size=size.small)
+        table.cell(adrTable, 0, 1, "CDR:", text_color=currentDailyRangeColor, text_halign=text.align_right, text_size=size.small)
+        table.cell(adrTable, 1, 1, str.tostring(currentDailyRangeRounded), text_color=currentDailyRangeColor, text_halign=text.align_left, text_size=size.small)
+        table.cell(adrTable, 0, 2, "CBDR:", text_color=cbdrRange <= 40 ? dynamicGreen : dynamicRed, text_halign=text.align_right, text_size=size.small)
+        table.cell(adrTable, 1, 2, str.tostring(cbdrRange), text_color=cbdrRange <= 40 ? dynamicGreen : dynamicRed, text_halign=text.align_left, text_size=size.small)
+        table.cell(adrTable, 0, 3, "AR:", text_color=asiaRange <= 40 ? dynamicGreen : dynamicRed, text_halign=text.align_right, text_size=size.small)
+        table.cell(adrTable, 1, 3, asiaRange == 0.0 ? "n/a" : str.tostring(asiaRange), text_color=asiaRange <= 40 ? dynamicGreen : dynamicRed, text_halign=text.align_left, text_size=size.small)
+    else
+        table.cell(adrTable, 0, 0, str.tostring(adrLookbackInput) + "ADR: " + str.tostring(averageDailyRangeRounded), text_color=staticTextColor, text_halign=text.align_right, text_size=size.small)
+        table.cell(adrTable, 1, 0, "CDR: " + str.tostring(currentDailyRangeRounded), text_color=currentDailyRangeColor, text_halign=text.align_right, text_size=size.small)
+        table.cell(adrTable, 2, 0, "CBDR: " + str.tostring(cbdrRange), text_color=cbdrRange <= 40 ? dynamicGreen : dynamicRed, text_halign=text.align_right, text_size=size.small)
+        table.cell(adrTable, 3, 0, "AR: " + (asiaRange == 0.0 ? "n/a" : str.tostring(asiaRange)), text_color=asiaRange <= 40 ? dynamicGreen : dynamicRed, text_halign=text.align_right, text_size=size.small)
+
+// Weekday labels
+bool weekdaysShortFormat = useIct and weekdayCondition and weekdaysShortFormatToggleInput
+plotshape(weekdaysShortFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.monday,    "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Mon",     offset=weekdayOffset)
+plotshape(weekdaysShortFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.tuesday,   "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Tue",     offset=weekdayOffset)
+plotshape(weekdaysShortFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.wednesday, "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Wed",     offset=weekdayOffset)
+plotshape(weekdaysShortFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.thursday,  "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Thu",     offset=weekdayOffset)
+plotshape(weekdaysShortFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.friday,    "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Fri/Sun", offset=weekdayOffset)
+plotshape(weekdaysShortFormat and hour == 19 and minute == 30 and dayofweek == dayofweek.sunday,   "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Sun",     offset=weekdayOffset)
+
+bool weekdaysLongFormat = useIct and weekdayCondition and not weekdaysShortFormatToggleInput
+plotshape(weekdaysLongFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.monday,    "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Monday",         offset=weekdayOffset)
+plotshape(weekdaysLongFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.tuesday,   "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Tuesday",        offset=weekdayOffset)
+plotshape(weekdaysLongFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.wednesday, "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Wednesday",      offset=weekdayOffset)
+plotshape(weekdaysLongFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.thursday,  "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Thursday",       offset=weekdayOffset)
+plotshape(weekdaysLongFormat and hour == 12 and minute == 0 and dayofweek == dayofweek.friday,    "", color=invisible, textcolor=weekdaysColorInput, location=weekdaysLocation, text="Friday/Sunday", offset=weekdayOffset)
