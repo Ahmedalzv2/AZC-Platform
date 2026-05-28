@@ -192,3 +192,23 @@ describe('decideFireAction — drift-gate downshifts', () => {
     assert.deepEqual(r.downshifts, []);
   });
 });
+
+describe('decideFireAction — sentiment gate, off mode', () => {
+  it('matches baseline output when mode=off and no snapshot', () => {
+    const baseline = decideFireAction(baseInput());
+    const withOff = decideFireAction(baseInput({
+      sentimentGateMode: 'off',
+      sentimentSnapshot: null,
+    }));
+    assert.deepEqual(withOff, baseline);
+  });
+
+  it('matches baseline when mode=off even with a disagree snapshot', () => {
+    const baseline = decideFireAction(baseInput());
+    const withOff = decideFireAction(baseInput({
+      sentimentGateMode: 'off',
+      sentimentSnapshot: { label: 'bear', source: 'topic', fetchedAtMs: 1 },
+    }));
+    assert.deepEqual(withOff, baseline);
+  });
+});
