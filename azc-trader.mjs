@@ -305,6 +305,15 @@ async function writeState(extra = {}) {
     walletUsdt,
     walletUsdtAt,
     walletUsdtError,
+    sentimentGate: {
+      mode: SENTIMENT_GATE_MODE,
+      lastSnapshotAt: lastSentimentAt,
+      lastLabel: lastSentimentSnapshot?.label || null,
+      lastSource: lastSentimentSnapshot?.source || null,
+      shadowWouldSkipCount24h: sentimentShadowSkips24h,
+      liveSkipCount24h: sentimentLiveSkips24h,
+    },
+    // Inspect from prod: curl https://tv-relay.srv1688368.hstgr.cloud/trader-state | jq .sentimentGate
     ...extra,
   };
   try { await writeFile(STATE_FILE, JSON.stringify(s, null, 2)); }
