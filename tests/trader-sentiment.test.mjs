@@ -168,3 +168,19 @@ describe('getSentiment — cache', () => {
     assert.equal(calls, 4);    // not 2 — null was not cached; 2 getSentiment calls × 2 fetchers each
   });
 });
+
+describe('getSentiment — timeout', () => {
+  it('returns null within ~2s when fetch hangs', async () => {
+    _clearCache();
+    const fetchFn = async (_url, opts) =>
+      new Promise((_, reject) => {
+        opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        setTimeout(() => reject(new Error('never reached')), 10_000);
+      });
+    const env = { LUNARCRUSH_API_KEY: 'k' };
+    const start = Date.now();
+    const r = await getSentiment({ ticker: 'SOL', env, fetchFn, timeoutMs: 50 });
+    assert.equal(r, null);
+    assert.ok(Date.now() - start < 500, 'must short-circuit on timeout');
+  });
+});

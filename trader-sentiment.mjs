@@ -11,6 +11,7 @@ export function _resolveLabel(value) {
 }
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 2000;
 const _cache = new Map();   // ticker → { snapshot, expiresAtMs }
 
 export function _clearCache() { _cache.clear(); }
@@ -71,20 +72,30 @@ export async function _topicFetcher({ ticker, env, signal, fetchFn } = {}) {
   return { label, source: 'topic', mean, sampled: nums.length };
 }
 
-export async function getSentiment({ ticker, env = process.env, now = Date.now(), fetchFn } = {}) {
+export async function getSentiment({
+  ticker, env = process.env, now = Date.now(), fetchFn, timeoutMs = DEFAULT_TIMEOUT_MS,
+} = {}) {
   if (!ticker || typeof ticker !== 'string') return null;
   if (!env?.LUNARCRUSH_API_KEY) return null;
   const key = ticker.toUpperCase();
   const hit = _cache.get(key);
   if (hit && hit.expiresAtMs > now) return hit.snapshot;
-  const signal = new AbortController().signal;
-  const topic = await _topicFetcher({ ticker: key, env, signal, fetchFn });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let snapshot = null;
-  if (topic) {
-    snapshot = { label: topic.label, source: 'topic', fetchedAtMs: now };
-  } else {
-    const news = await _newsFetcher({ ticker: key, env, signal, fetchFn, now });
-    if (news) snapshot = { label: news.label, source: 'news', fetchedAtMs: now };
+  try {
+    const topic = await _topicFetcher({ ticker: key, env, signal: controller.signal, fetchFn });
+    if (topic) {
+      snapshot = { label: topic.label, source: 'topic', fetchedAtMs: now };
+    } else if (!controller.signal.aborted) {
+      const news = await _newsFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now });
+      if (news) snapshot = { label: news.label, source: 'news', fetchedAtMs: now };
+    }
+  } catch {
+    snapshot = null;
+  } finally {
+    clearTimeout(timer);
   }
   if (snapshot) _cache.set(key, { snapshot, expiresAtMs: now + CACHE_TTL_MS });
   return snapshot;
