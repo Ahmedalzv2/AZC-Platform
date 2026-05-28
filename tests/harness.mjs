@@ -76,7 +76,7 @@ const EXPORTS = [
   '_fastRefreshAssetEntry', '_fastRefreshTick', 'FAST_REFRESH_INTERVAL_MS',
   'SCALP_PROXIMITY_PCT',
   '_classifyConnTest', '_MEXC_FIX_HINTS',
-  'forceFireAsset', '_recordFireResult', '_refreshLiveTradingModalIfOpen',
+  'forceFireAsset', 'stagePendingMakerAsset', '_recordFireResult', '_refreshLiveTradingModalIfOpen',
   '_markPendingFire', '_clearPendingFire', '_isPendingFire', 'PENDING_FIRE_LOCK_MS',
   'getFireStatus',
   'fetchMexcOpenPositions', '_positionsTick', 'closeMexcPosition', 'POSITIONS_REFRESH_INTERVAL_MS',

@@ -4356,7 +4356,10 @@
     // cancels it so a stale-signal late-fill can't leak in.
     //
     // Low-lev path keeps plain LIMIT (type=1, no post-only enforcement).
-    const useMaker = isFinite(Number(leverage)) && Number(leverage) >= LEVERAGE_HIGH_THRESHOLD;
+    // opts.postOnly forces type=2 regardless of leverage — used by the Stage
+    // Pending Maker flow so a limit at FVG mid cannot accidentally take.
+    const useMaker = opts.postOnly === true ||
+      (isFinite(Number(leverage)) && Number(leverage) >= LEVERAGE_HIGH_THRESHOLD);
     const body = {
       symbol: mexcSymbol,
       price: roundTo(entry, pScale),
@@ -5428,6 +5431,70 @@
     return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
   }
 
+  // Manual stage — places a POST_ONLY limit at the 5m setup's FVG mid,
+  // anchored SL/TP from the same setup geometry the bot uses. Sits on the
+  // MEXC book until filled (passive maker) or cancelled. Removes the "I'm
+  // late to my own entries" problem: stop chasing live price, let price
+  // come to you.
+  async function stagePendingMakerAsset(symbol, opts) {
+    opts = opts || {};
+    const asset = (typeof ASSETS !== 'undefined') ? ASSETS.find(a => a.symbol === symbol) : null;
+    if (!asset)                       return _recordFireResult(symbol, { source: 'stage', sent: false, reason: 'no-asset' });
+    if (!_liveTradingEnabled)         return _recordFireResult(symbol, { source: 'stage', sent: false, reason: 'master-off' });
+    if (!_mexcContractSymbol(asset))  return _recordFireResult(symbol, { source: 'stage', sent: false, reason: 'unsupported-symbol' });
+    const blockingSym = _findBlockingPosition(symbol);
+    if (blockingSym) return _recordFireResult(symbol, { source: 'stage', sent: false, reason: 'in-position', blockingSym });
+
+    const tfData5 = asset.tfEntries && asset.tfEntries['5m'];
+    const sug5 = (tfData5 && typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData5, '5m') : null;
+    if (!sug5 || !isFinite(sug5.entry) || !isFinite(sug5.sl)) {
+      return _recordFireResult(symbol, { source: 'stage', sent: false, reason: 'no-5m-setup' });
+    }
+    const stopDist = Math.abs(sug5.entry - sug5.sl);
+    if (!isFinite(stopDist) || stopDist <= 0) {
+      return _recordFireResult(symbol, { source: 'stage', sent: false, reason: 'invalid-5m-stop' });
+    }
+    const dir = sug5.dir === 'bull' ? 'LONG' : 'SHORT';
+    const rr = (isFinite(sug5.rr) && sug5.rr > 0) ? sug5.rr : 1.5;
+    const entry = sug5.entry;
+    const sl = sug5.sl;
+    const tp = dir === 'LONG' ? entry + stopDist * rr : entry - stopDist * rr;
+    const lev = getAssetLeverage(symbol);
+    const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+    const qty = computeMexcOrderQty(asset, entry, sl, lev) || 1;
+    const tag = { source: 'stage', side: dir, entry: round(entry), sl: round(sl), tp: round(tp), qty, leverage: lev, setupSource: sug5.source };
+
+    _markPendingFire(symbol);
+    let r;
+    try {
+      r = await placeMexcFuturesOrder(asset, dir, round(entry), round(sl), round(tp), qty, lev, { stage: true, postOnly: true });
+    } catch (e) {
+      _clearPendingFire(symbol);
+      return _recordFireResult(symbol, { ...tag, sent: false, error: String((e && e.message) || e) });
+    }
+    if (!r || (!r.sent && !r.dryRun)) _clearPendingFire(symbol);
+    return _recordFireResult(symbol, { ...tag, sent: !!r.sent, dryRun: !!r.dryRun, reason: r.reason, error: r.error, mexcResponse: r.response, status: r.status });
+  }
+
+  // Click handler — POST_ONLY semantics mean a mis-staged limit (e.g. on the
+  // wrong side of the book) gets rejected by MEXC instead of taking. Lighter
+  // confirm prompt than Force Fire because nothing executes instantly.
+  async function _onClickStagePendingMaker(symbol) {
+    const live = !_liveTradingDryRun;
+    if (live) {
+      const ok = confirm(`Stage a POST_ONLY ${getAssetLeverage(symbol)}× ${symbol} limit at the 5m FVG mid?\n\nThe order sits on MEXC until price fills it or you cancel. It cannot execute as taker.`);
+      if (!ok) return;
+    }
+    try { showToast(`🪝 Staging ${symbol} @ FVG mid…`, 'info'); } catch (e) {}
+    const r = await stagePendingMakerAsset(symbol);
+    try {
+      if (r.dryRun)        showToast(`🧪 ${symbol} stage · [DRY-RUN] limit @ $${r.entry}`, 'ok');
+      else if (r.sent)     showToast(`🪝 ${symbol} staged · ${r.side} ${r.qty} @ $${r.entry} · waiting fill`, 'ok');
+      else                 showToast(`⚠ ${symbol} stage skipped · ${r.reason || r.error}`, 'warn');
+    } catch (e) {}
+    try { if (typeof renderLiveTradingModal === 'function') renderLiveTradingModal(); } catch (e) {}
+  }
+
   // Click handler for the Force Fire button. Confirms only when live (i.e.
   // dry-run OFF) since a force-fire on dry-run is harmless. Re-renders the
   // modal so the "Last fire" panel updates immediately.
@@ -5848,6 +5915,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <div style="font-size:10px;color:${headerColor};font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerPrefix}${sym} leverage${headerSuffix}</div>
           <div style="display:flex;gap:6px;">
+            <button onclick="_onClickStagePendingMaker('${sym}')" title="Stage a POST_ONLY limit at the 5m FVG mid — sits on MEXC until price retests, cannot take" style="background:rgba(143,182,255,0.14);border:1px solid var(--accent, #8FB6FF);color:var(--accent, #8FB6FF);padding:2px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🪝 Stage @ FVG</button>
             <button onclick="_onClickForceFire('${sym}')" title="Force-fire ${sym} now — bypass proximity, use live price with mechanical SL/TP" style="background:rgba(224,93,93,0.18);border:1px solid var(--bear);color:var(--bear);padding:2px 10px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Force Fire</button>
             <button onclick="setTradeMode('${sym}','spot');openLiveTradingModal();" title="Remove ${sym} from futures controls (back to spot mode)" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:2px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">× Remove</button>
           </div>
