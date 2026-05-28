@@ -31,6 +31,7 @@ import { getSentiment } from './trader-sentiment.mjs';
 import { sendTelegram, fmtFireAlert, fmtCloseAlert, fmtDriftAlert } from './trader-notify.mjs';
 import { sizeTradeByRiskAndMargin } from './trader-sizing.mjs';
 import { shouldRefreshWallet } from './trader-wallet.mjs';
+import { buildOrphanContext } from './trader-orphan.mjs';
 
 async function notify(text) {
   // Fire-and-forget — never let a Telegram failure interrupt the loop.
@@ -816,6 +817,42 @@ async function panicCloseLong(ctx) {
 // Once a position is open, MEXC manages the SL/TP. When the position
 // disappears from open_positions, look up the fill history to compute the
 // outcome and write a learnings file.
+// Adopt an open MEXC position the bot didn't fire (Force Fire / Stage @
+// FVG / direct exchange click). Returns true if a positionContext was
+// set. Best-effort: if the plan-order or meta fetches fail, we still
+// adopt with nulls so close-path P&L lands in the manual learnings.
+async function tryAdoptOrphan() {
+  let ps;
+  try { ps = await getOpenPositions(); }
+  catch (e) { log('[orphan-scan-err]', e.message); return false; }
+  if (!ps?.length) return false;
+  const pos = ps[0];
+
+  let planOrders = [];
+  try {
+    const r = await mexcSigned({
+      path: '/api/v1/private/stoporder/list/orders',
+      method: 'GET',
+      params: { symbol: pos.symbol, page_num: 1, page_size: 20 },
+    });
+    planOrders = Array.isArray(r.json?.data?.resultList) ? r.json.data.resultList
+               : Array.isArray(r.json?.data) ? r.json.data : [];
+  } catch (e) { log('[orphan-plan-err]', e.message); }
+
+  let contractMeta = metaCache.get(pos.symbol) || null;
+  if (!contractMeta) {
+    try { contractMeta = await fetchContractMeta(pos.symbol); metaCache.set(pos.symbol, contractMeta); }
+    catch (e) { log('[orphan-meta-err]', e.message); }
+  }
+
+  const ctx = buildOrphanContext({ pos, planOrders, contractMeta });
+  if (!ctx) { log(`[orphan-skip] ${pos.symbol} pos=${pos.positionId} unusable shape`); return false; }
+  positionContext = ctx;
+  log(`[orphan-adopt] ${ctx.symbol} ${ctx.dir} pos=${ctx.posId} entry=${ctx.entry} sl=${ctx.sl ?? '?'} tp=${ctx.tp ?? '?'} qty=${ctx.qty}`);
+  await writeState();
+  return true;
+}
+
 async function reconcileClosedPosition() {
   if (!positionContext || !positionContext.posId) return;
   const ps = await getOpenPositions();
@@ -858,10 +895,13 @@ async function reconcileClosedPosition() {
   const holdMs = Date.now() - filledAt;
   const windowsCrossed = Math.floor(Date.now() / (8 * 3600 * 1000)) - Math.floor(filledAt / (8 * 3600 * 1000));
 
-  const stopDist = Math.abs(ctx.entry - ctx.sl);
+  const stopDist = Number.isFinite(ctx.sl) && ctx.sl > 0
+    ? Math.abs(ctx.entry - ctx.sl) : 0;
   const rMultiple = stopDist > 0 ? (pnlPriceMove / stopDist) : 0;
   const outcome = pnlUsd > 0.001 ? 'win' : pnlUsd < -0.001 ? 'loss' : 'be';
-  log(`[close] ${ctx.symbol} ${ctx.dir} fill=${fillPx} pnl=$${pnlUsd.toFixed(4)} r=${rMultiple.toFixed(2)}R outcome=${outcome}`);
+  const isOrphan = ctx.source === 'manual-orphan';
+  const tag = isOrphan ? 'close-manual' : 'close';
+  log(`[${tag}] ${ctx.symbol} ${ctx.dir} fill=${fillPx} pnl=$${pnlUsd.toFixed(4)} r=${rMultiple.toFixed(2)}R outcome=${outcome}`);
   notify(fmtCloseAlert({ symbol: ctx.symbol, dir: ctx.dir, outcome, rMultiple, realizedUsd: pnlUsd, holdMs }));
 
   try {
@@ -894,23 +934,31 @@ async function reconcileClosedPosition() {
       realizedUsd: pnlUsd,
       rMultiple,
       fees,
-      grade: ctx.tier || 'auto',
+      grade: ctx.tier || (isOrphan ? 'manual' : 'auto'),
       bias: ctx.htfDir || null,
       session: ctx.session || null,
       fvgBodyPct: ctx.fvgBodyPct,
       distPct: ctx.distPct,
       confluences,
-      analysis,
+      analysis: isOrphan
+        ? `Manual fire reconciled by the bot — entry/SL/TP read from MEXC position + plan orders. Outcome captured for learning; the bot did not place this trade.`
+        : analysis,
       accounting: {
         grossUsd, feeUsdOpen: feeOpen, feeUsdClose: feeClose, fundingUsd: 0,
         windowsCrossed, holdMs, netUsd: pnlUsd,
       },
       orderId: ctx.orderId,
-      notes: 'AZC autonomous trader · 5m FVG retest · POST_ONLY maker · isolated 10x.',
-    }, LEARN_ROOT);
+      notes: isOrphan
+        ? 'Manual fire (Force Fire / Stage @ FVG / direct MEXC). Orphan-adopted by AZC trader for post-mortem only — excluded from auto-drift gates.'
+        : 'AZC autonomous trader · 5m FVG retest · POST_ONLY maker · isolated 10x.',
+    }, isOrphan ? path.join(LEARN_ROOT, 'manual') : LEARN_ROOT);
   } catch (e) {
     log('[learn-write-fail]', e.message);
   }
+  // Manual orphan trades stay out of the bot's drift gates by design —
+  // user-discretion fires would otherwise distort the auto-strategy
+  // expectancy and the INSIGHTS roll-up.
+  if (isOrphan) return;
   // Refresh LONG/SHORT live expectancy now that the post-mortem just landed.
   // Side gate reacts on the next fire-decision cycle.
   await recomputeSideStatus();
@@ -1039,7 +1087,9 @@ while (true) {
       // killed ~6pp of win rate by closing trades minutes before they
       // would have hit TP. Longer caps (180m+) showed diminishing
       // returns and started crossing funding windows more often.
-      if (positionContext.filledAt && (Date.now() - positionContext.filledAt) > MAX_HOLD_MS) {
+      // Orphans are user-owned — never force-close them.
+      if (positionContext.source !== 'manual-orphan'
+          && positionContext.filledAt && (Date.now() - positionContext.filledAt) > MAX_HOLD_MS) {
         log(`[max-hold] ${positionContext.symbol} held ${Math.round((Date.now()-positionContext.filledAt)/1000/60)}m — closing`);
         try { await panicCloseLong(positionContext); } catch (e) { log('[max-hold-close-err]', e.message); }
       }
@@ -1049,27 +1099,34 @@ while (true) {
       await watchPendingOrder();
     }
     if (!pendingOrder && !positionContext) {
-      maybeRollDay();
-      const r = await tryFire();   // always runs scanAllSymbols inside
-      if (r.skip && r.skip !== 'no-candidates') {
-        log(`[skip] ${r.skip}${r.detail ? ' · ' + r.detail : ''}`);
+      // Pick up Force Fire / Stage @ FVG / direct exchange clicks so the
+      // close path writes a post-mortem to trade-learnings/manual/. When
+      // adoption happens, skip the scan — the orphan is now the active
+      // position and the next cycle handles monitoring + close.
+      const adopted = await tryAdoptOrphan();
+      if (!adopted) {
+        maybeRollDay();
+        const r = await tryFire();   // always runs scanAllSymbols inside
+        if (r.skip && r.skip !== 'no-candidates') {
+          log(`[skip] ${r.skip}${r.detail ? ' · ' + r.detail : ''}`);
+        }
+        // Persist the top-level fire decision so the dashboard can show
+        // "at 11:11 fire vetoed by side-gate: LONG -0.384R/trade" instead
+        // of just the latest scan snapshot. Best-effort — disk failures
+        // never break the trader loop.
+        try {
+          await appendScanEvent(EVENTS_FILE, {
+            ts: Date.now(),
+            cycle: cycleCount,
+            kind: 'decision',
+            action: r.fired ? 'fire' : 'skip',
+            vetoed_by: r.fired ? null : (r.skip || 'unknown'),
+            reason: r.detail || null,
+            symbol: r.symbol || null,
+            ...(r.fired ? { orderId: r.orderId, entry: r.entry, sl: r.sl, tp: r.tp } : {}),
+          });
+        } catch (e) { log('[decision-event-err]', e.message); }
       }
-      // Persist the top-level fire decision so the dashboard can show
-      // "at 11:11 fire vetoed by side-gate: LONG -0.384R/trade" instead
-      // of just the latest scan snapshot. Best-effort — disk failures
-      // never break the trader loop.
-      try {
-        await appendScanEvent(EVENTS_FILE, {
-          ts: Date.now(),
-          cycle: cycleCount,
-          kind: 'decision',
-          action: r.fired ? 'fire' : 'skip',
-          vetoed_by: r.fired ? null : (r.skip || 'unknown'),
-          reason: r.detail || null,
-          symbol: r.symbol || null,
-          ...(r.fired ? { orderId: r.orderId, entry: r.entry, sl: r.sl, tp: r.tp } : {}),
-        });
-      } catch (e) { log('[decision-event-err]', e.message); }
     } else if (pendingOrder || positionContext) {
       // Keep the dashboard scan feed alive even when bot can't fire.
       try { await scanAllSymbols(); } catch (e) {}
