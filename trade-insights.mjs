@@ -34,6 +34,32 @@ export function splitPostMortemSentences(text) {
     );
 }
 
+// Pulls the "## Sentiment (at fire)" block written by trade-learnings.mjs
+// and parses it back into { label, source, agree, shadowWouldSkip } or
+// null if the section is absent / malformed. Markdown is the canonical
+// store: the post-mortem file on disk is what writeInsightsFile reads.
+export function extractSentimentMeta(body) {
+  if (!body || typeof body !== 'string') return null;
+  const m = body.match(/## Sentiment \(at fire\)\s*\n([\s\S]*?)(?:\n## |\n*$)/);
+  if (!m) return null;
+  const block = m[1];
+  const pickLine = (re) => {
+    const mm = block.match(re);
+    return mm ? mm[1].trim().toLowerCase() : null;
+  };
+  const label  = pickLine(/^- label:\s*([^\n]+)/m);
+  const source = pickLine(/^- source:\s*([^\n]+)/m);
+  const agreeS = pickLine(/^- agree:\s*([^\n]+)/m);
+  const shadowFlag = /- shadow gate would have vetoed/i.test(block);
+  if (!label) return null;
+  return {
+    label,
+    source: source && source !== '—' ? source : null,
+    agree: agreeS === 'yes',
+    shadowWouldSkip: shadowFlag,
+  };
+}
+
 // Extract the "## Post-mortem" section body from a learning file.
 export function extractPostMortemBlock(body) {
   if (!body || typeof body !== 'string') return '';
@@ -137,6 +163,7 @@ export function buildInsights({ trades, files, now = Date.now(), sinceTs }) {
     all, last24h, last7d,
     edges, leaks,
     fvgBodyBins,
+    trades: sample,
   };
 }
 
@@ -165,6 +192,26 @@ function topGroup(bag, label) {
   const fmt = (r) => `${r.key.padEnd(14)} n=${String(r.n).padStart(3)} W=${String(r.w).padStart(2)} L=${String(r.l).padStart(2)} expR=${fmtR(r.expR).padStart(7)} netR=${fmtR(r.netR).padStart(8)}`;
   const lines = [`### ${label}`, '```', ...rows.map(fmt), '```'];
   return lines.join('\n');
+}
+
+export function formatShadowCohortBlock(trades) {
+  const withSent = (trades || []).filter((t) => t?.sentiment && typeof t.sentiment === 'object');
+  if (!withSent.length) return '';
+  const wouldVeto = withSent.filter((t) => t.sentiment.shadowWouldSkip);
+  const rest      = withSent.filter((t) => !t.sentiment.shadowWouldSkip);
+  const fmtCohort = (label, arr) => {
+    if (!arr.length) return `${label.padEnd(12)} n=  0`;
+    const sum = arr.reduce((s, t) => s + (Number(t.rMultiple) || 0), 0);
+    const exp = (sum / arr.length).toFixed(3);
+    return `${label.padEnd(12)} n=${String(arr.length).padStart(3)}  expR= ${exp}R  netR=  ${sum.toFixed(2)}R`;
+  };
+  return [
+    '### Shadow gate — would-veto outcomes',
+    '```',
+    fmtCohort('would-veto', wouldVeto),
+    fmtCohort('rest',       rest),
+    '```',
+  ].join('\n');
 }
 
 export function formatInsightsMarkdown(insights) {
@@ -221,6 +268,12 @@ export function formatInsightsMarkdown(insights) {
   }
   lines.push('');
 
+  const shadowBlock = formatShadowCohortBlock(insights.trades || []);
+  if (shadowBlock) {
+    lines.push(shadowBlock);
+    lines.push('');
+  }
+
   return lines.join('\n');
 }
 
@@ -245,6 +298,11 @@ export async function writeInsightsFile(learnRoot, opts = {}) {
       if (!trade) continue;
       files.push({ trade, body });
     }
+  }
+  // Stitch the parsed sentiment block onto each trade so buildInsights
+  // can aggregate the shadow cohort.
+  for (const { trade, body } of files) {
+    trade.sentiment = extractSentimentMeta(body);
   }
   const insights = buildInsights({ trades, files, now, sinceTs });
   const md = formatInsightsMarkdown(insights);
