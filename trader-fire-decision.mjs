@@ -21,6 +21,7 @@ export function decideFireAction({
   maxOpenPositions, // number
   sideStatus,        // { long: {status, reason}, short: {status, reason} }
   sessionStatus,     // { asia: {status, reason}, london: {...}, ... }
+  symbolSideStatus = null, // { "SOL_USDT:long": {status, reason}, ... }
   currentSession,    // 'asia' | 'london' | 'ny-am' | 'late-ny' | 'off'
   riskTiers,         // { default, top2, best }
   sentimentSnapshot = null,
@@ -32,10 +33,25 @@ export function decideFireAction({
     return { action: 'skip', skip: 'no-candidates' };
   }
 
+  // Symbol-side gate filters candidates BEFORE pick. Unlike side/session
+  // (which gate the global top-1 and skip the whole cycle on block),
+  // symbol-side exists precisely to let a healthy XRP:short fire when
+  // SOL:short is bleeding. Missing keys fail-open.
+  const symSideKey = c => `${c.symbol}:${c.fvg.dir === 'bull' ? 'long' : 'short'}`;
+  const surviving = symbolSideStatus
+    ? candidates.filter(c => symbolSideStatus[symSideKey(c)]?.status !== 'blocked')
+    : candidates;
+  if (!surviving.length) {
+    return {
+      action: 'skip', skip: 'symbol-side-blocked-all',
+      detail: `${candidates.length} candidate(s) blocked by symbol-side gate`,
+    };
+  }
+
   // Closest to FVG mid wins. Stable sort by distPct ascending so ties
   // preserve scan order — matters when distPct rounds to the same float
   // across two symbols.
-  const sorted = [...candidates].sort((a, b) => a.distPct - b.distPct);
+  const sorted = [...surviving].sort((a, b) => a.distPct - b.distPct);
   const pick = sorted[0];
 
   const sideKey = pick.fvg.dir === 'bull' ? 'long' : 'short';
@@ -92,8 +108,8 @@ export function decideFireAction({
                     : tier === 'top2' ? riskTiers.top2
                     :                   riskTiers.default;
 
-  // Drift-gate risk downshifts compound multiplicatively — both side
-  // and session downshifted quarters the per-trade risk.
+  // Drift-gate risk downshifts compound multiplicatively — side, session,
+  // and symbol-side all downshifted eighths the per-trade risk.
   let riskPct = baseRiskPct;
   const downshifts = [];
   if (sideState?.status === 'downshifted') {
@@ -103,6 +119,11 @@ export function decideFireAction({
   if (sessionState?.status === 'downshifted') {
     riskPct *= 0.5;
     downshifts.push({ source: 'session', key: currentSession, reason: sessionState.reason });
+  }
+  const symSideState = symbolSideStatus?.[symSideKey(pick)];
+  if (symSideState?.status === 'downshifted') {
+    riskPct *= 0.5;
+    downshifts.push({ source: 'symbol-side', key: symSideKey(pick), reason: symSideState.reason });
   }
 
   return {

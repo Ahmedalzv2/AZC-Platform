@@ -303,3 +303,106 @@ describe('decideFireAction — sentiment gate, live mode', () => {
     assert.equal(r.skip, 'side-blocked');
   });
 });
+
+describe('decideFireAction — per-symbol-side gate', () => {
+  it('omitted symbolSideStatus is a no-op (fail-open)', () => {
+    const r = decideFireAction(baseInput());
+    assert.equal(r.action, 'fire');
+    assert.deepEqual(r.downshifts, []);
+  });
+
+  it('blocked symbol-side filters that candidate out and the next survivor wins', () => {
+    const r = decideFireAction(baseInput({
+      candidates: [
+        cand('SOL_USDT', 'bear', 0.0001),   // closest, but blocked below
+        cand('XRP_USDT', 'bear', 0.0002),
+      ],
+      symbolSideStatus: {
+        'SOL_USDT:short': { status: 'blocked', reason: 'live -0.40R/trade after 12 trades' },
+        'XRP_USDT:short': { status: 'enabled', reason: '+0.20R/trade over 14' },
+      },
+    }));
+    assert.equal(r.action, 'fire');
+    assert.equal(r.pick.symbol, 'XRP_USDT');
+    assert.equal(r.candidateCount, 1, 'blocked candidate is removed from the surviving count');
+  });
+
+  it('all candidates blocked by symbol-side → skip symbol-side-blocked-all', () => {
+    const r = decideFireAction(baseInput({
+      candidates: [
+        cand('SOL_USDT', 'bear', 0.0001),
+        cand('XRP_USDT', 'bear', 0.0002),
+      ],
+      symbolSideStatus: {
+        'SOL_USDT:short': { status: 'blocked', reason: 'live -0.40R after 12' },
+        'XRP_USDT:short': { status: 'blocked', reason: 'live -0.50R after 11' },
+      },
+    }));
+    assert.equal(r.action, 'skip');
+    assert.equal(r.skip, 'symbol-side-blocked-all');
+    assert.match(r.detail, /2 candidate/);
+  });
+
+  it('downshifted symbol-side halves risk and records source=symbol-side', () => {
+    const r = decideFireAction(baseInput({
+      symbolSideStatus: {
+        'SOL_USDT:long':  { status: 'downshifted', reason: 'live -0.12R/trade after 12 — halving risk' },
+        'SOL_USDT:short': { status: 'enabled',     reason: '+0.20R/trade over 14' },
+      },
+    }));
+    assert.equal(r.action, 'fire');
+    assert.equal(r.riskPct, RISK.top2 * 0.5);
+    assert.equal(r.downshifts.length, 1);
+    assert.equal(r.downshifts[0].source, 'symbol-side');
+    assert.equal(r.downshifts[0].key, 'SOL_USDT:long');
+  });
+
+  it('compound downshift: side + session + symbol-side → eighths risk', () => {
+    const r = decideFireAction(baseInput({
+      sideStatus: {
+        long:  { status: 'downshifted', reason: 'side reason' },
+        short: enabled('SHORT'),
+      },
+      sessionStatus: {
+        ...baseInput().sessionStatus,
+        london: { status: 'downshifted', reason: 'session reason' },
+      },
+      symbolSideStatus: {
+        'SOL_USDT:long': { status: 'downshifted', reason: 'symbol-side reason' },
+      },
+    }));
+    assert.equal(r.riskPct, RISK.top2 * 0.5 * 0.5 * 0.5);
+    assert.equal(r.downshifts.length, 3);
+    assert.ok(r.downshifts.some(d => d.source === 'symbol-side'));
+  });
+
+  it('missing key in symbolSideStatus fails open (treated as enabled)', () => {
+    const r = decideFireAction(baseInput({
+      symbolSideStatus: {
+        'XRP_USDT:long': { status: 'blocked', reason: 'unrelated' },
+        // SOL_USDT:long intentionally missing
+      },
+    }));
+    assert.equal(r.action, 'fire');
+    assert.deepEqual(r.downshifts, []);
+  });
+
+  it('symbol-side filter runs before side-blocked check (so a blocked side does not mask a survivor)', () => {
+    // SOL:short blocked by symbol-side, XRP:short survives. Even if a
+    // hypothetical global SHORT side state were degraded later we still
+    // need the survivor to be evaluated — verify by giving sideStatus
+    // an enabled SHORT and confirming we fire on XRP rather than skipping.
+    const r = decideFireAction(baseInput({
+      candidates: [
+        cand('SOL_USDT', 'bear', 0.0001),
+        cand('XRP_USDT', 'bear', 0.0002),
+      ],
+      sideStatus: { long: enabled('LONG'), short: enabled('SHORT') },
+      symbolSideStatus: {
+        'SOL_USDT:short': { status: 'blocked', reason: 'SOL-short bleeding' },
+      },
+    }));
+    assert.equal(r.action, 'fire');
+    assert.equal(r.pick.symbol, 'XRP_USDT');
+  });
+});

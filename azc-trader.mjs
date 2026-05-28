@@ -171,6 +171,11 @@ let sideStatus = {
 // (npm run eval:bless) keeps the gate's expectations honest. 24/7
 // firing remains the default; this only acts after min-sample drift.
 let sessionStatus = {};
+// Per-symbol-side live drift — keyed "SYMBOL:long" / "SYMBOL:short".
+// Lets a healthy XRP:short keep firing while SOL:short downshifts or
+// blocks. Filtering happens at candidate-list level inside
+// decideFireAction, so a blocked combo never wins over a healthy peer.
+let symbolSideStatus = {};
 
 function nextUtcMidnight() {
   const d = new Date();
@@ -283,6 +288,28 @@ async function recomputeSideStatus() {
     }
   }
   sessionStatus = nextSessionStatus;
+
+  // Same logic, keyed by "SYMBOL:long" / "SYMBOL:short". Seed every
+  // configured SYMBOL × side pair so the dashboard has a stable shape
+  // before the first trade lands.
+  const nextSymbolSideStatus = {};
+  for (const sym of SYMBOLS) {
+    for (const sd of ['long', 'short']) {
+      const group = trades.filter(t =>
+        String(t.symbol) === sym && String(t.side).toUpperCase() === sd.toUpperCase());
+      nextSymbolSideStatus[`${sym}:${sd}`] = decideGate(summarise(group), GATE_THRESHOLDS);
+    }
+  }
+  for (const [k, state] of Object.entries(nextSymbolSideStatus)) {
+    const prev = symbolSideStatus[k]?.status;
+    if (prev !== state.status) {
+      log(`[symbol-side-gate] ${k}: ${prev || '(new)'} → ${state.status} (${state.reason})`);
+      if (prev) {
+        notify(fmtDriftAlert({ gate: 'symbol-side', key: k, fromStatus: prev, toStatus: state.status, reason: state.reason }));
+      }
+    }
+  }
+  symbolSideStatus = nextSymbolSideStatus;
 }
 
 async function writeState(extra = {}) {
@@ -298,6 +325,7 @@ async function writeState(extra = {}) {
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     sideStatus,
     sessionStatus,
+    symbolSideStatus,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
     pendingOrder,
     positionContext: positionContext ? { symbol: positionContext.symbol, dir: positionContext.dir, posId: positionContext.posId, entry: positionContext.entry, sl: positionContext.sl, tp: positionContext.tp, sentiment: positionContext.sentiment || null } : null,
@@ -544,6 +572,7 @@ async function tryFire() {
     maxOpenPositions: MAX_OPEN_POSITIONS,
     sideStatus,
     sessionStatus,
+    symbolSideStatus,
     currentSession: currentKillzoneName() || 'off',
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     sentimentSnapshot,
@@ -568,6 +597,8 @@ async function tryFire() {
   for (const d of downshifts) {
     if (d.source === 'side') {
       log(`[side-downshift] ${d.key.toUpperCase()} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
+    } else if (d.source === 'symbol-side') {
+      log(`[symbol-side-downshift] ${d.key} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
     } else {
       log(`[session-downshift] ${d.key} live drift → halving risk to ${(riskPct*100).toFixed(2)}% (${d.reason})`);
     }
@@ -944,6 +975,9 @@ await recomputeSideStatus();
 log(`[side-gate-boot] LONG=${sideStatus.long.status} (${sideStatus.long.reason}); SHORT=${sideStatus.short.status} (${sideStatus.short.reason})`);
 for (const [label, state] of Object.entries(sessionStatus)) {
   log(`[session-gate-boot] ${label}=${state.status} (${state.reason})`);
+}
+for (const [k, state] of Object.entries(symbolSideStatus)) {
+  log(`[symbol-side-gate-boot] ${k}=${state.status} (${state.reason})`);
 }
 
 // If the stop flag is set at startup, refuse to launch — operator must
