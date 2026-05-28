@@ -32,6 +32,7 @@ import { sendTelegram, fmtFireAlert, fmtCloseAlert, fmtDriftAlert } from './trad
 import { sizeTradeByRiskAndMargin } from './trader-sizing.mjs';
 import { shouldRefreshWallet } from './trader-wallet.mjs';
 import { buildOrphanContext } from './trader-orphan.mjs';
+import { decideRestore } from './trader-restore.mjs';
 
 async function notify(text) {
   // Fire-and-forget — never let a Telegram failure interrupt the loop.
@@ -1056,21 +1057,39 @@ try {
     for (const [sym, ts] of Object.entries(r.cooldownUntil)) cooldownUntil.set(sym, ts);
     log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} cooldowns=${cooldownUntil.size} sentiment-skips=${sentimentShadowSkips24h}/${sentimentLiveSkips24h}`);
 
-    if (r.positionContext?.posId) {
-      // Verify the exchange still holds the position before adopting the
-      // stored context — otherwise we'd track a ghost and write a fake
-      // post-mortem the next time the close path runs.
-      try {
-        const ps = await getOpenPositions();
-        const stillOpen = ps.find(p => p.positionId === r.positionContext.posId);
-        if (stillOpen) {
-          positionContext = r.positionContext;
+    // Reconcile persisted trade state against the live exchange. Covers both
+    // a fully-open position (posId known) and the maker window where an order
+    // could have filled or stayed resting while the trader was down.
+    try {
+      const [openPositions, openOrders] = await Promise.all([
+        getOpenPositions(),
+        mexcSigned({ path: '/api/v1/private/order/list/open_orders', method: 'GET' })
+          .then(x => (Array.isArray(x.json?.data) ? x.json.data : []))
+          .catch(() => []),
+      ]);
+      const d = decideRestore({ persisted: r, openPositions, openOrders, now: Date.now() });
+      switch (d.kind) {
+        case 'position':
+          positionContext = d.positionContext;
           log(`[restore-position] ${positionContext.symbol} ${positionContext.dir} pos=${positionContext.posId} entry=${positionContext.entry} sl=${positionContext.sl} tp=${positionContext.tp}`);
-        } else {
-          log(`[restore-position-gone] persisted pos=${r.positionContext.posId} ${r.positionContext.symbol} no longer at MEXC — dropping`);
-        }
-      } catch (e) { log('[restore-position-fail]', e.message); }
-    }
+          break;
+        case 'position-gone':
+          log(`[restore-position-gone] persisted pos=${d.posId} ${d.symbol} no longer at MEXC — dropping`);
+          break;
+        case 'pending-filled':
+          positionContext = d.positionContext;
+          log(`[restore-pending-filled] ${positionContext.symbol} maker filled during downtime — adopting as bot position pos=${positionContext.posId} entry=${positionContext.entry}`);
+          break;
+        case 'pending-resting':
+          pendingOrder = d.pendingOrder;
+          positionContext = d.positionContext;
+          log(`[restore-pending] ${pendingOrder.symbol} maker #${pendingOrder.orderId} still resting — resuming watch (expires ${new Date(pendingOrder.expiresAt).toISOString()})`);
+          break;
+        case 'pending-gone':
+          if (r.pendingOrder) log('[restore-pending-gone] persisted pending order absent at MEXC and no position — dropping');
+          break;
+      }
+    } catch (e) { log('[restore-position-fail]', e.message); }
   }
 } catch (e) { log('[restore-err]', e.message); }
 
@@ -1106,6 +1125,10 @@ try {
   if (open.length) {
     log(`[startup-cleanup] ${open.length} stale open order(s) — cancelling`);
     for (const o of open) {
+      if (pendingOrder && String(o.orderId) === String(pendingOrder.orderId)) {
+        log(`[startup-cleanup] keeping restored pending order ${o.orderId} (${o.symbol})`);
+        continue;
+      }
       try {
         const c = await cancelOrder(o.orderId);
         log(`[startup-cleanup] cancel ${o.symbol} #${o.orderId} → ${JSON.stringify(c.json||{}).slice(0,120)}`);
