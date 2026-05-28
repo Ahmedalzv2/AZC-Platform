@@ -68,6 +68,16 @@ const MAX_HOLD_MS         = (Number(args['max-hold'] ?? (CONFIG.MAX_HOLD_MS / 60
 // Live trader does NOT gate by killzone (24/7 firing). Use --killzone to
 // reintroduce the gate; --no-killzone is the explicit production default.
 const KILLZONES_ENABLED   = args['killzone'] === true || args['killzone'] === 'true';
+// Per-session skiplist mirrors live trader's SKIP_SESSIONS. Production
+// default is ['london'] (365d expR ~0); pass --skip-sessions=none to
+// disable for a clean comparison, --skip-sessions=london,asia etc. to
+// model other configs.
+const SKIP_SESSIONS_ARG = args['skip-sessions'];
+const SKIP_SESSIONS = (() => {
+  if (SKIP_SESSIONS_ARG === 'none' || SKIP_SESSIONS_ARG === '') return [];
+  if (typeof SKIP_SESSIONS_ARG === 'string') return SKIP_SESSIONS_ARG.split(',').map(s => s.trim()).filter(Boolean);
+  return CONFIG.SKIP_SESSIONS || [];
+})();
 // Dynamic fee model — fees are computed PER TRADE from the actual balance,
 // risk-sized qty, notional, and per-symbol MEXC fee rates. No more
 // hardcoded 0.24%-of-everything assumption.
@@ -277,6 +287,7 @@ function backtestAsset(symbol, bars5) {
     const b = bars5[i];
     if (b.t < cooldownUntil) { i++; continue; }
     if (KILLZONES_ENABLED && !inKillzone(b.t))    { i++; continue; }
+    if (SKIP_SESSIONS.length && SKIP_SESSIONS.includes(sessionAt(b.t))) { i++; continue; }
     const cand = buildCandidate(bars5, htfClosedAt(b.t), i, b.c);
     if (cand.skip) { i++; continue; }
     // Live POST_ONLY-at-FVG-mid with 180s TTL — see checkPostOnlyTtlFill
@@ -408,7 +419,7 @@ if (!files.length) {
 const PROD_BANNER = [
   `AZC trader backtest · ${onlyDays || 'all'}d 5m fixtures · BALANCE=$${BALANCE} risk=${(RISK_PCT*100).toFixed(1)}% lev=${LEVERAGE}x`,
   `Production-matching defaults imported from trader-config.mjs:`,
-  `  RR=${RR}  MAX_HOLD=${MAX_HOLD_MS/60000}m  COOLDOWN=${COOLDOWN_MS/60000}m  killzone=${KILLZONES_ENABLED}  side=${SIDE_FILTER}`,
+  `  RR=${RR}  MAX_HOLD=${MAX_HOLD_MS/60000}m  COOLDOWN=${COOLDOWN_MS/60000}m  killzone=${KILLZONES_ENABLED}  side=${SIDE_FILTER}  skip-sessions=[${SKIP_SESSIONS.join(',') || 'none'}]`,
   `  HTF=${HTF_MIN}m SMA(${HTF_SMA_LEN})  MIN_FVG_BODY=${(MIN_FVG_BODY_PCT*100).toFixed(2)}%  MIN_STOP=${(MIN_STOP_PCT*100).toFixed(2)}%  TOUCH=${(TOUCH_TOLERANCE_PCT*100).toFixed(2)}%`,
   `  fees=${FEES_ENABLED}  min-fee=$${MIN_FEE_USD}  funding=${(FUNDING_PCT_PER_WIN*100).toFixed(3)}%/8h`,
 ].join('\n');
@@ -498,7 +509,7 @@ if (args.json) {
     (bySession[k] ||= []).push(t);
   }
   const summary = {
-    config: { BALANCE, RR, MAX_HOLD_MS, COOLDOWN_MS, HTF_SMA_LEN, FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT, MIN_FVG_BODY_PCT, MIN_STOP_PCT, KILLZONES_ENABLED, SIDE_FILTER, FEES_ENABLED, RISK_PCT },
+    config: { BALANCE, RR, MAX_HOLD_MS, COOLDOWN_MS, HTF_SMA_LEN, FVG_BUFFER_PCT, TOUCH_TOLERANCE_PCT, MIN_FVG_BODY_PCT, MIN_STOP_PCT, KILLZONES_ENABLED, SKIP_SESSIONS, SIDE_FILTER, FEES_ENABLED, RISK_PCT },
     aggregate: { trades: agg.n, wins: agg.wins, losses: agg.losses, bes: agg.bes, winRate: aggWin, expectancyR: aggExpR, totalR: agg.totalR, netUsd: agg.totalUsd, totalFees: agg.totalFees },
     sides: { long: sideSum(longTrades), short: sideSum(shortTrades) },
     bySession: Object.fromEntries(Object.entries(bySession).map(([k, v]) => [k, sideSum(v)])),

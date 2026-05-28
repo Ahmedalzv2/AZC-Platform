@@ -49,6 +49,7 @@ import {
   RISK_PCT_DEFAULT, RISK_PCT_TOP_2, RISK_PCT_BEST,
   SIDE_GATE_MIN_SAMPLE, SIDE_GATE_DOWNSHIFT_R, SIDE_GATE_BLOCK_R,
   SIDE_GATE_SAMPLE_SINCE_TS,
+  SKIP_SESSIONS,
 } from './trader-config.mjs';
 
 const SIGNAL_CONFIG = {
@@ -614,6 +615,7 @@ async function tryFire() {
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     sentimentSnapshot,
     sentimentGateMode: SENTIMENT_GATE_MODE,
+    skipSessions: SKIP_SESSIONS,
   });
 
   if (decision.skip === 'sentiment-disagree') {

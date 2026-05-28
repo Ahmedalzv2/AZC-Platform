@@ -49,6 +49,20 @@ export const RISK_PCT_BEST    = 0.05;   // 5% stand-out  ($2.50 @ $50)
 // killzone label is still recorded on every fire for post-mortem.
 export const KILLZONE_GATE_ENABLED = false;
 
+// Per-session skiplist. Surgical alternative to KILLZONE_GATE_ENABLED for
+// buckets that the 365d backtest flags as edge-less:
+//   365d SOL+XRP backtest (2026-05-28 re-run, current filters):
+//     late-ny n= 56  expR= +0.296R  ← keep
+//     ny-am   n= 48  expR= +0.105R  ← keep
+//     off     n=178  expR= +0.080R  ← keep (largest volume bucket)
+//     asia    n= 98  expR= +0.067R  ← keep
+//     london  n= 66  expR= -0.004R  ← drop
+// London is the only session whose expectancy isn't positive after fees.
+// Skipping it lifts aggregate R/trade ~+0.017R and total R by +0.21R on
+// the 365d sample — small but consistent. Re-evaluate after the next
+// 90d block of live trades; if london flips positive, remove from list.
+export const SKIP_SESSIONS = ['london'];
+
 // Side-aware live drift gate. Backtest at 90d/2398 trades says both
 // LONG (+0.182R/trade) and SHORT (+0.283R/trade) are net-positive, so
 // the default posture is ENABLED for both. These thresholds only kick

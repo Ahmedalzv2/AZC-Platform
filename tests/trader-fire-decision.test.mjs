@@ -77,6 +77,30 @@ describe('decideFireAction — skip paths', () => {
     }));
     assert.equal(r.skip, 'side-blocked');
   });
+
+  it('session-skiplist short-circuits before pick/side/session gates', () => {
+    const r = decideFireAction(baseInput({
+      currentSession: 'london',
+      skipSessions: ['london'],
+    }));
+    assert.equal(r.skip, 'session-skiplist');
+    assert.match(r.detail, /london session is in SKIP_SESSIONS/);
+  });
+
+  it('session-skiplist is a no-op when current session is not in the list', () => {
+    const r = decideFireAction(baseInput({
+      currentSession: 'ny-am',
+      skipSessions: ['london'],
+    }));
+    assert.notEqual(r.skip, 'session-skiplist');
+  });
+
+  it('empty/missing skipSessions defaults to no-op', () => {
+    const r1 = decideFireAction(baseInput({ currentSession: 'london', skipSessions: [] }));
+    assert.notEqual(r1.skip, 'session-skiplist');
+    const r2 = decideFireAction(baseInput({ currentSession: 'london', skipSessions: undefined }));
+    assert.notEqual(r2.skip, 'session-skiplist');
+  });
 });
 
 describe('decideFireAction — happy path', () => {
