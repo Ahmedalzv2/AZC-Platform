@@ -33,8 +33,19 @@ if (!RELAY_TOKEN) {
 // and the dashboard falls back to its existing worker+browser-sign path.
 const MEXC_API_KEY    = String(process.env.MEXC_API_KEY    || '').trim();
 const MEXC_API_SECRET = String(process.env.MEXC_API_SECRET || '').trim();
+// User's TradingView auth_token (cookie). When set, every TV WS handshake the
+// relay opens identifies as that user and pulls their entitled real-time
+// feeds (e.g. paid CME/FPMARKETS data) instead of the anonymous-tier feed,
+// which can be 10-15min delayed for futures. Get it from a logged-in
+// tradingview.com session: DevTools → Application → Cookies → auth_token.
+const TV_AUTH_TOKEN = String(process.env.TV_AUTH_TOKEN || 'unauthorized_user_token').trim();
 if (!MEXC_API_KEY || !MEXC_API_SECRET) {
   console.warn('[relay] MEXC_API_KEY/SECRET unset — /mexc/signed disabled. Browser signing still works via the Cloudflare worker.');
+}
+if (TV_AUTH_TOKEN === 'unauthorized_user_token') {
+  console.warn('[relay] TV_AUTH_TOKEN unset — TV feeds will be anonymous-tier (futures may be 10-15min delayed). Set TV_AUTH_TOKEN in relay.env to your tradingview.com auth_token cookie for real-time entitlements.');
+} else {
+  console.log('[relay] TV_AUTH_TOKEN present — TV WS will authenticate as your user (real-time feeds per your TV subscription).');
 }
 
 const mime = {
@@ -66,7 +77,7 @@ async function us100PriceWS(symbol) {
       ws.addEventListener('open', resolve, { once: true });
       ws.addEventListener('error', reject, { once: true });
     });
-    send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+    send({ m: 'set_auth_token', p: [TV_AUTH_TOKEN] });
     send({ m: 'quote_create_session', p: ['qs_n'] });
     send({ m: 'quote_set_fields', p: ['qs_n', 'lp'] });
     send({ m: 'quote_add_symbols', p: ['qs_n', symbol] });
@@ -142,7 +153,7 @@ async function tvBars(symbol, tfs, limit = 60) {
       ws.addEventListener('open', resolve, { once: true });
       ws.addEventListener('error', reject, { once: true });
     });
-    send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+    send({ m: 'set_auth_token', p: [TV_AUTH_TOKEN] });
     for (const [csid, tf] of Object.entries(sessions)) {
       send({ m: 'chart_create_session', p: [csid, ''] });
       send({ m: 'resolve_symbol', p: [csid, 'sym', '={"adjustment":"splits","symbol":"' + tvSymbol + '"}'] });
@@ -279,7 +290,7 @@ function _initUs100Stream() {
     us100Cache.wsState = 'open';
     us100Cache.wsConnectedAt = Date.now();
     _us100Retry = 0;
-    send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+    send({ m: 'set_auth_token', p: [TV_AUTH_TOKEN] });
     send({ m: 'quote_create_session', p: ['qs_persist'] });
     send({ m: 'quote_set_fields', p: ['qs_persist', 'lp'] });
     send({ m: 'quote_add_symbols', p: ['qs_persist', US100_SYMBOL] });
@@ -782,6 +793,7 @@ async function buildHealth() {
     us100Stream: {
       ok: us100Cache.wsState === 'open' && _us100PriceFreshness() < 10_000,
       wsState: us100Cache.wsState,
+      authed: TV_AUTH_TOKEN !== 'unauthorized_user_token',
       priceAgeMs: us100Cache.priceTs ? _us100PriceFreshness() : null,
       barsAgeMs: Object.fromEntries(US100_TFS.map(tf => [tf, us100Cache.barsTs[tf] ? _us100BarsFreshness(tf) : null])),
       reconnects: us100Cache.reconnectCount,
