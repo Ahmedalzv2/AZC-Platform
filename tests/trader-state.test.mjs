@@ -48,6 +48,7 @@ describe('loadTraderStateFromDisk', () => {
       dailyPnlUsd: -1.0331,
       dailyResetAt: 9_999_999,
       cooldownUntil: { SOL_USDT: 1_500_000 },
+      positionContext: null,
     });
   });
 
@@ -93,6 +94,40 @@ describe('loadTraderStateFromDisk', () => {
       dailyPnlUsd: 0,
       dailyResetAt: 9_999_999,
       cooldownUntil: {},
+      positionContext: null,
     });
+  });
+
+  test('positionContext is null when absent on disk', async () => {
+    const file = await makeStateFile({
+      dailyResetAt: 9_999_999, tradesToday: 0, dailyPnlUsd: 0, cooldownUntil: {},
+    });
+    const out = await loadTraderStateFromDisk(file, 1_000_000);
+    assert.equal(out.positionContext, null);
+  });
+
+  test('positionContext is null when posId is missing (pre-fill, cannot rehydrate)', async () => {
+    const file = await makeStateFile({
+      dailyResetAt: 9_999_999, tradesToday: 0, dailyPnlUsd: 0, cooldownUntil: {},
+      positionContext: { symbol: 'XRP_USDT', dir: 'bear', orderId: 'abc', entry: 1.3 },
+    });
+    const out = await loadTraderStateFromDisk(file, 1_000_000);
+    assert.equal(out.positionContext, null);
+  });
+
+  test('positionContext is returned as-is when posId is present', async () => {
+    const ctx = {
+      symbol: 'SOL_USDT', dir: 'bear', side: 3, entry: 80.4, sl: 80.56, tp: 80.11,
+      qty: 134, lev: 10, posId: '1395669620', orderId: '9991', openedAt: 1_000_000,
+      filledAt: 1_000_500, tier: 'top2', riskPct: 0.03, htfDir: 'bear',
+      session: 'asia', meta: { contractSize: 0.1, priceUnit: 0.01, minVol: 1 },
+      sentiment: { label: 'bear', source: 'topic', agree: true, shadowWouldSkip: false },
+    };
+    const file = await makeStateFile({
+      dailyResetAt: 9_999_999, tradesToday: 1, dailyPnlUsd: 2.5, cooldownUntil: {},
+      positionContext: ctx,
+    });
+    const out = await loadTraderStateFromDisk(file, 1_000_000);
+    assert.deepEqual(out.positionContext, ctx);
   });
 });
