@@ -191,15 +191,221 @@ async function tvBars(symbol, tfs, limit = 60) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Persistent FPMARKETS:US100 stream
+// ─────────────────────────────────────────────────────────────────────
+// One TV WS open for the lifetime of the relay, subscribed once to the
+// quote session (live lp) and one chart session per TF (live bars). Every
+// request to /us100 and /us100/bars reads the cache (~5ms) instead of
+// opening a fresh TV WS handshake (~500ms). Reconnects with exponential
+// backoff if TV drops the socket. One-shot path stays as cold-start /
+// outage fallback below.
+const US100_SYMBOL = 'FPMARKETS:US100';
+const US100_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'];
+const us100Cache = {
+  price: 0,
+  priceTs: 0,
+  bars: {},            // tf -> [{t,o,h,l,c,v}, ...]
+  barsTs: {},          // tf -> ms when last updated
+  wsState: 'init',     // init|connecting|open|closed
+  wsConnectedAt: 0,
+  reconnectCount: 0,
+};
+let _us100Ws = null;
+let _us100Retry = 0;
+let _us100SessionMap = {};   // chart_session_id -> tf
+let _us100Buf = '';           // frame-splitter buffer across chunks
+const _us100Waiters = [];     // [{ predicate, resolve, timer }]
+
+function _us100NotifyWaiters() {
+  for (let i = _us100Waiters.length - 1; i >= 0; i--) {
+    const w = _us100Waiters[i];
+    if (w.predicate()) {
+      clearTimeout(w.timer);
+      _us100Waiters.splice(i, 1);
+      w.resolve();
+    }
+  }
+}
+
+function _us100WaitFor(predicate, timeoutMs = 3500) {
+  if (predicate()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const idx = _us100Waiters.findIndex(w => w.timer === timer);
+      if (idx >= 0) _us100Waiters.splice(idx, 1);
+      reject(new Error('us100-cache-wait-timeout'));
+    }, timeoutMs);
+    _us100Waiters.push({ predicate, resolve, timer });
+  });
+}
+
+function* _us100Frames(buf) {
+  let i = 0;
+  while (i + 3 <= buf.length) {
+    if (buf.substr(i, 3) !== '~m~') return;
+    const end = buf.indexOf('~m~', i + 3);
+    if (end === -1) return;
+    const n = parseInt(buf.substring(i + 3, end), 10);
+    if (!Number.isFinite(n)) return;
+    const start = end + 3;
+    if (start + n > buf.length) return;
+    yield { frame: buf.substring(start, start + n), nextI: start + n };
+    i = start + n;
+  }
+}
+
+function _initUs100Stream() {
+  if (us100Cache.wsState === 'connecting' || us100Cache.wsState === 'open') return;
+  us100Cache.wsState = 'connecting';
+  _us100SessionMap = {};
+  _us100Buf = '';
+  let ws;
+  try {
+    ws = new WebSocket('wss://data.tradingview.com/socket.io/websocket', {
+      headers: { 'Origin': 'https://www.tradingview.com' },
+    });
+  } catch (e) {
+    us100Cache.wsState = 'closed';
+    _scheduleUs100Reconnect();
+    return;
+  }
+  _us100Ws = ws;
+  const send = (m) => {
+    const s = JSON.stringify(m);
+    try { ws.send(`~m~${s.length}~m~${s}`); } catch {}
+  };
+  ws.addEventListener('open', () => {
+    us100Cache.wsState = 'open';
+    us100Cache.wsConnectedAt = Date.now();
+    _us100Retry = 0;
+    send({ m: 'set_auth_token', p: ['unauthorized_user_token'] });
+    send({ m: 'quote_create_session', p: ['qs_persist'] });
+    send({ m: 'quote_set_fields', p: ['qs_persist', 'lp'] });
+    send({ m: 'quote_add_symbols', p: ['qs_persist', US100_SYMBOL] });
+    for (const tf of US100_TFS) {
+      const csid = 'cs_persist_' + tf;
+      _us100SessionMap[csid] = tf;
+      send({ m: 'chart_create_session', p: [csid, ''] });
+      send({ m: 'resolve_symbol', p: [csid, 'sym_' + tf, '={"adjustment":"splits","symbol":"' + US100_SYMBOL + '"}'] });
+      send({ m: 'create_series', p: [csid, 'ser_' + tf, 's1', 'sym_' + tf, TF_RESOLUTION[tf], 60, ''] });
+    }
+  });
+  ws.addEventListener('message', (ev) => {
+    const text = typeof ev.data === 'string' ? ev.data : ev.data.toString();
+    if (text.includes('~h~')) { try { ws.send(text); } catch {} }
+    const qre = /"n":"FPMARKETS:US100"[^}]*"lp":([0-9.]+)/g;
+    let qm, lastPrice = null;
+    while ((qm = qre.exec(text)) !== null) lastPrice = Number(qm[1]);
+    if (lastPrice && lastPrice > 0) {
+      us100Cache.price = lastPrice;
+      us100Cache.priceTs = Date.now();
+    }
+    _us100Buf += text;
+    let consumed = 0;
+    for (const { frame, nextI } of _us100Frames(_us100Buf)) {
+      consumed = nextI;
+      if (!frame || frame[0] !== '{') continue;
+      let msg; try { msg = JSON.parse(frame); } catch { continue; }
+      if (!msg.m) continue;
+      const csid = msg.p && msg.p[0];
+      const tf = _us100SessionMap[csid];
+      if (!tf) continue;
+      if (msg.m === 'timescale_update') {
+        const sds = msg.p && msg.p[1];
+        if (!sds) continue;
+        let bars = null;
+        for (const k of Object.keys(sds)) {
+          if (sds[k] && Array.isArray(sds[k].s)) { bars = sds[k].s; break; }
+        }
+        if (!bars) continue;
+        us100Cache.bars[tf] = bars
+          .map(b => ({ t: Math.round((+b.v[0]) * 1000), o: +b.v[1], h: +b.v[2], l: +b.v[3], c: +b.v[4], v: +b.v[5] }))
+          .filter(k => Number.isFinite(k.c));
+        us100Cache.barsTs[tf] = Date.now();
+      } else if (msg.m === 'du') {
+        const sds = msg.p && msg.p[1];
+        if (!sds) continue;
+        let updates = null;
+        for (const k of Object.keys(sds)) {
+          if (sds[k] && Array.isArray(sds[k].s)) { updates = sds[k].s; break; }
+        }
+        if (!updates) continue;
+        const existing = us100Cache.bars[tf] || [];
+        for (const u of updates) {
+          const v = u.v;
+          if (!v) continue;
+          const newBar = { t: Math.round((+v[0]) * 1000), o: +v[1], h: +v[2], l: +v[3], c: +v[4], v: +v[5] };
+          if (!Number.isFinite(newBar.c)) continue;
+          const lastIdx = existing.length - 1;
+          if (u.i === lastIdx + 1) existing.push(newBar);
+          else if (u.i >= 0 && u.i <= lastIdx) existing[u.i] = newBar;
+        }
+        if (existing.length > 240) existing.splice(0, existing.length - 240);
+        us100Cache.bars[tf] = existing;
+        us100Cache.barsTs[tf] = Date.now();
+      }
+    }
+    _us100Buf = _us100Buf.substring(consumed);
+    // Keep the buffer bounded — runaway accumulation if TV ever sends garbage.
+    if (_us100Buf.length > 1_000_000) _us100Buf = '';
+    _us100NotifyWaiters();
+  });
+  ws.addEventListener('close', () => {
+    us100Cache.wsState = 'closed';
+    _us100Ws = null;
+    _scheduleUs100Reconnect();
+  });
+  ws.addEventListener('error', () => {
+    try { ws.close(); } catch {}
+  });
+}
+
+function _scheduleUs100Reconnect() {
+  us100Cache.reconnectCount++;
+  const delay = Math.min(30_000, 1000 * Math.pow(2, _us100Retry++));
+  setTimeout(_initUs100Stream, delay);
+}
+
+function _us100PriceFreshness() {
+  return Date.now() - us100Cache.priceTs;
+}
+function _us100BarsFreshness(tf) {
+  return Date.now() - (us100Cache.barsTs[tf] || 0);
+}
+
 async function us100Bars(tfs, limit = 60) {
-  return tvBars('FPMARKETS:US100', tfs, limit);
+  const wantTfs = (tfs || US100_TFS).filter(tf => TF_RESOLUTION[tf]);
+  const missing = wantTfs.filter(tf => !Array.isArray(us100Cache.bars[tf]) || us100Cache.bars[tf].length < 22);
+  if (missing.length) {
+    try { await _us100WaitFor(() => missing.every(tf => Array.isArray(us100Cache.bars[tf]) && us100Cache.bars[tf].length >= 22), 5000); }
+    catch { return tvBars(US100_SYMBOL, wantTfs, limit); }
+  }
+  const out = {};
+  for (const tf of wantTfs) {
+    const bars = us100Cache.bars[tf] || [];
+    out[tf] = limit > 0 ? bars.slice(-limit) : bars.slice();
+  }
+  // ts = oldest TF's last update — surfaces staleness if one chart session drops.
+  let oldestTs = Date.now();
+  for (const tf of wantTfs) {
+    const t = us100Cache.barsTs[tf] || 0;
+    if (t && t < oldestTs) oldestTs = t;
+  }
+  return { bars: out, ts: oldestTs, source: 'tv-ws-persistent:' + US100_SYMBOL, symbol: US100_SYMBOL, cached: true };
 }
 
 async function us100Price() {
-  // Priority: TV WS (FPMARKETS:US100 — matches the chart) → Yahoo NQ=F →
-  // TV scanner CME_MINI:NQ1! lp. WS is the only path that returns the
-  // exact number the chart displays.
-  const tryWS = () => us100PriceWS('FPMARKETS:US100');
+  // Fast path: persistent stream cache, fresh within 10s.
+  if (us100Cache.price > 0 && _us100PriceFreshness() < 10_000) {
+    return { price: us100Cache.price, source: 'tv-ws-persistent:' + US100_SYMBOL, ts: us100Cache.priceTs };
+  }
+  try {
+    await _us100WaitFor(() => us100Cache.price > 0 && _us100PriceFreshness() < 10_000, 3500);
+    return { price: us100Cache.price, source: 'tv-ws-persistent:' + US100_SYMBOL, ts: us100Cache.priceTs };
+  } catch { /* fall through */ }
+  // Cold-start / outage fallback: one-shot WS → Yahoo → TV scanner.
+  const tryWS = () => us100PriceWS(US100_SYMBOL);
   const tryYahoo = async () => {
     const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m', {
       headers: { 'User-Agent': 'Mozilla/5.0' },
@@ -554,6 +760,13 @@ async function buildHealth() {
     traderEvents: { ok: await fileExists(TRADER_EVENTS_FILE) },
     browserState: { ok: !browserState.stale, ...browserState },
     browserAuto: { ok: !browserAuto.stale, ...browserAuto, state: _autoState.state },
+    us100Stream: {
+      ok: us100Cache.wsState === 'open' && _us100PriceFreshness() < 10_000,
+      wsState: us100Cache.wsState,
+      priceAgeMs: us100Cache.priceTs ? _us100PriceFreshness() : null,
+      barsAgeMs: Object.fromEntries(US100_TFS.map(tf => [tf, us100Cache.barsTs[tf] ? _us100BarsFreshness(tf) : null])),
+      reconnects: us100Cache.reconnectCount,
+    },
     trader,
   };
   return {
@@ -863,4 +1076,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`ICT AutoPilot serving http://${host}:${port}/`);
   _startTgPoller();
+  _initUs100Stream();
 });
