@@ -374,11 +374,30 @@ function _us100BarsFreshness(tf) {
   return Date.now() - (us100Cache.barsTs[tf] || 0);
 }
 
+// TV only pushes qsd/du frames when there is actually a tick. During quiet
+// stretches (pre-market, holidays, low-volume minutes) a TF can sit silent
+// for tens of seconds — the cache still holds the true latest value, the
+// stream is healthy. Treat cache as authoritative whenever the WS is open
+// AND we have data; only fall back if the stream is closed or so stale it
+// looks zombie (>5 min, well past any normal quiet stretch).
+const US100_CACHE_ZOMBIE_MS = 5 * 60_000;
+function _us100PriceCacheOk() {
+  return us100Cache.wsState === 'open'
+    && us100Cache.price > 0
+    && _us100PriceFreshness() < US100_CACHE_ZOMBIE_MS;
+}
+function _us100BarsCacheOk(tf) {
+  return us100Cache.wsState === 'open'
+    && Array.isArray(us100Cache.bars[tf])
+    && us100Cache.bars[tf].length >= 22
+    && _us100BarsFreshness(tf) < US100_CACHE_ZOMBIE_MS;
+}
+
 async function us100Bars(tfs, limit = 60) {
   const wantTfs = (tfs || US100_TFS).filter(tf => TF_RESOLUTION[tf]);
-  const missing = wantTfs.filter(tf => !Array.isArray(us100Cache.bars[tf]) || us100Cache.bars[tf].length < 22);
+  const missing = wantTfs.filter(tf => !_us100BarsCacheOk(tf));
   if (missing.length) {
-    try { await _us100WaitFor(() => missing.every(tf => Array.isArray(us100Cache.bars[tf]) && us100Cache.bars[tf].length >= 22), 5000); }
+    try { await _us100WaitFor(() => missing.every(_us100BarsCacheOk), 5000); }
     catch { return tvBars(US100_SYMBOL, wantTfs, limit); }
   }
   const out = {};
@@ -396,12 +415,12 @@ async function us100Bars(tfs, limit = 60) {
 }
 
 async function us100Price() {
-  // Fast path: persistent stream cache, fresh within 10s.
-  if (us100Cache.price > 0 && _us100PriceFreshness() < 10_000) {
+  // Fast path: persistent stream cache, WS open + non-zombie.
+  if (_us100PriceCacheOk()) {
     return { price: us100Cache.price, source: 'tv-ws-persistent:' + US100_SYMBOL, ts: us100Cache.priceTs };
   }
   try {
-    await _us100WaitFor(() => us100Cache.price > 0 && _us100PriceFreshness() < 10_000, 3500);
+    await _us100WaitFor(_us100PriceCacheOk, 3500);
     return { price: us100Cache.price, source: 'tv-ws-persistent:' + US100_SYMBOL, ts: us100Cache.priceTs };
   } catch { /* fall through */ }
   // Cold-start / outage fallback: one-shot WS → Yahoo → TV scanner.
