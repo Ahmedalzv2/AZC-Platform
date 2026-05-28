@@ -27,11 +27,18 @@ export function decideFireAction({
   riskTiers,         // { default, top2, best }
   sentimentSnapshot = null,
   sentimentGateMode = 'off',
+  skipSessions = [], // backtest-derived hard skiplist — bypasses every other gate
 }) {
   if (pendingOrder)                            return { action: 'skip', skip: 'pending-order' };
   if (openPositions >= maxOpenPositions)       return { action: 'skip', skip: 'in-position' };
   if (!Array.isArray(candidates) || !candidates.length) {
     return { action: 'skip', skip: 'no-candidates' };
+  }
+  if (Array.isArray(skipSessions) && skipSessions.includes(currentSession)) {
+    return {
+      action: 'skip', skip: 'session-skiplist',
+      detail: `${currentSession} session is in SKIP_SESSIONS (365d backtest expR ~0)`,
+    };
   }
 
   // Intersection gates filter candidates BEFORE pick. Unlike side/session
