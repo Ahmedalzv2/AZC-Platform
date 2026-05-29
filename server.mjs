@@ -434,38 +434,10 @@ async function us100Price() {
     await _us100WaitFor(_us100PriceCacheOk, 3500);
     return { price: us100Cache.price, source: 'tv-ws-persistent:' + US100_SYMBOL, ts: us100Cache.priceTs };
   } catch { /* fall through */ }
-  // Cold-start / outage fallback: one-shot WS → Yahoo → TV scanner.
-  const tryWS = () => us100PriceWS(US100_SYMBOL);
-  const tryYahoo = async () => {
-    const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=1m', {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(6_000),
-    });
-    if (!r.ok) throw new Error('yahoo HTTP ' + r.status);
-    const j = await r.json();
-    const meta = j?.chart?.result?.[0]?.meta;
-    const p = Number(meta?.regularMarketPrice);
-    if (!(p > 0)) throw new Error('yahoo no price');
-    return { price: p, source: 'yahoo:NQ=F', ts: Date.now() };
-  };
-  const tryTV = async () => {
-    const r = await fetch('https://scanner.tradingview.com/global/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(6_000),
-      body: JSON.stringify({ symbols: { tickers: ['CME_MINI:NQ1!'] }, columns: ['lp'] }),
-    });
-    if (!r.ok) throw new Error('TV scanner HTTP ' + r.status);
-    const j = await r.json();
-    const p = Number(j?.data?.[0]?.d?.[0]);
-    if (!(p > 0)) throw new Error('TV scanner lp null');
-    return { price: p, source: 'tv:CME_MINI:NQ1!', ts: Date.now() };
-  };
-  try { return await tryWS(); }
-  catch (e1) {
-    try { return await tryYahoo(); }
-    catch (e2) { return await tryTV(); }
-  }
+  // Cold-start / outage fallback: one-shot WS on the SAME symbol the user
+  // trades (FPMARKETS:US100). No NQ=F / CME_MINI:NQ1! cross-feeds — those are
+  // different instruments and would desync the badge from FP Markets.
+  return await us100PriceWS(US100_SYMBOL);
 }
 
 // Telegram relay — keeps the bot token server-side so it isn't exposed in
