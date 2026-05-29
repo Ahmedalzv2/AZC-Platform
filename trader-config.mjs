@@ -27,6 +27,19 @@ export const TOUCH_TOLERANCE_PCT = 0.0008;
 export const MIN_FVG_BODY_PCT    = 0.0015;
 export const MIN_STOP_PCT        = 0.0020;
 
+// Fee-drag guard. The live MEXC tape charges ~0.075% taker on every close
+// (entry is free maker); the published "zero-fee" SOL/XRP rate is false.
+// feeDragR = entry × contractSize × takerRate / stopDistUsdPerContract — the
+// close fee as a fraction of 1R. At the 0.20% MIN_STOP_PCT above that's
+// ~0.37R per trade, which is why the backtested +0.11R edge bled out live
+// (365d all-symbol net at realistic fees: -0.34R/trade). The trader refuses
+// any fire whose modeled fee exceeds FEE_DRAG_MAX_R of risk — i.e. a
+// dynamic minimum stop tied to the real fee. 0.15R ⇒ ~0.5% effective min
+// stop. NOTE: this caps fee bleed; it does not by itself create an edge —
+// no screened config is robustly net-positive after fees (see memory).
+export const FEE_TAKER_RATE      = 0.00075;
+export const FEE_DRAG_MAX_R      = 0.15;
+
 // Graduated risk — sizes to conviction. For the $50 micro-capital lane
 // this is deliberately AGGRESSIVE experimental risk, not "tiny risk".
 // $2.50 (5%) per stand-out best candidate is real exposure on a tiny
