@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOrphanContext } from '../trader-orphan.mjs';
+import { buildOrphanContext, isReadoptBlocked } from '../trader-orphan.mjs';
 
 const SOL_POS = {
   positionId: '1395669999',
@@ -110,5 +110,42 @@ describe('buildOrphanContext — pure helper', () => {
     const ctx = buildOrphanContext({ pos: SOL_POS, planOrders: [], contractMeta: SOL_META, now });
     assert.equal(ctx.filledAt, now);
     assert.equal(ctx.openedAt, now);
+  });
+});
+
+describe('isReadoptBlocked — re-adopt guard for a reconciled-closed posId', () => {
+  // Repro for the 2026-05-28 catastrophe: MEXC open_positions flapped a
+  // closing posId in/out of the list, so every cycle re-adopted the same
+  // posId and re-booked the same loss (trades=27 pnl=-166.98 from one ~-$8 stop).
+  const now = 1_700_000_000_000;
+
+  it('does not block a posId we have never closed', () => {
+    assert.equal(isReadoptBlocked('1396470897', new Map(), now), false);
+  });
+
+  it('blocks a posId we just reconciled closed (the flap window)', () => {
+    const closed = new Map([['1396470897', now - 6_000]]);
+    assert.equal(isReadoptBlocked('1396470897', closed, now), true);
+  });
+
+  it('matches regardless of string/number posId type', () => {
+    const closed = new Map([['1396470897', now - 1_000]]);
+    assert.equal(isReadoptBlocked(1396470897, closed, now), true);
+  });
+
+  it('stops blocking once the TTL elapses (a genuinely new position reuse is implausible)', () => {
+    const closed = new Map([['1396470897', now - 3_700_000]]); // > 1h
+    assert.equal(isReadoptBlocked('1396470897', closed, now), false);
+  });
+
+  it('never blocks a different posId (a real new trade gets a fresh id)', () => {
+    const closed = new Map([['1396470897', now - 6_000]]);
+    assert.equal(isReadoptBlocked('1396999999', closed, now), false);
+  });
+
+  it('is null-safe on missing inputs', () => {
+    assert.equal(isReadoptBlocked(null, new Map(), now), false);
+    assert.equal(isReadoptBlocked('x', null, now), false);
+    assert.equal(isReadoptBlocked('x', {}, now), false);
   });
 });

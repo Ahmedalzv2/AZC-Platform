@@ -33,6 +33,7 @@ export async function loadTraderStateFromDisk(statePath, now = Date.now()) {
     dailyPnlUsd: Number.isFinite(Number(s.dailyPnlUsd)) ? Number(s.dailyPnlUsd) : 0,
     dailyResetAt,
     cooldownUntil: filterFutureCooldowns(s.cooldownUntil, now),
+    closedPosIds: filterRecentClosedPosIds(s.closedPosIds, now),
     positionContext: pickRehydratablePosition(s.positionContext),
     // Persisted on the same daily window as tradesToday/dailyPnlUsd — the
     // gate window only has meaning if it survives the systemd restarts
@@ -60,6 +61,19 @@ function filterFutureCooldowns(raw, now) {
   for (const [sym, ts] of Object.entries(raw)) {
     const t = Number(ts);
     if (Number.isFinite(t) && t > now) out[sym] = t;
+  }
+  return out;
+}
+
+// Reconciled-closed posIds, kept only while still inside the re-adopt block
+// window so a restart mid-flap doesn't re-adopt a position the previous run
+// already booked. Mirrors the 1h TTL in trader-orphan.isReadoptBlocked.
+function filterRecentClosedPosIds(raw, now, ttlMs = 3_600_000) {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const [pid, ts] of Object.entries(raw)) {
+    const t = Number(ts);
+    if (Number.isFinite(t) && (now - t) < ttlMs) out[pid] = t;
   }
   return out;
 }

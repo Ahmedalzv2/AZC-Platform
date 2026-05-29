@@ -31,7 +31,7 @@ import { getSentiment } from './trader-sentiment.mjs';
 import { sendTelegram, fmtFireAlert, fmtCloseAlert, fmtDriftAlert } from './trader-notify.mjs';
 import { sizeTradeByRiskAndMargin } from './trader-sizing.mjs';
 import { shouldRefreshWallet } from './trader-wallet.mjs';
-import { buildOrphanContext } from './trader-orphan.mjs';
+import { buildOrphanContext, isReadoptBlocked } from './trader-orphan.mjs';
 import { decideRestore } from './trader-restore.mjs';
 
 async function notify(text) {
@@ -138,6 +138,8 @@ const EVENTS_FILE = path.join(STATE_DIR, 'trader-events.jsonl');
 // Runtime state
 // ──────────────────────────────────────────────────────────────────
 const cooldownUntil = new Map();      // symbol → ts ms when cooldown expires
+const closedPosIds = new Map();       // posId → ts booked closed; blocks re-adopt of a flapping MEXC position
+const CLOSED_POSID_TTL_MS = 3_600_000;
 const metaCache = new Map();          // symbol → { contractSize, minVol, priceUnit } (cached)
 let tradesToday = 0;
 let dailyPnlUsd = 0;
@@ -362,6 +364,7 @@ async function writeState(extra = {}) {
     symbolSideStatus,
     sessionSideStatus,
     cooldownUntil: Object.fromEntries([...cooldownUntil.entries()]),
+    closedPosIds: Object.fromEntries([...closedPosIds.entries()]),
     pendingOrder,
     // Persist the full context so a restart mid-trade can rehydrate and
     // still write a correct post-mortem on close. The dashboard already
@@ -866,6 +869,14 @@ async function tryAdoptOrphan() {
   if (!ps?.length) return false;
   const pos = ps[0];
 
+  // A posId we already booked closed must not be re-adopted. MEXC flaps a
+  // closing position in and out of open_positions for minutes after the stop
+  // fills; without this the loop re-adopts and re-books the same loss.
+  if (isReadoptBlocked(pos.positionId, closedPosIds, Date.now(), CLOSED_POSID_TTL_MS)) {
+    log(`[orphan-skip-closed] ${pos.symbol} pos=${pos.positionId} already reconciled — exchange flap, not re-adopting`);
+    return false;
+  }
+
   let planOrders = [];
   try {
     const r = await mexcSigned({
@@ -900,6 +911,12 @@ async function reconcileClosedPosition() {
   const ctx = positionContext;
   positionContext = null;
   cooldownUntil.set(ctx.symbol, Date.now() + COOLDOWN_MS);
+  // Remember this posId so the same-cycle tryAdoptOrphan can't re-adopt it
+  // while MEXC is still flapping the closing position in open_positions.
+  closedPosIds.set(String(ctx.posId), Date.now());
+  for (const [pid, ts] of closedPosIds) {
+    if (Date.now() - ts >= CLOSED_POSID_TTL_MS) closedPosIds.delete(pid);
+  }
   tradesToday += 1;
 
   // Pull recent orders to find the close fill price.
@@ -1055,6 +1072,7 @@ try {
     sentimentShadowSkips24h = r.sentimentShadowSkips24h;
     sentimentLiveSkips24h   = r.sentimentLiveSkips24h;
     for (const [sym, ts] of Object.entries(r.cooldownUntil)) cooldownUntil.set(sym, ts);
+    for (const [pid, ts] of Object.entries(r.closedPosIds || {})) closedPosIds.set(pid, ts);
     log(`[restore] trades=${tradesToday} pnl=${dailyPnlUsd.toFixed(4)} cooldowns=${cooldownUntil.size} sentiment-skips=${sentimentShadowSkips24h}/${sentimentLiveSkips24h}`);
 
     // Reconcile persisted trade state against the live exchange. Covers both

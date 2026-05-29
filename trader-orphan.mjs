@@ -8,6 +8,19 @@
 // fetching the MEXC position, plan-order list, and contract meta — this
 // stays pure for unit tests.
 
+// A posId the trader already reconciled-closed must never be re-adopted.
+// MEXC's open_positions endpoint flaps a closing position in and out of the
+// list for up to a few minutes after the stop fills; without this guard the
+// main loop closes the position, falls straight through to tryAdoptOrphan in
+// the same cycle, sees the flapped-back posId, and re-adopts it — re-booking
+// the same loss every cycle. Posids are unique per position, so blocking a
+// recently-closed one for an hour can never reject a legitimate new trade.
+export function isReadoptBlocked(posId, closedPosIds, now = Date.now(), ttlMs = 3_600_000) {
+  if (!posId || !closedPosIds || typeof closedPosIds.get !== 'function') return false;
+  const ts = Number(closedPosIds.get(String(posId)));
+  return Number.isFinite(ts) && (now - ts) < ttlMs;
+}
+
 export function buildOrphanContext({ pos, planOrders, contractMeta, now = Date.now() }) {
   if (!pos || !pos.positionId) return null;
 
