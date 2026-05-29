@@ -21,3 +21,4 @@ relay.env
 .env
 .env.*
 tests/fixtures/*-1095d-Min60.json
+.paper-state/
