@@ -218,6 +218,18 @@
               <div class="azc-decisions-empty">Awaiting first decision…</div>
             </div>
           </div>
+          <!-- Shadow lanes — dry-run mean-rev + trend+trail. Polls
+               /trend-state and /meanrev-state to compare liveness, signal
+               cadence, and modeled net-R while neither trades real money. -->
+          <div class="azc-decisions">
+            <div class="azc-decisions-header">
+              <span>Shadow lanes (dry-run)</span>
+              <span class="azc-decisions-hint">live-vs-backtest evidence · refreshes every 5s</span>
+            </div>
+            <div id="azcShadowLanes" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <div class="azc-decisions-empty" style="grid-column:1/-1;">Awaiting shadow signals…</div>
+            </div>
+          </div>
         </div>
 
         <div class="ap-grid">
@@ -3402,6 +3414,47 @@
     }
     refreshAzcTraderState();
   }
+  // Shadow lanes — poll both dry-run lanes and render a liveness + cadence
+  // card each. Public endpoints, no token. Both lanes open nothing, so this is
+  // read-only evidence: which lane signals more, and its modeled net-R.
+  async function refreshAzcShadowLanes() {
+    const el = document.getElementById('azcShadowLanes');
+    if (!el) return;
+    const lanes = ['trend', 'meanrev'];
+    const states = await Promise.all(lanes.map(l =>
+      fetch(TG_RELAY_BASE + '/' + l + '-state', { cache: 'no-store' })
+        .then(r => r.json()).catch(() => ({ lane: l, ok: false }))));
+    el.innerHTML = states.map(_renderShadowLane).join('');
+  }
+  function _renderShadowLane(s) {
+    const lane = s.lane || '?';
+    const label = lane === 'trend' ? 'Trend+Trail 4h' : 'Mean-Rev 4h fade';
+    const stale = s.lastCycleAt ? (Date.now() - s.lastCycleAt) > 120000 : true;
+    let dot = '#e5484d', state = 'offline';
+    if (s.stopFlag) { dot = '#f5a524'; state = 'stopped'; }
+    else if (s.ok && !stale) { dot = '#46a758'; state = s.dryRun === false ? 'LIVE' : 'shadow'; }
+    const sig = s.signals || {};
+    const last = sig.lastTs ? _decTimeStr(sig.lastTs) : '—';
+    const pos = Array.isArray(s.positions) ? s.positions.length : 0;
+    const netR = (typeof sig.netRSum === 'number') ? (sig.netRSum >= 0 ? '+' : '') + sig.netRSum.toFixed(2) + 'R' : '—';
+    return `<div style="display:flex;flex-direction:column;gap:5px;padding:10px;border:1px solid var(--border,#222);border-radius:8px;font-size:11px;font-family:'JetBrains Mono',monospace;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:600;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dot};margin-right:6px;"></span>${label}</span>
+        <span style="color:var(--text-mute);">${state}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;color:var(--text-dim);">
+        <span>sig <b>${sig.count || 0}</b></span>
+        <span>in <b>${sig.entries || 0}</b></span>
+        <span>out <b>${sig.exits || 0}</b></span>
+        <span>skip <b>${sig.skips || 0}</b></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;color:var(--text-mute);">
+        <span>pos <b>${pos}</b></span>
+        <span>net <b>${netR}</b></span>
+        <span>last <b>${last}</b></span>
+      </div>
+    </div>`;
+  }
   // Decision feed — render the last 20 fire decisions (kind:'decision')
   // from /trader-events. Source-backed-output pattern: the operator can
   // see which gate vetoed each cycle without opening journalctl.
@@ -3488,8 +3541,10 @@
   if (typeof window !== 'undefined') {
     setInterval(() => { try { refreshAzcTraderState(); } catch (e) {} }, 5000);
     setInterval(() => { try { refreshAzcDecisions(); } catch (e) {} }, 5000);
+    setInterval(() => { try { refreshAzcShadowLanes(); } catch (e) {} }, 5000);
     setTimeout(() => { try { refreshAzcTraderState(); } catch (e) {} }, 1200);
     setTimeout(() => { try { refreshAzcDecisions(); } catch (e) {} }, 1400);
+    setTimeout(() => { try { refreshAzcShadowLanes(); } catch (e) {} }, 1600);
   }
 
   function _updateLiveTradingBadge() {

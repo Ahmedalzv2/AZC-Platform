@@ -8,6 +8,7 @@ import { writeInsightsFile } from './trade-insights.mjs';
 import { fetchMarketContext } from './trade-context.mjs';
 import { SIDE_GATE_SAMPLE_SINCE_TS } from './trader-config.mjs';
 import { readTailEvents } from './trader-events.mjs';
+import { summarizeShadowSignals } from './shadow-summary.mjs';
 import { buildStats } from './trade-stats.mjs';
 import { authedWriteWith } from './relay-auth.mjs';
 import { callMexcSigned, ALLOWED_PATH_PREFIX as MEXC_ALLOWED } from './mexc-signer.mjs';
@@ -706,6 +707,33 @@ const TRADER_STATE_FILE = path.join(TRADER_STATE_DIR, 'state.json');
 const TRADER_STOP_FLAG = path.join(TRADER_STATE_DIR, 'stop.flag');
 const TRADER_EVENTS_FILE = path.join(TRADER_STATE_DIR, 'trader-events.jsonl');
 
+// Dry-run shadow lanes (mean-rev + trend+trail). Each writes a health
+// state.json to its own bind-mounted dir and a signals JSONL under
+// trade-learnings/shadow. One read-only endpoint per lane lets the dashboard
+// compare cadence/health side by side. Dirs env-overridable for local runs.
+const SHADOW_LANES = {
+  meanrev: {
+    stateDir: process.env.MEANREV_STATE_DIR || '/app/.meanrev-state',
+    signals: path.join(LEARN_ROOT, 'shadow', 'meanrev-signals.jsonl'),
+  },
+  trend: {
+    stateDir: process.env.TREND_STATE_DIR || '/app/.trend-state',
+    signals: path.join(LEARN_ROOT, 'shadow', 'trend-signals.jsonl'),
+  },
+};
+
+async function shadowLaneState(lane) {
+  const cfg = SHADOW_LANES[lane];
+  const stopFlag = await fileExists(path.join(cfg.stateDir, 'stop.flag'));
+  const signals = summarizeShadowSignals(await readTailEvents(cfg.signals, 500));
+  try {
+    const data = JSON.parse(await readFile(path.join(cfg.stateDir, 'state.json'), 'utf8'));
+    return { ok: true, stopFlag, signals, ...data };
+  } catch {
+    return { ok: false, running: false, reason: 'no-state-file', stopFlag, signals };
+  }
+}
+
 async function fileExists(file) {
   return access(file).then(() => true).catch(() => false);
 }
@@ -1030,6 +1058,18 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, count: events.length, events }, CORS_HEADERS);
       } catch (error) {
         return sendJson(res, 500, { ok: false, error: error.message }, CORS_HEADERS);
+      }
+    }
+
+    // Shadow lane state — liveness + signal summary for the dry-run mean-rev
+    // and trend+trail lanes. Public GET so the dashboard polls without a token;
+    // both lanes open nothing, so there's no write surface to gate.
+    if ((url.pathname === '/meanrev-state' || url.pathname === '/trend-state') && req.method === 'GET') {
+      const lane = url.pathname.slice(1).replace('-state', '');
+      try {
+        return sendJson(res, 200, { lane, ...(await shadowLaneState(lane)) }, CORS_HEADERS);
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, lane, error: error.message }, CORS_HEADERS);
       }
     }
 

@@ -22,6 +22,8 @@ services:
     volumes:
       - ./trade-learnings:/app/trade-learnings
       - ./.trader-state:/app/.trader-state
+      - ./.meanrev-state:/app/.meanrev-state
+      - ./.trend-state:/app/.trend-state
     expose:
       - "3002"
     labels:
