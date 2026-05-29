@@ -747,6 +747,9 @@ async function watchPendingOrder() {
       if (pos && positionContext && positionContext.orderId === expiredOrderId) {
         log(`[ttl-race] order ${expiredOrderId} filled during cancel — promoting ${expiredSymbol} pos=${pos.positionId} (avgPx=${pos.holdAvgPrice})`);
         positionContext.posId = pos.positionId;
+        // Sync the actual filled size — a partial fill leaves ctx.qty at the
+        // requested amount, which would mis-size both panic-close and P&L.
+        if (Number(pos.holdVol) > 0) positionContext.qty = Number(pos.holdVol);
         positionContext.filledAt = Date.now();
         pendingOrder = null;
         return;  // hand off to normal monitoring loop
@@ -756,12 +759,19 @@ async function watchPendingOrder() {
     positionContext = null;
     return;
   }
-  // If a position appeared, the order filled — promote.
-  const ps = await getOpenPositions();
+  // If a position appeared, the order filled — promote. Guard the lookup:
+  // an unguarded throw here propagates to the main loop and a filled order
+  // never gets promoted to a posId, stranding the position. Returning keeps
+  // pendingOrder set so the next cycle retries the check.
+  let ps;
+  try { ps = await getOpenPositions(); }
+  catch (e) { log('[fill-check-fail]', e.message); return; }
   const pos = ps.find(p => p.symbol === pendingOrder.symbol);
   if (pos && positionContext) {
     log(`[filled] ${pendingOrder.symbol} pos=${pos.positionId} avgPx=${pos.holdAvgPrice}`);
     positionContext.posId = pos.positionId;
+    // Sync actual filled size (see ttl-race path) — feeds panic-close + P&L.
+    if (Number(pos.holdVol) > 0) positionContext.qty = Number(pos.holdVol);
     positionContext.filledAt = Date.now();
     pendingOrder = null;
 
@@ -828,6 +838,19 @@ async function verifyExchangeStopOrPanicClose(pos, ctx, retries = 5, delayMs = 2
 async function panicCloseLong(ctx) {
   // Market-close. Side 4 = close long, side 2 = close short.
   const closeSide = ctx.dir === 'bull' ? 4 : 2;
+  // Close the LIVE position size, not ctx.qty — a partial fill or top-up can
+  // leave ctx.qty stale, and MEXC rejects a close with the wrong volume. If
+  // the position is already gone, bail rather than fire a close order into
+  // a flat book.
+  let vol = ctx.qty;
+  if (ctx.posId) {
+    try {
+      const ps = await getOpenPositions();
+      const live = ps.find(p => String(p.positionId) === String(ctx.posId));
+      if (!live) { log(`[panic-close-skip] ${ctx.symbol} pos=${ctx.posId} already closed`); return; }
+      if (Number(live.holdVol) > 0) vol = Number(live.holdVol);
+    } catch (e) { log('[panic-close-vol-fail]', e.message); /* fall back to ctx.qty */ }
+  }
   const ticker = await fetchTicker(ctx.symbol);
   // priceUnit defensively pulled from ctx.meta OR a fresh meta fetch —
   // ctx.meta is now stashed at fire-time, but if anything ever leaves
@@ -845,14 +868,22 @@ async function panicCloseLong(ctx) {
   const body = {
     symbol: ctx.symbol,
     price: snapPx,
-    vol: ctx.qty,
+    vol,
     leverage: ctx.lev,
     side: closeSide,
     type: 1,            // plain limit, fills as taker immediately
     openType: 1,
   };
   const r = await placeOrder(body);
-  log(`[panic-close] ${ctx.symbol} side=${closeSide} qty=${ctx.qty} -> ${r.status} ${JSON.stringify(r.json || {}).slice(0,140)}`);
+  if (r.json?.success === true) {
+    log(`[panic-close] ${ctx.symbol} side=${closeSide} qty=${vol} → placed orderId=${r.json.data}`);
+    return;
+  }
+  // Rejected — the position is still open and may be naked at 10x. Escalate
+  // loudly so the operator can close by hand; do not silently swallow.
+  const detail = `${r.status} ${JSON.stringify(r.json || {}).slice(0, 140)}`;
+  log(`[panic-close-REJECTED] ${ctx.symbol} side=${closeSide} qty=${vol} → ${detail}`);
+  notify(`🚨 PANIC-CLOSE REJECTED — ${ctx.symbol} ${ctx.dir} qty=${vol} may be NAKED. Close manually. ${detail}`);
 }
 
 // Once a position is open, MEXC manages the SL/TP. When the position
