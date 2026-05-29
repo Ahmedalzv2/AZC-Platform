@@ -22,3 +22,7 @@ relay.env
 .env.*
 tests/fixtures/*-1095d-Min60.json
 .paper-state/
+
+# Shadow-lane runtime state (same bind-mount hazard as .trader-state)
+.trend-state/
+.meanrev-state/

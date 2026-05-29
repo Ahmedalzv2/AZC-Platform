@@ -1,0 +1,27 @@
+[Unit]
+Description=AZC trend+trail lane (4h Donchian breakout + chandelier trail) — SHADOW / dry-run, observes signals only
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/apps/ict-autopilot
+EnvironmentFile=/root/apps/ict-autopilot/relay.env
+# Hard dry-run lock: placed AFTER EnvironmentFile so it wins even if relay.env
+# ever sets TREND_LIVE. This lane has no live execution path regardless; the
+# lock is belt-and-suspenders, and arming would be a deliberate unit edit.
+Environment=TREND_LIVE=0
+ExecStart=/root/.hermes/node/bin/node /root/apps/ict-autopilot/azc-trend-shadow.mjs
+# Executor loops forever and treats its own stop.flag as monitor-only (never
+# exits on it), so there is no respawn-storm risk — restart only on a real crash.
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/azc-trend.log
+StandardError=append:/var/log/azc-trend.log
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
