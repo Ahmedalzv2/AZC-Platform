@@ -24,7 +24,7 @@ import { appendScanEvent } from './trader-events.mjs';
 import { collectTrades, summarise } from './trade-stats.mjs';
 import { loadTraderStateFromDisk } from './trader-state.mjs';
 import { KILLZONES_UTC, inKillzone, currentKillzoneName } from './trader-killzones.mjs';
-import { buildSetup } from './trader-signal.mjs';
+import { buildSetup, buildMakerTpOrder } from './trader-signal.mjs';
 import { decideGate, groupBySession } from './trader-drift-gate.mjs';
 import { decideFireAction } from './trader-fire-decision.mjs';
 import { getSentiment } from './trader-sentiment.mjs';
@@ -52,6 +52,7 @@ import {
   SIDE_GATE_SAMPLE_SINCE_TS,
   SKIP_SESSIONS,
   FEE_TAKER_RATE, FEE_DRAG_MAX_R,
+  MAKER_TP_EXIT,
 } from './trader-config.mjs';
 
 const SIGNAL_CONFIG = {
@@ -697,7 +698,9 @@ async function tryFire() {
     type: 2,
     openType: 1,
     stopLossPrice: slSnap,
-    takeProfitPrice: tpSnap,
+    // With MAKER_TP_EXIT the TP is placed as a separate resting maker limit
+    // after fill (see watchPendingOrder), not as a taker market-trigger plan.
+    ...(MAKER_TP_EXIT ? {} : { takeProfitPrice: tpSnap }),
   };
   const riskUsd = pick.stopDistUsdPerContract * qty;
   log(`[fire] ${pick.symbol} ${pick.fvg.dir.toUpperCase()} tier=${tier} htf=${pick.htfDir} qty=${qty} entry=${entry} sl=${slSnap} tp=${tpSnap} risk≈$${riskUsd.toFixed(3)} (${(riskPct*100).toFixed(1)}%) cand=${candidateCount}/${SYMBOLS.length}`);
@@ -791,11 +794,31 @@ async function watchPendingOrder() {
     // turns into a plan-order; if the precision is wrong, or there's a
     // race, it can silently fail to attach. A naked position at 10x is
     // the fastest way to lose $50. If SL/TP missing, we panic-close.
+    let stopOk = false;
     try {
-      await verifyExchangeStopOrPanicClose(pos, positionContext);
+      stopOk = await verifyExchangeStopOrPanicClose(pos, positionContext);
     } catch (e) {
       log(`[stop-verify-err] ${e.message} — closing position to be safe`);
       try { await panicCloseLong(positionContext); } catch (e2) { log('[panic-close-fail]', e2.message); }
+    }
+
+    // Rest the maker-limit TP only on a verified-safe, still-live position.
+    // If the stop was missing we've already (tried to) panic-close — don't
+    // bolt a TP onto a position we're tearing down. A POST_ONLY limit at TP
+    // can't cross (long TP above mkt, short TP below) so it always fills
+    // maker (~$0 on SOL/XRP). orderId is stashed so reconcile can cancel the
+    // resting order if the SL or timeout closes the position first.
+    if (stopOk && MAKER_TP_EXIT && positionContext && positionContext.posId === pos.positionId) {
+      try {
+        const tpRes = await placeOrder(buildMakerTpOrder(positionContext));
+        if (tpRes.json?.success === true) {
+          positionContext.tpOrderId = tpRes.json.data;
+          log(`[maker-tp] ${positionContext.symbol} resting limit TP @${positionContext.tp} → orderId=${positionContext.tpOrderId}`);
+        } else {
+          log(`[maker-tp-FAIL] ${positionContext.symbol} → ${JSON.stringify(tpRes.json || {}).slice(0, 140)} — exits via SL/timeout only`);
+          notify(`⚠️ ${positionContext.symbol}: maker-TP not placed; exits via SL or ${Math.round(MAX_HOLD_MS / 60000)}m timeout only.`);
+        }
+      } catch (e) { log('[maker-tp-err]', e.message); }
     }
   }
 }
@@ -836,7 +859,7 @@ async function verifyExchangeStopOrPanicClose(pos, ctx, retries = 5, delayMs = 2
     });
     if (hasGuard) {
       log(`[stop-verify-ok] ${ctx.symbol} — ${plans.length} plan(s), guard present (attempt ${attempt}/${retries})`);
-      return;
+      return true;
     }
     if (attempt < retries) {
       await sleep(delayMs);
@@ -844,6 +867,7 @@ async function verifyExchangeStopOrPanicClose(pos, ctx, retries = 5, delayMs = 2
   }
   log(`[stop-verify-FAIL] ${ctx.symbol} pos=${ctx.posId} — no attached stop after ${retries} attempts. PANIC CLOSE.`);
   await panicCloseLong(ctx);
+  return false;
 }
 
 async function panicCloseLong(ctx) {
@@ -951,6 +975,16 @@ async function reconcileClosedPosition() {
   if (stillOpen) return;
 
   const ctx = positionContext;
+
+  // The position is flat. If a resting maker-TP order is still live, cancel
+  // it: when the SL or timeout closed the trade, the TP limit would otherwise
+  // orphan on the book (it is NOT a position-attached plan, so MEXC won't
+  // auto-cancel it). If the TP itself filled, this orderId is already gone and
+  // the cancel is a harmless no-op.
+  if (ctx.tpOrderId) {
+    try { await cancelOrder(ctx.tpOrderId); log(`[maker-tp-cancel] ${ctx.symbol} tp order ${ctx.tpOrderId}`); }
+    catch (e) { /* already filled/cancelled */ }
+  }
 
   // Fetch the close/open fills BEFORE mutating any state. If this throws
   // (network/API), bail with positionContext intact and retry next cycle —

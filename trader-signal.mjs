@@ -116,3 +116,22 @@ export function checkPostOnlyTtlFill({ dir, entry, fireBarClose, futureBars, ttl
   }
   return { filled: false, fillBarOffset: -1, reason: 'ttl-cancel' };
 }
+
+// Maker take-profit exit. Attaching takeProfitPrice to the entry makes MEXC
+// close at market on trigger — a TAKER fill that ate the entire edge (live
+// tape: maker entries cost $0, market closes paid the whole fee bleed). A
+// closing limit at TP rests on the maker side (long TP above market, short
+// TP below) so it can never cross into taker, and SOL/XRP maker is ~0. SL
+// stays a market-trigger plan (taker) — a stop can't rest as a limit, and it
+// only fires on losers. ctx.tp is already priceUnit-snapped at fire time.
+export function buildMakerTpOrder(ctx) {
+  return {
+    symbol: ctx.symbol,
+    price: ctx.tp,
+    vol: ctx.qty,
+    leverage: ctx.lev,
+    side: ctx.dir === 'bull' ? 4 : 2,  // 4 = close long, 2 = close short
+    type: 2,                            // POST_ONLY maker
+    openType: 1,
+  };
+}

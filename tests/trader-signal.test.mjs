@@ -5,7 +5,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectUnmitigatedFvg, htfBias, buildSetup } from '../trader-signal.mjs';
+import { detectUnmitigatedFvg, htfBias, buildSetup, buildMakerTpOrder } from '../trader-signal.mjs';
 import * as CONFIG from '../trader-config.mjs';
 
 const SIGNAL = {
@@ -172,5 +172,23 @@ describe('buildSetup', () => {
     // slMin should bind (FVG body is huge relative to this price), and the
     // entry/sl FP subtraction produces stopDist below the threshold by ~1e-17.
     assert.notEqual(r.skip, 'stop-too-tight');
+  });
+});
+
+describe('buildMakerTpOrder', () => {
+  it('long TP → close-long side 4, POST_ONLY type 2, price at TP', () => {
+    const o = buildMakerTpOrder({ symbol: 'SOL_USDT', tp: 150.5, qty: 3, lev: 10, dir: 'bull' });
+    assert.equal(o.side, 4);            // 4 = close long
+    assert.equal(o.type, 2);            // POST_ONLY maker — never crosses (TP above mkt)
+    assert.equal(o.price, 150.5);
+    assert.equal(o.vol, 3);
+    assert.equal(o.leverage, 10);
+    assert.equal(o.openType, 1);
+  });
+  it('short TP → close-short side 2', () => {
+    const o = buildMakerTpOrder({ symbol: 'XRP_USDT', tp: 1.20, qty: 100, lev: 10, dir: 'bear' });
+    assert.equal(o.side, 2);            // 2 = close short
+    assert.equal(o.type, 2);
+    assert.equal(o.price, 1.20);
   });
 });
