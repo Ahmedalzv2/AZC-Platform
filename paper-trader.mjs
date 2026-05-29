@@ -19,7 +19,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIR = path.join(__dirname, '.paper-state');
 const STATE = path.join(DIR, 'state.json');
 const JOURNAL = path.join(DIR, 'paper-trades.jsonl');
-const SYMBOLS = ['ADA', 'BTC', 'DOGE', 'DOT', 'LINK', 'LTC', 'NEAR', 'SOL', 'SUI', 'XRP'];
+const SYMBOLS = ['AAVE', 'ADA', 'ALGO', 'APT', 'ARB', 'ATOM', 'AVAX', 'BCH', 'BNB', 'BTC', 'DOGE', 'DOT', 'ETC', 'ETH', 'ICP', 'LINK', 'LTC', 'NEAR', 'RUNE', 'SOL', 'SUI', 'TRX', 'UNI', 'XRP'];
+const MAX_POSITIONS = STRATEGY_PARAMS.maxPositions;  // portfolio cap on concurrent positions
 const FOUR_H = 4 * 3600 * 1000;
 const BANKROLL0 = 200;
 
@@ -54,19 +55,22 @@ function to4hClosed(bars1h, now) {
 
 function loadState() {
   if (existsSync(STATE)) { try { return JSON.parse(readFileSync(STATE, 'utf8')); } catch {} }
-  return { positions: {}, lastBarTs: {}, stats: { n: 0, wins: 0, totalR: 0, equityUsd: BANKROLL0 } };
+  return { positions: {}, lastBarTs: {}, stats: { n: 0, wins: 0, totalR: 0, equityUsd: BANKROLL0, grossEquityUsd: BANKROLL0 } };
 }
 
 function recordTrade(state, sym, pos, exit, closedTs) {
   const { netR, grossR } = tradeNetR({ dir: pos.dir, entry: pos.entry, exit, atrAtEntry: pos.atrAtEntry });
-  const pnlUsd = state.stats.equityUsd * STRATEGY_PARAMS.riskPct * netR;
+  const r = STRATEGY_PARAMS.riskPct;
+  const pnlUsd = state.stats.equityUsd * r * netR;
+  const grossUsd = state.stats.grossEquityUsd * r * grossR;
   state.stats.equityUsd += pnlUsd;
+  state.stats.grossEquityUsd += grossUsd;
   state.stats.n += 1;
   if (netR > 0) state.stats.wins += 1;
   state.stats.totalR += netR;
-  const rec = { ts: closedTs, sym, dir: pos.dir, entry: pos.entry, exit, openedTs: pos.openedTs, grossR: +grossR.toFixed(3), netR: +netR.toFixed(3), pnlUsd: +pnlUsd.toFixed(3), equityUsd: +state.stats.equityUsd.toFixed(2) };
+  const rec = { ts: closedTs, sym, dir: pos.dir, entry: pos.entry, exit, openedTs: pos.openedTs, grossR: +grossR.toFixed(3), netR: +netR.toFixed(3), grossUsd: +grossUsd.toFixed(3), pnlUsd: +pnlUsd.toFixed(3), grossEquityUsd: +state.stats.grossEquityUsd.toFixed(2), equityUsd: +state.stats.equityUsd.toFixed(2) };
   appendFileSync(JOURNAL, JSON.stringify(rec) + '\n');
-  log(`[paper-close] ${sym} ${pos.dir} entry=${pos.entry} exit=${exit.toFixed(6)} netR=${netR.toFixed(2)} pnl=$${pnlUsd.toFixed(2)} eq=$${state.stats.equityUsd.toFixed(2)}`);
+  log(`[paper-close] ${sym} ${pos.dir} netR=${netR.toFixed(2)} grossR=${grossR.toFixed(2)} | net=$${state.stats.equityUsd.toFixed(2)} gross=$${state.stats.grossEquityUsd.toFixed(2)}`);
 }
 
 async function runOnce() {
@@ -88,8 +92,13 @@ async function runOnce() {
       const pos = state.positions[sym] || null;
       const d = decideStep({ bars, i, position: pos });
       if (d.action === 'open') {
-        state.positions[sym] = { dir: d.dir, entry: d.entry, initialStop: d.initialStop, atrAtEntry: d.atrAtEntry, hwm: d.entry, lwm: d.entry, openedTs: bars[i].t };
-        log(`[paper-open] ${sym} ${d.dir} entry=${d.entry} stop=${d.initialStop.toFixed(6)}`);
+        const openCount = Object.values(state.positions).filter(Boolean).length;
+        if (openCount >= MAX_POSITIONS) {
+          log(`[paper-skip-cap] ${sym} ${d.dir} — ${openCount}/${MAX_POSITIONS} positions open`);
+        } else {
+          state.positions[sym] = { dir: d.dir, entry: d.entry, initialStop: d.initialStop, atrAtEntry: d.atrAtEntry, hwm: d.entry, lwm: d.entry, openedTs: bars[i].t };
+          log(`[paper-open] ${sym} ${d.dir} entry=${d.entry} stop=${d.initialStop.toFixed(6)} (${openCount + 1}/${MAX_POSITIONS})`);
+        }
       } else if (d.action === 'hold' && pos) {
         pos.hwm = d.hwm; pos.lwm = d.lwm; pos.stop = d.stop;
       } else if (d.action === 'close' && pos) {
@@ -102,7 +111,7 @@ async function runOnce() {
   writeFileSync(STATE, JSON.stringify(state, null, 2));
   const s = state.stats;
   const open = Object.entries(state.positions).filter(([, p]) => p).map(([k]) => k);
-  log(`[paper-stats] trades=${s.n} win=${s.n ? (s.wins / s.n * 100).toFixed(0) : 0}% avgNetR=${s.n ? (s.totalR / s.n).toFixed(3) : '—'} equity=$${s.equityUsd.toFixed(2)} (start $${BANKROLL0}) open=[${open.join(',')}]`);
+  log(`[paper-stats] trades=${s.n} win=${s.n ? (s.wins / s.n * 100).toFixed(0) : 0}% | NET=$${s.equityUsd.toFixed(2)} GROSS=$${(s.grossEquityUsd ?? BANKROLL0).toFixed(2)} (start $${BANKROLL0}) | open=${open.length}/${MAX_POSITIONS} [${open.join(',')}]`);
   return state;
 }
 

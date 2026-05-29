@@ -20,9 +20,10 @@ export const STRATEGY_PARAMS = {
                   // Fixed (not optimized): OOS +0.089R vs +0.061R ungated, and
                   // ~halves max drawdown (39%→23%). Whole 0.25–0.40 band behaves
                   // similarly, so it isn't curve-fit to one value.
-  riskPct: 0.005, // 0.5% per trade — sized to survive the ~81R backtest maxDD
-  takerRate: 0.00075,
-  slipBps: 10,
+  riskPct: 0.005, // 0.5% per trade
+  maxPositions: 10, // portfolio cap: max concurrent open positions across the universe
+  takerRate: 0.0006, // MEXC futures taker; modeled on BOTH legs (no free-maker assumption)
+  slipBps: 10,       // adverse slippage per taker leg
 };
 
 // Kaufman Efficiency Ratio over the last n bars: |net move| / Σ|bar moves|.
@@ -97,15 +98,14 @@ export function decideStep({ bars, i, position, params = STRATEGY_PARAMS }) {
   }
 }
 
-// Net R of a closed paper trade, modeling maker entry + taker trailing-stop
-// exit + adverse slippage on the taker leg (same model as the backtest).
+// Gross R (pure price move, no costs) and net R (real MEXC fees + slippage on
+// BOTH legs as taker — no free-maker assumption). Always returns both so the
+// paper journal can show pnl with and without fees side by side.
 export function tradeNetR({ dir, entry, exit, atrAtEntry, params = STRATEGY_PARAMS }) {
   const risk = params.atrMult * atrAtEntry;
+  const grossMove = dir === 'long' ? exit - entry : entry - exit;
+  const grossR = grossMove / risk;
   const slip = (params.slipBps || 0) / 10000;
-  const sgn = dir === 'long' ? 1 : -1;
-  const exitFill = exit * (1 - sgn * slip);          // taker stop, adverse
-  const move = dir === 'long' ? exitFill - entry : entry - exitFill;
-  const grossR = move / risk;
-  const feeR = (entry * params.takerRate) / risk;     // entry maker(0) + taker exit
-  return { grossR, netR: grossR - feeR };
+  const costR = (entry * (2 * params.takerRate + 2 * slip)) / risk; // entry+exit taker + slip both
+  return { grossR, netR: grossR - costR };
 }
