@@ -40,6 +40,16 @@ export const MIN_STOP_PCT        = 0.0020;
 export const FEE_TAKER_RATE      = 0.00075;
 export const FEE_DRAG_MAX_R      = 0.15;
 
+// Maker take-profit exit. The fee bleed above is ENTIRELY the taker close:
+// live tape shows maker entries cost $0 (one even rebated -$0.43) while every
+// market/stop-plan close paid taker. 365d/282-trade backtest: closing TP via
+// a resting maker limit instead of the attached market-trigger plan flips
+// SOL+XRP from -$31.68 (taker, -63%/yr) to +$20.64 (maker, +41%/yr) — same
+// entries, same signals. When true: drop takeProfitPrice from the entry and
+// rest a POST_ONLY limit at TP after fill (SL stays a taker stop-plan — only
+// fires on losers). Flip false to revert to the all-in-one attached TP/SL.
+export const MAKER_TP_EXIT       = true;
+
 // Graduated risk — sizes to conviction. For the $50 micro-capital lane
 // this is deliberately AGGRESSIVE experimental risk, not "tiny risk".
 // $2.50 (5%) per stand-out best candidate is real exposure on a tiny
