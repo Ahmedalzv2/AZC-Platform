@@ -24,14 +24,30 @@ describe('loadTraderStateFromDisk', () => {
     assert.equal(out, null);
   });
 
-  test('returns null when dailyResetAt has already passed (let day-roll reset)', async () => {
-    const now = 2_000_000;
+  test('day-roll resets daily counters but preserves time-based restart state', async () => {
+    // A restart minutes after UTC midnight must NOT discard the open
+    // position, live cooldowns, or the closedPosIds re-adopt guard — those
+    // are time-based, not day-based. Only the daily counters reset. (Old
+    // behaviour returned null and threw all of it away → PR #260 bug reopened
+    // by the clock.)
+    const now = 2_000_000_000;
     const file = await makeStateFile({
-      dailyResetAt: 1_000_000, tradesToday: 9, dailyPnlUsd: -5,
-      cooldownUntil: {},
+      dailyResetAt: 1_000_000_000,            // already rolled
+      tradesToday: 9, dailyPnlUsd: -5,
+      cooldownUntil: { SOL_USDT: now + 500_000, OLD: now - 1 },
+      closedPosIds: { fresh: now - 6_000, stale: now - 3_700_000 },
+      positionContext: { posId: 'p1', symbol: 'XRP_USDT', dir: 'bull' },
+      sentimentGate: { shadowWouldSkipCount24h: 4, liveSkipCount24h: 2 },
     });
     const out = await loadTraderStateFromDisk(file, now);
-    assert.equal(out, null);
+    assert.equal(out.tradesToday, 0);
+    assert.equal(out.dailyPnlUsd, 0);
+    assert.equal(out.dailyResetAt, null);            // caller keeps its fresh nextUtcMidnight
+    assert.equal(out.sentimentShadowSkips24h, 0);
+    assert.equal(out.sentimentLiveSkips24h, 0);
+    assert.deepEqual(out.cooldownUntil, { SOL_USDT: now + 500_000 });
+    assert.deepEqual(out.closedPosIds, { fresh: now - 6_000 });
+    assert.deepEqual(out.positionContext, { posId: 'p1', symbol: 'XRP_USDT', dir: 'bull' });
   });
 
   test('restores counters when file is within current day window', async () => {

@@ -1068,7 +1068,9 @@ try {
   if (r) {
     tradesToday  = r.tradesToday;
     dailyPnlUsd  = r.dailyPnlUsd;
-    dailyResetAt = r.dailyResetAt;
+    // null = the saved day rolled while we were down; keep the fresh
+    // nextUtcMidnight() set at init rather than a stale past boundary.
+    if (r.dailyResetAt) dailyResetAt = r.dailyResetAt;
     sentimentShadowSkips24h = r.sentimentShadowSkips24h;
     sentimentLiveSkips24h   = r.sentimentLiveSkips24h;
     for (const [sym, ts] of Object.entries(r.cooldownUntil)) cooldownUntil.set(sym, ts);

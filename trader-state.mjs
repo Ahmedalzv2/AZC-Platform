@@ -23,24 +23,28 @@ export async function loadTraderStateFromDisk(statePath, now = Date.now()) {
   try { s = JSON.parse(raw); }
   catch { return null; }
 
-  // If the saved day window has already rolled past, let the live
-  // day-roll path produce clean defaults.
-  const dailyResetAt = Number(s.dailyResetAt);
-  if (!Number.isFinite(dailyResetAt) || dailyResetAt <= now) return null;
+  // The saved daily window may have rolled past while the trader was down.
+  // When it has, the daily COUNTERS (trades, P&L, sentiment skips) reset to
+  // a fresh day — but restart-safety state (an open position, live cooldowns,
+  // and the closedPosIds re-adopt guard) is TIME-based, not day-based, and
+  // must survive the boundary. The old code returned null on a rolled day,
+  // discarding all of it: a restart minutes after midnight then re-adopted a
+  // still-flapping closed position and re-booked its loss (the #260 bug,
+  // reopened by the clock), and an open position lost its tracking entirely.
+  const savedReset = Number(s.dailyResetAt);
+  const dayRolled  = !Number.isFinite(savedReset) || savedReset <= now;
 
   return {
-    tradesToday: Number.isFinite(Number(s.tradesToday)) ? Number(s.tradesToday) : 0,
-    dailyPnlUsd: Number.isFinite(Number(s.dailyPnlUsd)) ? Number(s.dailyPnlUsd) : 0,
-    dailyResetAt,
+    tradesToday: dayRolled ? 0 : (Number.isFinite(Number(s.tradesToday)) ? Number(s.tradesToday) : 0),
+    dailyPnlUsd: dayRolled ? 0 : (Number.isFinite(Number(s.dailyPnlUsd)) ? Number(s.dailyPnlUsd) : 0),
+    // null signals the caller to keep its own fresh nextUtcMidnight().
+    dailyResetAt: dayRolled ? null : savedReset,
     cooldownUntil: filterFutureCooldowns(s.cooldownUntil, now),
     closedPosIds: filterRecentClosedPosIds(s.closedPosIds, now),
     positionContext: pickRehydratablePosition(s.positionContext),
-    // Persisted on the same daily window as tradesToday/dailyPnlUsd — the
-    // gate window only has meaning if it survives the systemd restarts
-    // that punctuate every dev iteration. Without this, six restarts in
-    // a day silently wipe the sentiment shadow sample.
-    sentimentShadowSkips24h: pickNonNegInt(s.sentimentGate?.shadowWouldSkipCount24h),
-    sentimentLiveSkips24h:   pickNonNegInt(s.sentimentGate?.liveSkipCount24h),
+    // Daily-window counters, so they reset with the day-roll above.
+    sentimentShadowSkips24h: dayRolled ? 0 : pickNonNegInt(s.sentimentGate?.shadowWouldSkipCount24h),
+    sentimentLiveSkips24h:   dayRolled ? 0 : pickNonNegInt(s.sentimentGate?.liveSkipCount24h),
   };
 }
 
