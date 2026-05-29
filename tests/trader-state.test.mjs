@@ -48,10 +48,24 @@ describe('loadTraderStateFromDisk', () => {
       dailyPnlUsd: -1.0331,
       dailyResetAt: 9_999_999,
       cooldownUntil: { SOL_USDT: 1_500_000 },
+      closedPosIds: {},
       positionContext: null,
       sentimentShadowSkips24h: 0,
       sentimentLiveSkips24h: 0,
     });
+  });
+
+  test('restores recently-closed posIds, drops ones past the TTL', async () => {
+    const now = 5_000_000_000;
+    const file = await makeStateFile({
+      dailyResetAt: now + 1, tradesToday: 0, dailyPnlUsd: 0, cooldownUntil: {},
+      closedPosIds: {
+        '1396470897': now - 6_000,      // fresh — keep
+        '1396000000': now - 3_700_000,  // > 1h old — drop
+      },
+    });
+    const out = await loadTraderStateFromDisk(file, now);
+    assert.deepEqual(out.closedPosIds, { '1396470897': now - 6_000 });
   });
 
   test('restores sentiment 24h skip counters from sentimentGate', async () => {
@@ -120,6 +134,7 @@ describe('loadTraderStateFromDisk', () => {
       dailyPnlUsd: 0,
       dailyResetAt: 9_999_999,
       cooldownUntil: {},
+      closedPosIds: {},
       positionContext: null,
       sentimentShadowSkips24h: 0,
       sentimentLiveSkips24h: 0,
