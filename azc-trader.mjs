@@ -111,6 +111,10 @@ const LEVERAGE            = 10;
 const MAX_OPEN_POSITIONS  = 1;
 const TICK_MS             = 15_000;
 const POSITION_POLL_MS    = 5_000;
+// When halted by stop.flag, poll for it to clear in-process instead of
+// exiting and letting systemd (Restart=always) respawn every RestartSec.
+const PARK_POLL_MS        = 10_000;
+const PARK_HEARTBEAT_MS   = 300_000;
 const MAKER_ORDER_TTL_MS  = 180_000;
 // Wallet balance refresh cadence — keeps the dashboard chip live without
 // pounding the signed-API rate limit. 30s is well below the 5s position
@@ -1133,6 +1137,29 @@ async function stopFlagExists() {
   catch { return false; }
 }
 
+// Operator halt without a respawn storm: stay alive and poll for the flag
+// to clear. Exiting here made systemd respawn every RestartSec, replaying
+// the entire gate-boot log every 10s and making a deliberate stop look
+// identical to a real per-cycle crash loop. Parking keeps one quiet PID and
+// picks up the dashboard start (POST /trader-start removes the flag) within
+// PARK_POLL_MS. We do NOT touch lastCycleAt so relay /auto-state still
+// correctly reports the trader as stopped, not cycling.
+async function parkUntilStartCleared() {
+  log('[parked] stop.flag present — holding in-process (no respawn). Clear via dashboard start (POST /trader-start).');
+  await writeState({ refusedStart: true, parked: true });
+  let sinceBeat = 0, waited = 0;
+  while (await stopFlagExists()) {
+    await sleep(PARK_POLL_MS);
+    sinceBeat += PARK_POLL_MS; waited += PARK_POLL_MS;
+    if (sinceBeat >= PARK_HEARTBEAT_MS) {
+      sinceBeat = 0;
+      log(`[parked] still halted after ${Math.round(waited / 60000)}m — waiting for start.`);
+    }
+  }
+  log('[parked] stop.flag cleared — launching.');
+  await writeState({ refusedStart: false, parked: false });
+}
+
 async function gracefulShutdown(reason) {
   log(`[shutdown] reason=${reason}`);
   const openWarn = positionContext?.posId ? ` · OPEN ${positionContext.symbol} left at MEXC` : '';
@@ -1232,12 +1259,11 @@ for (const [k, state] of Object.entries(sessionSideStatus)) {
   log(`[session-side-gate-boot] ${k}=${state.status} (${state.reason})`);
 }
 
-// If the stop flag is set at startup, refuse to launch — operator must
-// clear it via the dashboard's start button (POST /trader-start).
+// If the stop flag is set at startup, park in-process until the operator
+// clears it via the dashboard's start button (POST /trader-start), rather
+// than exiting and triggering a systemd respawn storm.
 if (await stopFlagExists()) {
-  log('[start] stop.flag present at startup — refusing to launch. Clear via POST /trader-start.');
-  await writeState({ refusedStart: true });
-  process.exit(0);
+  await parkUntilStartCleared();
 }
 
 // Clean up any stale unfilled limit orders on the account before
