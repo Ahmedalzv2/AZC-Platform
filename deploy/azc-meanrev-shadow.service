@@ -1,0 +1,26 @@
+[Unit]
+Description=AZC mean-rev lane (4h fade) — SHADOW / dry-run, observes signals only
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/apps/ict-autopilot
+EnvironmentFile=/root/apps/ict-autopilot/relay.env
+# Hard dry-run lock: placed AFTER EnvironmentFile so it wins even if relay.env
+# ever sets MEANREV_LIVE. Arming live is a deliberate unit edit, never an env slip.
+Environment=MEANREV_LIVE=0
+ExecStart=/root/.hermes/node/bin/node /root/apps/ict-autopilot/azc-meanrev.mjs
+# Executor loops forever and treats its own stop.flag as monitor-only (never
+# exits on it), so there is no respawn-storm risk — restart only on a real crash.
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/azc-meanrev.log
+StandardError=append:/var/log/azc-meanrev.log
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
