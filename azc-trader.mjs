@@ -940,25 +940,38 @@ async function reconcileClosedPosition() {
   if (stillOpen) return;
 
   const ctx = positionContext;
+
+  // Fetch the close/open fills BEFORE mutating any state. If this throws
+  // (network/API), bail with positionContext intact and retry next cycle —
+  // rather than booking the trade (tradesToday++, closedPosIds, dailyPnlUsd)
+  // but then losing the post-mortem and corrupting the daily counters when
+  // the fetch fails mid-reconcile. page_size 50 (was 10): on a busy symbol
+  // the close can sit past row 10, and a missed close → fillPx null → zero
+  // gross P&L written.
+  let orders;
+  try {
+    const r = await mexcSigned({
+      path: '/api/v1/private/order/list/history_orders',
+      method: 'GET',
+      params: { symbol: ctx.symbol, page_num: 1, page_size: 50 },
+    });
+    orders = Array.isArray(r.json?.data) ? r.json.data : [];
+  } catch (e) {
+    log('[reconcile-fetch-fail]', e.message);
+    return;  // positionContext intact — retry next cycle
+  }
+
+  // Fills secured — now commit the close atomically (no awaits between here
+  // and the P&L write that could strand half-mutated state).
   positionContext = null;
   cooldownUntil.set(ctx.symbol, Date.now() + COOLDOWN_MS);
-  // Remember this posId so the same-cycle tryAdoptOrphan can't re-adopt it
-  // while MEXC is still flapping the closing position in open_positions.
+  // Block same-cycle tryAdoptOrphan re-adopt while MEXC flaps the close.
   closedPosIds.set(String(ctx.posId), Date.now());
   for (const [pid, ts] of closedPosIds) {
     if (Date.now() - ts >= CLOSED_POSID_TTL_MS) closedPosIds.delete(pid);
   }
   tradesToday += 1;
 
-  // Pull recent orders to find the close fill price. page_size 50 (was 10):
-  // on a busy symbol the close order can sit past the first 10 rows, and a
-  // missed close → fillPx=null → zero gross P&L written to the post-mortem.
-  const r = await mexcSigned({
-    path: '/api/v1/private/order/list/history_orders',
-    method: 'GET',
-    params: { symbol: ctx.symbol, page_num: 1, page_size: 50 },
-  });
-  const orders = Array.isArray(r.json?.data) ? r.json.data : [];
   // Side 4 = close long, 2 = close short. Prefer the close fill tied to THIS
   // position when MEXC tags orders with positionId; fall back to the most
   // recent matching close otherwise. The bot holds one position per symbol,
@@ -1204,6 +1217,11 @@ while (true) {
     break;
   }
   try {
+    // Roll the day at the TOP of every cycle, before any close is booked.
+    // When this only ran on idle cycles, a position held across UTC midnight
+    // closed into the OLD day's counters, which the next idle cycle then
+    // reset to zero — silently losing that trade from the daily P&L.
+    maybeRollDay();
     if (positionContext?.posId) {
       // Max-hold guard: market-close if a position is sitting too long.
       // 120-min cap — backtested as the sweet spot. Shorter caps (60m)
@@ -1228,7 +1246,6 @@ while (true) {
       // position and the next cycle handles monitoring + close.
       const adopted = await tryAdoptOrphan();
       if (!adopted) {
-        maybeRollDay();
         const r = await tryFire();   // always runs scanAllSymbols inside
         if (r.skip && r.skip !== 'no-candidates') {
           log(`[skip] ${r.skip}${r.detail ? ' · ' + r.detail : ''}`);
