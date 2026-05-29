@@ -919,16 +919,23 @@ async function reconcileClosedPosition() {
   }
   tradesToday += 1;
 
-  // Pull recent orders to find the close fill price.
+  // Pull recent orders to find the close fill price. page_size 50 (was 10):
+  // on a busy symbol the close order can sit past the first 10 rows, and a
+  // missed close → fillPx=null → zero gross P&L written to the post-mortem.
   const r = await mexcSigned({
     path: '/api/v1/private/order/list/history_orders',
     method: 'GET',
-    params: { symbol: ctx.symbol, page_num: 1, page_size: 10 },
+    params: { symbol: ctx.symbol, page_num: 1, page_size: 50 },
   });
   const orders = Array.isArray(r.json?.data) ? r.json.data : [];
-  // Side 4 = close long, 2 = close short.
+  // Side 4 = close long, 2 = close short. Prefer the close fill tied to THIS
+  // position when MEXC tags orders with positionId; fall back to the most
+  // recent matching close otherwise. The bot holds one position per symbol,
+  // so the fallback is unambiguous unless the user also trades it by hand.
   const closeSide = ctx.dir === 'bull' ? 4 : 2;
-  const closeOrder = orders.find(o => o.side === closeSide && o.state === 3);
+  const isClose = o => o.side === closeSide && o.state === 3;
+  const closeOrder = orders.find(o => isClose(o) && String(o.positionId ?? '') === String(ctx.posId))
+                  || orders.find(isClose);
   const openOrder  = orders.find(o => String(o.orderId) === String(ctx.orderId));
   const fillPx = closeOrder ? +closeOrder.dealAvgPrice : null;
   const openPx = openOrder ? +openOrder.dealAvgPrice : ctx.entry;
