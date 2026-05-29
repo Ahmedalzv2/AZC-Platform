@@ -103,6 +103,28 @@ describe('decideFireAction — skip paths', () => {
   });
 });
 
+describe('decideFireAction — fee-drag gate', () => {
+  // feeDragR = entry × contractSize × takerRate / stopDistUsdPerContract.
+  // cand: entry(price)=1, cs=1, stopDistUsdPerContract=0.001 → 0.001 stop.
+  it('skips when the round-trip fee would eat more than the cap of 1R', () => {
+    // 0.00075 / 0.001 = 0.75R fee drag, well over a 0.15R cap.
+    const r = decideFireAction(baseInput({ feeTakerRate: 0.00075, feeDragMaxR: 0.15 }));
+    assert.equal(r.action, 'skip');
+    assert.equal(r.skip, 'fee-drag');
+  });
+
+  it('fires when the stop is wide enough that fees stay under the cap', () => {
+    const wide = { ...cand('SOL_USDT', 'bull', 0.0001), stopDistUsdPerContract: 0.02 }; // 0.0375R
+    const r = decideFireAction(baseInput({ candidates: [wide], feeTakerRate: 0.00075, feeDragMaxR: 0.15 }));
+    assert.equal(r.action, 'fire');
+  });
+
+  it('fails open when not configured (cap 0)', () => {
+    const r = decideFireAction(baseInput());
+    assert.equal(r.action, 'fire');
+  });
+});
+
 describe('decideFireAction — happy path', () => {
   it('single candidate → tier=top2, baseRiskPct=RISK.top2', () => {
     const r = decideFireAction(baseInput());

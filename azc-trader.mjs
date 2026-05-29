@@ -51,6 +51,7 @@ import {
   SIDE_GATE_MIN_SAMPLE, SIDE_GATE_DOWNSHIFT_R, SIDE_GATE_BLOCK_R,
   SIDE_GATE_SAMPLE_SINCE_TS,
   SKIP_SESSIONS,
+  FEE_TAKER_RATE, FEE_DRAG_MAX_R,
 } from './trader-config.mjs';
 
 const SIGNAL_CONFIG = {
@@ -605,6 +606,8 @@ async function tryFire() {
     currentSession: currentKillzoneName() || 'off',
     riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
     skipSessions: SKIP_SESSIONS,
+    feeTakerRate: FEE_TAKER_RATE,
+    feeDragMaxR: FEE_DRAG_MAX_R,
   };
 
   let sentimentSnapshot = null;

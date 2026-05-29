@@ -28,6 +28,8 @@ export function decideFireAction({
   sentimentSnapshot = null,
   sentimentGateMode = 'off',
   skipSessions = [], // backtest-derived hard skiplist — bypasses every other gate
+  feeTakerRate = 0,  // MEXC taker rate charged on the close (entry is free maker)
+  feeDragMaxR = 0,   // skip a fire when modeled round-trip fee > this fraction of 1R (0 = disabled)
 }) {
   if (pendingOrder)                            return { action: 'skip', skip: 'pending-order' };
   if (openPositions >= maxOpenPositions)       return { action: 'skip', skip: 'in-position' };
@@ -76,6 +78,25 @@ export function decideFireAction({
   // across two symbols.
   const sorted = [...surviving].sort((a, b) => a.distPct - b.distPct);
   const pick = sorted[0];
+
+  // Fee-drag gate. feeDragR ≈ entry × contractSize × takerRate /
+  // stopDistUsdPerContract — the close fee (taker; entry is free maker) as a
+  // fraction of 1R. With 0.2% stops and ~0.075% taker that's ~0.33R per
+  // trade, which is what turned the backtested +0.11R edge into a live loss.
+  // Refuse setups whose stop is too tight to clear the fee. Fail-open when
+  // unconfigured so tests and the gross-R drift gate are unaffected.
+  if (feeDragMaxR > 0 && feeTakerRate > 0) {
+    const entryPx = Number(pick.entry ?? pick.price);
+    const stopUsd = Number(pick.stopDistUsdPerContract);
+    const cs = Number(pick.meta?.contractSize) || 1;
+    const feeDragR = stopUsd > 0 ? (entryPx * cs * feeTakerRate) / stopUsd : Infinity;
+    if (feeDragR > feeDragMaxR) {
+      return {
+        action: 'skip', skip: 'fee-drag',
+        detail: `fee ≈ ${feeDragR.toFixed(2)}R of risk > ${feeDragMaxR}R cap — stop too tight to beat MEXC taker`,
+      };
+    }
+  }
 
   const sideKey = pick.fvg.dir === 'bull' ? 'long' : 'short';
   const sideState = sideStatus?.[sideKey];
