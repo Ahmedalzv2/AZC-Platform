@@ -1,13 +1,15 @@
-// Restore daily counters, per-symbol cooldowns, and a still-open
-// positionContext from a previous run's state.json. Survives systemd
-// restarts so trades-today, cooldowns, and (when armed) the live trade
+// Restore daily counters, per-symbol cooldowns, and the persisted trade
+// state (positionContext + pendingOrder) from a previous run's state.json.
+// Survives systemd restarts so trades-today, cooldowns, and the live trade
 // context don't reset on every redeploy.
 //
-// positionContext is returned only when posId is present — without an
-// exchange position id the trader has no way to verify the trade is
-// still alive, and the cleanest move is to drop it and let the live
-// position poller observe whatever MEXC shows. The caller is expected
-// to verify the position still exists on MEXC before applying.
+// positionContext and pendingOrder are passed through RAW (not pre-filtered)
+// so decideRestore can reconcile them against the live exchange. In
+// particular a maker context persisted BEFORE its fill has no posId yet —
+// decideRestore needs that context to re-adopt a fill that landed during
+// downtime with its full fire-time WHY intact, instead of letting orphan-
+// adoption mislabel it as manual. Pre-nulling no-posId contexts here (the
+// old behaviour) silently broke that path.
 //
 // The consecutiveLosses/haltedAt cascade was removed 2026-05-26 — drift
 // gates (side + session + symbol-side) replace it.
@@ -41,7 +43,11 @@ export async function loadTraderStateFromDisk(statePath, now = Date.now()) {
     dailyResetAt: dayRolled ? null : savedReset,
     cooldownUntil: filterFutureCooldowns(s.cooldownUntil, now),
     closedPosIds: filterRecentClosedPosIds(s.closedPosIds, now),
-    positionContext: pickRehydratablePosition(s.positionContext),
+    // Raw — decideRestore verifies against MEXC and handles the no-posId
+    // (maker pre-fill) case.
+    positionContext: pickObject(s.positionContext),
+    pendingOrder: (s.pendingOrder && typeof s.pendingOrder === 'object' && s.pendingOrder.orderId != null)
+      ? s.pendingOrder : null,
     // Daily-window counters, so they reset with the day-roll above.
     sentimentShadowSkips24h: dayRolled ? 0 : pickNonNegInt(s.sentimentGate?.shadowWouldSkipCount24h),
     sentimentLiveSkips24h:   dayRolled ? 0 : pickNonNegInt(s.sentimentGate?.liveSkipCount24h),
@@ -53,10 +59,8 @@ function pickNonNegInt(v) {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
 }
 
-function pickRehydratablePosition(ctx) {
-  if (!ctx || typeof ctx !== 'object') return null;
-  if (!ctx.posId) return null;
-  return ctx;
+function pickObject(v) {
+  return v && typeof v === 'object' ? v : null;
 }
 
 function filterFutureCooldowns(raw, now) {
