@@ -8,6 +8,25 @@
 // Pure on purpose: the executor calls main() at module load, so its logic
 // can't be imported under test. Keep the record shape here where it can.
 
+// Health/heartbeat snapshot for the lane, written each cycle to
+// .meanrev-state/state.json. A relay endpoint can serve this so status is
+// visible without digging through journal/file state. lastCycleAt going
+// stale means the cycle stopped completing — the "active but dead" signal.
+export function buildMeanRevHealth({ now, cycleCount, dryRun, killed, basket, pending, positions, cooldowns }) {
+  return {
+    ts: now,
+    lastCycleAt: now,
+    cycleCount,
+    dryRun: !!dryRun,
+    killed: !!killed,
+    strategy: 'meanrev-4h-fade',
+    basket,
+    pending,
+    positions,
+    cooldowns: cooldowns || {},
+  };
+}
+
 export function shadowSignalRecord({ now, plan, barTs, dryRun }) {
   const base = {
     ts: now,

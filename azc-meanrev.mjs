@@ -11,10 +11,10 @@
 // MEXC sides: 1=open long, 3=open short, 4=close long, 2=close short.
 import { callMexcSigned } from './mexc-signer.mjs';
 import { planMeanRevTrade, resampleTo4h, MR_PARAMS } from './strategy-meanrev.mjs';
-import { shadowSignalRecord } from './meanrev-shadow.mjs';
+import { shadowSignalRecord, buildMeanRevHealth } from './meanrev-shadow.mjs';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdir, appendFile } from 'node:fs/promises';
+import { mkdir, appendFile, writeFile, rename } from 'node:fs/promises';
 
 const API_KEY = process.env.MEXC_API_KEY, API_SECRET = process.env.MEXC_API_SECRET;
 const DRY_RUN = process.env.MEANREV_LIVE !== '1';
@@ -26,6 +26,7 @@ const ENTRY_TTL_MS = Number(process.env.MEANREV_ENTRY_TTL_MS || 15 * 60_000);
 const COOLDOWN_MS = Number(process.env.MEANREV_COOLDOWN_MS || 4 * 3600_000);  // 1 bar
 const STATE_DIR = path.resolve('./.meanrev-state');
 const STOP_FLAG = path.join(STATE_DIR, 'stop.flag');
+const STATE_FILE = path.join(STATE_DIR, 'state.json');
 const SHADOW_DIR = path.resolve('./trade-learnings/shadow');
 const SHADOW_LOG = path.join(SHADOW_DIR, 'meanrev-signals.jsonl');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -57,6 +58,23 @@ const pending = new Map();      // symbol -> { orderId, plan, snap, expiresAt }
 const positions = new Map();    // symbol -> { posId, plan, tpOrderId, snap }
 const cooldownUntil = new Map();// symbol -> ts
 const actedBar = new Map();     // symbol -> last 4h bar ts acted on
+let cycleCount = 0;
+
+async function writeHealth(killed) {
+  // Atomic state.json each cycle so a relay endpoint can show liveness/mode
+  // without journal-diving. Best-effort — never break the loop over it.
+  try {
+    await mkdir(STATE_DIR, { recursive: true });
+    const health = buildMeanRevHealth({
+      now: Date.now(), cycleCount, dryRun: DRY_RUN, killed, basket: BASKET,
+      pending: [...pending.keys()], positions: [...positions.keys()],
+      cooldowns: Object.fromEntries(cooldownUntil),
+    });
+    const tmp = `${STATE_FILE}.tmp`;
+    await writeFile(tmp, JSON.stringify(health));
+    await rename(tmp, STATE_FILE);
+  } catch (e) { log(`health-write err ${e.message}`); }
+}
 
 async function recordShadow(plan, barTs) {
   // Every decision (armed entry or skip) becomes one JSONL line so a shadow
@@ -134,11 +152,12 @@ async function reconcileClosed(live) {
 }
 
 async function cycle() {
+  cycleCount += 1;
   const killed = existsSync(STOP_FLAG);
   const live = await openPositions();
   await monitorPending(live);
   await reconcileClosed(live);
-  if (killed) { log('stop.flag present — monitoring only, no new entries'); return; }
+  if (killed) { log('stop.flag present — monitoring only, no new entries'); await writeHealth(true); return; }
   const bal = await balance();
   const held = new Set(live.map(p => p.symbol));
   for (const symbol of BASKET) {
@@ -155,6 +174,7 @@ async function cycle() {
       else if (plan?.skip) { actedBar.set(symbol, barTs); log(`${symbol}: signal but skip=${plan.skip}`); }
     } catch (e) { log(`${symbol}: cycle error ${e.message}`); }
   }
+  await writeHealth(false);
 }
 
 async function main() {
