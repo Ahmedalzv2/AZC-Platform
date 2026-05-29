@@ -11,8 +11,10 @@
 // MEXC sides: 1=open long, 3=open short, 4=close long, 2=close short.
 import { callMexcSigned } from './mexc-signer.mjs';
 import { planMeanRevTrade, resampleTo4h, MR_PARAMS } from './strategy-meanrev.mjs';
+import { shadowSignalRecord } from './meanrev-shadow.mjs';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { mkdir, appendFile } from 'node:fs/promises';
 
 const API_KEY = process.env.MEXC_API_KEY, API_SECRET = process.env.MEXC_API_SECRET;
 const DRY_RUN = process.env.MEANREV_LIVE !== '1';
@@ -24,6 +26,8 @@ const ENTRY_TTL_MS = Number(process.env.MEANREV_ENTRY_TTL_MS || 15 * 60_000);
 const COOLDOWN_MS = Number(process.env.MEANREV_COOLDOWN_MS || 4 * 3600_000);  // 1 bar
 const STATE_DIR = path.resolve('./.meanrev-state');
 const STOP_FLAG = path.join(STATE_DIR, 'stop.flag');
+const SHADOW_DIR = path.resolve('./trade-learnings/shadow');
+const SHADOW_LOG = path.join(SHADOW_DIR, 'meanrev-signals.jsonl');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString().slice(0, 19).replace('T', ' '), '·', ...a);
 
@@ -53,6 +57,17 @@ const pending = new Map();      // symbol -> { orderId, plan, snap, expiresAt }
 const positions = new Map();    // symbol -> { posId, plan, tpOrderId, snap }
 const cooldownUntil = new Map();// symbol -> ts
 const actedBar = new Map();     // symbol -> last 4h bar ts acted on
+
+async function recordShadow(plan, barTs) {
+  // Every decision (armed entry or skip) becomes one JSONL line so a shadow
+  // run is reviewable instead of stdout-only. Best-effort — never break the
+  // cycle over an audit write.
+  try {
+    await mkdir(SHADOW_DIR, { recursive: true });
+    const rec = shadowSignalRecord({ now: Date.now(), plan, barTs, dryRun: DRY_RUN });
+    await appendFile(SHADOW_LOG, JSON.stringify(rec) + '\n');
+  } catch (e) { log(`shadow-record err ${e.message}`); }
+}
 
 async function notifyLearn(plan, fillPx, exitPx, outcome) {
   // Best-effort audit to the relay's learnings; never throw into the loop.
@@ -135,6 +150,7 @@ async function cycle() {
       const barTs = bars[bars.length - 1].t;
       if (actedBar.get(symbol) === barTs) continue;            // one decision per 4h bar
       const plan = planMeanRevTrade({ symbol, bars4h: bars, price: +tk.lastPrice, balance: bal, riskPct: RISK_PCT, leverage: LEVERAGE, meta: m });
+      if (plan) await recordShadow(plan, barTs);
       if (plan && !plan.skip) { actedBar.set(symbol, barTs); await placeEntry(plan, m); }
       else if (plan?.skip) { actedBar.set(symbol, barTs); log(`${symbol}: signal but skip=${plan.skip}`); }
     } catch (e) { log(`${symbol}: cycle error ${e.message}`); }
