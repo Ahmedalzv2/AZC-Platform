@@ -61,35 +61,56 @@ export function simulateMeanRev(bars, p, from = ATR_N + 1, to = bars.length) {
     const hh = Math.max(...bars.slice(i - don, i).map(x => x.h));
     const ll = Math.min(...bars.slice(i - don, i).map(x => x.l));
     const a = atr(bars, i);
+    // fade (mean-reversion): short the upside extreme, long the downside.
+    // trend (breakout continuation): long the upside break, short the down.
+    const fade = p.fade !== false;
     let dir = null;
-    if (b.c > hh) dir = 'short';      // fade the upside extreme
-    else if (b.c < ll) dir = 'long';  // fade the downside extreme
+    if (b.c > hh) dir = fade ? 'short' : 'long';
+    else if (b.c < ll) dir = fade ? 'long' : 'short';
     if (dir && a > 0 && i + 1 < to) {
       const entry = bars[i + 1].o;    // next-open entry, no lookahead
       const risk = atrMult * a;
       const stop = dir === 'long' ? entry - risk : entry + risk;
       const tp = dir === 'long' ? entry + rr * risk : entry - rr * risk;
-      let exitIdx = -1, exitPx = null, win = false;
-      for (let j = i + 1; j < to; j++) {
-        const x = bars[j];
-        const hitStop = dir === 'long' ? x.l <= stop : x.h >= stop;
-        const hitTp = dir === 'long' ? x.h >= tp : x.l <= tp;
-        if (hitStop) { exitPx = stop; win = false; exitIdx = j; break; }   // stop first on ties
-        if (hitTp) { exitPx = tp; win = true; exitIdx = j; break; }
+      const trail = p.trail || 0;
+      let exitIdx = -1, exitPx = null, win = false, takerExit = true;
+      if (trail > 0) {
+        // Chandelier trail: stop ratchets behind the high-water mark, letting
+        // winners run to capture trend fat tails. Always exits as a taker stop.
+        const trailDist = trail * a;
+        let hwm = entry, lwm = entry;
+        for (let j = i + 1; j < to; j++) {
+          const x = bars[j];
+          if (dir === 'long') {
+            const cur = Math.max(stop, hwm - trailDist);
+            if (x.l <= cur) { exitPx = cur; exitIdx = j; break; }
+            hwm = Math.max(hwm, x.h);   // update after stop check — no lookahead
+          } else {
+            const cur = Math.min(stop, lwm + trailDist);
+            if (x.h >= cur) { exitPx = cur; exitIdx = j; break; }
+            lwm = Math.min(lwm, x.l);
+          }
+        }
+        if (exitIdx >= 0) win = dir === 'long' ? exitPx > entry : exitPx < entry;
+      } else {
+        for (let j = i + 1; j < to; j++) {
+          const x = bars[j];
+          const hitStop = dir === 'long' ? x.l <= stop : x.h >= stop;
+          const hitTp = dir === 'long' ? x.h >= tp : x.l <= tp;
+          if (hitStop) { exitPx = stop; win = false; exitIdx = j; break; }   // stop first on ties
+          if (hitTp) { exitPx = tp; win = true; exitIdx = j; break; }
+        }
+        takerExit = !win;  // TP win fills as maker; SL loss as taker
       }
       if (exitIdx >= 0) {
-        // Adverse slippage hits TAKER legs only. Stop exits are always taker
-        // (market on trigger) and slip the worst — the realistic failure mode.
-        // Maker entry / maker TP fill at their resting price (no slip).
+        // Adverse slippage hits TAKER legs only (stop exits always taker).
         const sgn = dir === 'long' ? 1 : -1;
-        const entryFill = makerEntry ? entry : entry * (1 + sgn * slip);     // buy higher / sell lower
-        const exitFill = win
-          ? (makerTp ? exitPx : exitPx * (1 - sgn * slip))                   // TP: sell lower / buy higher if taker
-          : exitPx * (1 - sgn * slip);                                       // STOP (taker): always adverse
+        const entryFill = makerEntry ? entry : entry * (1 + sgn * slip);
+        const exitFill = takerExit ? exitPx * (1 - sgn * slip) : exitPx;
         const move = dir === 'long' ? exitFill - entryFill : entryFill - exitFill;
         const grossR = move / risk;
         const entryFee = makerEntry ? 0 : takerRate;
-        const exitFee = win ? (makerTp ? 0 : takerRate) : takerRate;          // SL always taker
+        const exitFee = takerExit ? takerRate : (makerTp ? 0 : takerRate);
         const feeR = (entry * (entryFee + exitFee)) / risk;
         trades.push({ ts: b.t, dir, grossR, netR: grossR - feeR, win });
         i = exitIdx;
@@ -114,13 +135,25 @@ export function metrics(trades) {
 }
 
 // ── walk-forward runner ──────────────────────────────────────────────────
-function loadSymbol(file) {
+// bars per 4h aggregation by source interval.
+const PER_4H = { Min5: 48, Min15: 16, Min60: 4 };
+function loadSymbol(file, per) {
   const raw = JSON.parse(readFileSync(path.join(FIX, file), 'utf8'));
-  return resample(raw.map(r => ({ t: r.t ?? r[0], o: +(r.o ?? r[1]), h: +(r.h ?? r[2]), l: +(r.l ?? r[3]), c: +(r.c ?? r[4]) })));
+  return resample(raw.map(r => ({ t: r.t ?? r[0], o: +(r.o ?? r[1]), h: +(r.h ?? r[2]), l: +(r.l ?? r[3]), c: +(r.c ?? r[4]) })), per);
 }
 
-const GRID = [];
-for (const don of [20, 30]) for (const atrMult of [2, 2.5]) for (const rr of [1.0, 1.2]) GRID.push({ don, atrMult, rr });
+// Fade wants ~1:1 (revert to mean); trend wants RR>1 (let winners run);
+// trend+trail lets winners run unbounded behind a chandelier stop.
+function buildGrid(fade, useTrail) {
+  const g = [];
+  if (!fade && useTrail) {
+    for (const don of [20, 30, 55]) for (const atrMult of [2, 3]) for (const trail of [2, 3]) g.push({ don, atrMult, rr: 99, trail, fade: false });
+    return g;
+  }
+  const rrs = fade ? [1.0, 1.2] : [2, 3];
+  for (const don of [20, 30]) for (const atrMult of [2, 2.5]) for (const rr of rrs) g.push({ don, atrMult, rr, fade });
+  return g;
+}
 
 function main() {
   const args = process.argv.slice(2);
@@ -128,9 +161,17 @@ function main() {
   const isOnly = args.includes('--is');
   const slipBps = Number((args.find(a => a.startsWith('--slip=')) || '--slip=0').split('=')[1]) || 0;
   const feeOpts = { ...(allTaker ? { makerEntry: false, makerTp: false } : { makerEntry: true, makerTp: true }), slipBps };
+  const interval = (args.find(a => a.startsWith('--interval=')) || '--interval=Min5').split('=')[1];
+  const days = (args.find(a => a.startsWith('--days=')) || '--days=365').split('=')[1];
+  const fade = !args.includes('--mode=trend');
+  const GRID = buildGrid(fade, args.includes('--trail'));
+  const per = PER_4H[interval] || 48;
+  const rx = new RegExp(`-${days}d-${interval}\\.json$`);
 
-  const symbols = readdirSync(FIX).filter(f => /-365d-Min5\.json$/.test(f)).map(f => ({ sym: f.split('-')[0], bars: loadSymbol(f) }));
-  const FOLDS = 5;
+  const symbols = readdirSync(FIX).filter(f => rx.test(f)).map(f => ({ sym: f.split('-')[0], bars: loadSymbol(f, per) }));
+  if (!symbols.length) { console.error(`No fixtures matching -${days}d-${interval}.json`); process.exit(1); }
+  const FOLDS = 6;
+  console.log(`data: ${interval} ${days}d → 4h (per=${per}) · ${symbols.length} symbols · ${symbols[0].bars.length} bars/sym`);
 
   // Score a param set across all symbols over a [fracFrom,fracTo) slice.
   const scoreParams = (p, fracFrom, fracTo) => {
@@ -142,7 +183,7 @@ function main() {
     return { trades: all, ...metrics(all) };
   };
 
-  console.log(`MEAN-REVERSION walk-forward · 4h · fees=${allTaker ? 'ALL-TAKER (conservative)' : 'maker entry+TP, taker SL (realistic)'} · taker=${TAKER} · slip=${slipBps}bps`);
+  console.log(`${fade ? 'MEAN-REVERSION (fade)' : 'TREND (breakout)'} walk-forward · 4h · fees=${allTaker ? 'ALL-TAKER' : 'maker entry+TP, taker SL'} · taker=${TAKER} · slip=${slipBps}bps`);
   console.log(`grid: ${GRID.length} param sets · ${symbols.length} symbols · ${FOLDS} folds (anchored expanding)\n`);
 
   if (isOnly) {
