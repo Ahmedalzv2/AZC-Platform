@@ -70,11 +70,14 @@ export const KILLZONE_GATE_ENABLED = false;
 //     off     n=178  expR= +0.080R  ← keep (largest volume bucket)
 //     asia    n= 98  expR= +0.067R  ← keep
 //     london  n= 66  expR= -0.004R  ← drop
-// London is the only session whose expectancy isn't positive after fees.
-// Skipping it lifts aggregate R/trade ~+0.017R and total R by +0.21R on
-// the 365d sample — small but consistent. Re-evaluate after the next
-// 90d block of live trades; if london flips positive, remove from list.
-export const SKIP_SESSIONS = ['london'];
+// London is the only session the 365d backtest flags negative. But the
+// LIVE tape disagrees with the backtest on asia: across 31 real fires the
+// 00-08 UTC / asia window is 13% win, -7.41R (the entire net loss); the
+// other 16 trades net +5.8R. Backtest said asia +0.067R, live says
+// -0.389R/trade — same backtest-vs-reality gap that hid the fee drag.
+// Trust the live tape: skip asia too. Re-evaluate per session after each
+// 90d block; remove a session from the list if it flips net-positive live.
+export const SKIP_SESSIONS = ['london', 'asia'];
 
 // Side-aware live drift gate. Backtest at 90d/2398 trades says both
 // LONG (+0.182R/trade) and SHORT (+0.283R/trade) are net-positive, so
