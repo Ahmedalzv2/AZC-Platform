@@ -1011,12 +1011,19 @@ async function reconcileClosedPosition() {
 
   const stopDist = Number.isFinite(ctx.sl) && ctx.sl > 0
     ? Math.abs(ctx.entry - ctx.sl) : 0;
+  // rMultiple is GROSS (price move / stop) — fees not included. The gate's
+  // live expectancy reads this, matched against gross backtest refs, so it
+  // stays consistent. rMultipleNet folds in fees + funding (pnlUsd / risk$)
+  // and is the figure that actually matches the dollar P&L; surface it so
+  // the R shown to the operator isn't ~0.1–0.3R rosier than reality.
   const rMultiple = stopDist > 0 ? (pnlPriceMove / stopDist) : 0;
+  const riskUsd = stopDist > 0 ? (ctx.contractSize * stopDist * ctx.qty) : 0;
+  const rMultipleNet = riskUsd > 0 ? (pnlUsd / riskUsd) : 0;
   const outcome = pnlUsd > 0.001 ? 'win' : pnlUsd < -0.001 ? 'loss' : 'be';
   const isOrphan = ctx.source === 'manual-orphan';
   const tag = isOrphan ? 'close-manual' : 'close';
-  log(`[${tag}] ${ctx.symbol} ${ctx.dir} fill=${fillPx} pnl=$${pnlUsd.toFixed(4)} r=${rMultiple.toFixed(2)}R outcome=${outcome}`);
-  notify(fmtCloseAlert({ symbol: ctx.symbol, dir: ctx.dir, outcome, rMultiple, realizedUsd: pnlUsd, holdMs }));
+  log(`[${tag}] ${ctx.symbol} ${ctx.dir} fill=${fillPx} pnl=$${pnlUsd.toFixed(4)} netR=${rMultipleNet.toFixed(2)} grossR=${rMultiple.toFixed(2)} outcome=${outcome}`);
+  notify(fmtCloseAlert({ symbol: ctx.symbol, dir: ctx.dir, outcome, rMultiple: rMultipleNet, realizedUsd: pnlUsd, holdMs }));
 
   try {
     const confluences = [];
@@ -1047,6 +1054,7 @@ async function reconcileClosedPosition() {
       leverage: ctx.lev,
       realizedUsd: pnlUsd,
       rMultiple,
+      rMultipleNet,
       fees,
       grade: ctx.tier || (isOrphan ? 'manual' : 'auto'),
       bias: ctx.htfDir || null,

@@ -145,7 +145,12 @@ export function formatLearningMarkdown(p) {
   lines.push(`- Fill price: ${f(p?.priceAtCall)}`);
   if (Number.isFinite(Number(p?.exitPrice))) lines.push(`- Exit price: ${f(p.exitPrice)}`);
   lines.push(`- Outcome:    ${String(p?.outcome || '?').toUpperCase()}`);
-  lines.push(`- Realised:   ${fu(p?.realizedUsd)}  ${fr(p?.rMultiple)}  (after fees + funding)`);
+  // Net R (fees + funding folded in) is the figure that matches the dollar
+  // P&L; fall back to the gross R on older files that predate rMultipleNet.
+  const netR = Number.isFinite(Number(p?.rMultipleNet)) ? p.rMultipleNet : p?.rMultiple;
+  lines.push(`- Realised:   ${fu(p?.realizedUsd)}  ${fr(netR)}  (net, after fees + funding)`);
+  if (Number.isFinite(Number(p?.rMultipleNet)) && Number.isFinite(Number(p?.rMultiple)))
+    lines.push(`- Gross R:    ${fr(p.rMultiple)}  (price move only, no fees)`);
   if (p?.accounting) {
     const a = p.accounting;
     const holdH = a.holdMs > 0 ? (a.holdMs / 3600000).toFixed(1) + 'h' : '—';
