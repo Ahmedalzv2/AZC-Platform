@@ -8,6 +8,8 @@
 // 4/5 folds positive. Survives fees because it's ~1 trade/symbol/week on 4h
 // — the opposite of the fee-dead 5m FVG scalp.
 
+import { sizeTradeByRiskAndMargin } from './trader-sizing.mjs';
+
 export const BARS_PER_4H = 48;        // 5m -> 4h
 export const MR_ATR_N = 14;
 
@@ -62,4 +64,32 @@ export function buildMeanRevLevels(entry, sig) {
   const stop = sig.dir === 'long' ? entry - sig.risk : entry + sig.risk;
   const tp   = sig.dir === 'long' ? entry + sig.rr * sig.risk : entry - sig.rr * sig.risk;
   return { stop, tp };
+}
+
+// Full pure trade plan: signal + live price + balance + contract spec ->
+// an exchange-ready order intent, or null (no signal) / {skip} (unsizable).
+// MEXC sides: 1=open long, 3=open short, 4=close long, 2=close short.
+export function planMeanRevTrade({ symbol, bars4h, price, balance, riskPct, leverage, meta, params = MR_PARAMS }) {
+  const sig = meanRevSignal(bars4h, params);
+  if (!sig) return null;
+  const pu = Number(meta.priceUnit);
+  const dec = (String(pu).split('.')[1] || '').length;
+  const snap = v => Number((Math.round(v / pu) * pu).toFixed(dec));
+  const entry = snap(price);
+  let { stop, tp } = buildMeanRevLevels(entry, sig);
+  stop = snap(stop); tp = snap(tp);
+  const stopDistUsdPerContract = Math.abs(entry - stop) * Number(meta.contractSize);
+  if (!(stopDistUsdPerContract > 0)) return { skip: 'zero-stop-dist', symbol };
+  const sized = sizeTradeByRiskAndMargin({
+    balance, riskPct, leverage, entry, stopDistUsdPerContract,
+    contractSize: meta.contractSize, minVol: meta.minVol,
+  });
+  if (!sized.qty || sized.qty <= 0) return { skip: sized.reason || 'unsized', symbol };
+  return {
+    symbol, dir: sig.dir,
+    sideOpen:  sig.dir === 'long' ? 1 : 3,
+    sideClose: sig.dir === 'long' ? 4 : 2,
+    entry, stop, tp, qty: sized.qty,
+    riskUsd: sized.riskUsd, atr: sig.atr,
+  };
 }
