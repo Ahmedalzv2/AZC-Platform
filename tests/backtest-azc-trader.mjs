@@ -109,6 +109,16 @@ const LEVERAGE            = Number(args.lev     ?? 10);
 const MIN_FEE_USD         = Number(args['min-fee'] ?? 0.025);
 const FUNDING_PCT_PER_WIN = Number(args.funding ?? 0.0001);
 const FEES_ENABLED        = !args['no-fees'];
+// Fee-rate overrides for stress-testing the "SOL/XRP are zero-fee" snapshot
+// against the live tape, which shows ~0.0755% taker charged on EVERY close
+// (wins included). Default null → use per-symbol contract-meta rates.
+//   --taker=N        force taker rate for all symbols (e.g. 0.0006)
+//   --maker=N        force maker rate for all symbols
+//   --taker-exits    model winning TP closes as taker too (matches live;
+//                    the default assumes a free limit-maker TP close)
+const TAKER_OVERRIDE      = args.taker != null ? Number(args.taker) : null;
+const MAKER_OVERRIDE      = args.maker != null ? Number(args.maker) : null;
+const TAKER_EXITS         = !!args['taker-exits'];
 const SIDE_FILTER         = String(args['side'] || 'both').toLowerCase();
 // --no-ttl disables the TTL fill gate — useful for sanity checks against
 // the old idealised-fill numbers, never for shippable analysis.
@@ -339,8 +349,10 @@ function backtestAsset(symbol, bars5) {
     //   BE      → market-close timeout → taker rate
     //   Each side has a min-fee floor (empirical $0.025 from DOGE).
     const calcFee = (notional, rate) => Math.max(notional * rate, rate > 0 ? MIN_FEE_USD : 0);
-    const feeOpen  = calcFee(notional, meta.makerFeeRate);
-    const closeRate = res.outcome === 'win' ? meta.makerFeeRate : meta.takerFeeRate;
+    const makerRate = MAKER_OVERRIDE != null ? MAKER_OVERRIDE : meta.makerFeeRate;
+    const takerRate = TAKER_OVERRIDE != null ? TAKER_OVERRIDE : meta.takerFeeRate;
+    const feeOpen  = calcFee(notional, makerRate);
+    const closeRate = (res.outcome === 'win' && !TAKER_EXITS) ? makerRate : takerRate;
     const feeClose = calcFee(notional, closeRate);
     const startWindow = Math.floor(b.t / (8 * 3600 * 1000));
     const endWindow   = Math.floor(res.exitTs / (8 * 3600 * 1000));
