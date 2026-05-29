@@ -67,7 +67,7 @@ describe('trade-learnings (pure)', () => {
         netUsd: 0.0794,
       },
     });
-    assert.match(md, /Realised:\s+\+0\.0794 USD\s+—\s+\(after fees \+ funding\)/);
+    assert.match(md, /Realised:\s+\+0\.0794 USD\s+—\s+\(net, after fees \+ funding\)/);
     assert.match(md, /Gross:\s+\+0\.0800 USD/);
     assert.match(md, /Fee open:\s+\+0\.0002 USD/);
     assert.match(md, /Funding:\s+\+0\.0002 USD\s+\(2 × 8h windows · held 16\.0h\)/);
