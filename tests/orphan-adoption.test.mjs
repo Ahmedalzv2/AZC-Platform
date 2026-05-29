@@ -58,9 +58,12 @@ describe('buildOrphanContext — pure helper', () => {
     assert.equal(ctx.contractSize, 0.1);
   });
 
-  it('defaults contractSize to 1 when meta is missing or invalid', () => {
-    const ctx = buildOrphanContext({ pos: SOL_POS, planOrders: [], contractMeta: null });
-    assert.equal(ctx.contractSize, 1);
+  it('returns null when contract meta is missing (no silent contractSize=1 default)', () => {
+    // contractSize multiplies every P&L line; a wrong default records P&L
+    // ~10x off for SOL/XRP. Refuse rather than mis-account; caller retries.
+    assert.equal(buildOrphanContext({ pos: SOL_POS, planOrders: [], contractMeta: null }), null);
+    assert.equal(buildOrphanContext({ pos: SOL_POS, planOrders: [], contractMeta: { contractSize: 0 } }), null);
+    assert.equal(buildOrphanContext({ pos: SOL_POS, planOrders: [], contractMeta: { contractSize: 'x' } }), null);
   });
 
   it('sl/tp are null when no plan orders are attached', () => {

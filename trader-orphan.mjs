@@ -37,7 +37,13 @@ export function buildOrphanContext({ pos, planOrders, contractMeta, now = Date.n
 
   const { sl, tp } = pickActivePlanLevels({ planOrders, positionId: pos.positionId });
 
+  // contractSize is the multiplier in every P&L line (grossUsd = move ×
+  // contractSize × qty). For SOL/XRP it's 0.1, so silently defaulting to 1
+  // when the meta fetch fails recorded P&L ~10× wrong and poisoned
+  // dailyPnlUsd + the post-mortem. Refuse to build a context without it;
+  // the caller retries adoption next cycle once the meta fetch succeeds.
   const contractSize = Number(contractMeta?.contractSize);
+  if (!Number.isFinite(contractSize) || contractSize <= 0) return null;
   return {
     symbol: pos.symbol,
     dir,
@@ -46,7 +52,7 @@ export function buildOrphanContext({ pos, planOrders, contractMeta, now = Date.n
     sl, tp,
     qty,
     lev: Number.isFinite(lev) && lev > 0 ? lev : null,
-    contractSize: Number.isFinite(contractSize) && contractSize > 0 ? contractSize : 1,
+    contractSize,
     posId: String(pos.positionId),
     // filledAt anchored at adoption — older MEXC fields are unreliable on
     // the open_positions response. Max-hold check is gated separately so
