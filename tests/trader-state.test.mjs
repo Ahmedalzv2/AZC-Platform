@@ -66,6 +66,7 @@ describe('loadTraderStateFromDisk', () => {
       cooldownUntil: { SOL_USDT: 1_500_000 },
       closedPosIds: {},
       positionContext: null,
+      pendingOrder: null,
       sentimentShadowSkips24h: 0,
       sentimentLiveSkips24h: 0,
     });
@@ -152,6 +153,7 @@ describe('loadTraderStateFromDisk', () => {
       cooldownUntil: {},
       closedPosIds: {},
       positionContext: null,
+      pendingOrder: null,
       sentimentShadowSkips24h: 0,
       sentimentLiveSkips24h: 0,
     });
@@ -165,13 +167,29 @@ describe('loadTraderStateFromDisk', () => {
     assert.equal(out.positionContext, null);
   });
 
-  test('positionContext is null when posId is missing (pre-fill, cannot rehydrate)', async () => {
+  test('passes a no-posId (maker pre-fill) context through raw for decideRestore', async () => {
+    // decideRestore needs the no-posId context to re-adopt a fill that
+    // landed during downtime; pre-nulling it here broke that path.
+    const ctx = { symbol: 'XRP_USDT', dir: 'bear', orderId: 'abc', entry: 1.3, qty: 100 };
     const file = await makeStateFile({
       dailyResetAt: 9_999_999, tradesToday: 0, dailyPnlUsd: 0, cooldownUntil: {},
-      positionContext: { symbol: 'XRP_USDT', dir: 'bear', orderId: 'abc', entry: 1.3 },
+      positionContext: ctx,
     });
     const out = await loadTraderStateFromDisk(file, 1_000_000);
-    assert.equal(out.positionContext, null);
+    assert.deepEqual(out.positionContext, ctx);
+  });
+
+  test('passes pendingOrder through when it has an orderId, else null', async () => {
+    const po = { symbol: 'XRP_USDT', orderId: '815', expiresAt: 9_999_999 };
+    const withPo = await loadTraderStateFromDisk(await makeStateFile({
+      dailyResetAt: 9_999_999, tradesToday: 0, dailyPnlUsd: 0, cooldownUntil: {}, pendingOrder: po,
+    }), 1_000_000);
+    assert.deepEqual(withPo.pendingOrder, po);
+
+    const withoutPo = await loadTraderStateFromDisk(await makeStateFile({
+      dailyResetAt: 9_999_999, tradesToday: 0, dailyPnlUsd: 0, cooldownUntil: {}, pendingOrder: { symbol: 'X' },
+    }), 1_000_000);
+    assert.equal(withoutPo.pendingOrder, null);
   });
 
   test('positionContext is returned as-is when posId is present', async () => {
