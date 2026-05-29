@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideStep, tradeNetR, STRATEGY_PARAMS } from '../strategy-trend-trail.mjs';
+import { decideStep, tradeNetR, efficiencyRatio, STRATEGY_PARAMS } from '../strategy-trend-trail.mjs';
 
 const P = { don: 5, atrN: 3, atrMult: 2, trail: 3 };
 const bar = (t, o, h, l, c) => ({ t, o, h, l, c });
@@ -63,6 +63,25 @@ describe('decideStep — manage open position', () => {
     assert.equal(d.action, 'close');
     assert.equal(d.exit, 96);
     assert.equal(d.win, false);
+  });
+});
+
+describe('regime gate (efficiency ratio)', () => {
+  it('ER ~1 for a clean trend, ~0 for chop', () => {
+    const trend = Array.from({ length: 11 }, (_, i) => bar(i, 100 + i, 100 + i, 100 + i, 100 + i));
+    assert.ok(efficiencyRatio(trend, 10, 10) > 0.95);
+    const chop = Array.from({ length: 11 }, (_, i) => bar(i, 100, 100, 100, i % 2 ? 101 : 100));
+    assert.ok(efficiencyRatio(chop, 10, 10) < 0.3);
+  });
+
+  it('skips a breakout when the regime is choppy', () => {
+    const G = { don: 5, atrN: 3, atrMult: 2, trail: 3, regimeN: 6, erMin: 0.35 };
+    // oscillating series (low ER) that still prints a breakout close on the last bar
+    const bars = Array.from({ length: 9 }, (_, i) => bar(i, 100, 100.6, 99.4, i % 2 ? 100.5 : 99.6));
+    bars[8] = bar(8, 100, 101.2, 99.5, 101);   // breaks prior high but chop regime
+    const d = decideStep({ bars, i: 8, position: null, params: G });
+    assert.equal(d.action, 'flat');
+    assert.equal(d.regime, 'chop');
   });
 });
 
