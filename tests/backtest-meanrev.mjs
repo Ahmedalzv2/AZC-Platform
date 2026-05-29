@@ -52,7 +52,8 @@ export function atr(bars, i, n = ATR_N) {
 // Simulate the fade strategy over [from,to) of `bars`. Returns trade list with
 // netR. takerRate applies to non-maker legs.
 export function simulateMeanRev(bars, p, from = ATR_N + 1, to = bars.length) {
-  const { don, atrMult, rr, makerEntry = true, makerTp = true, takerRate = TAKER } = p;
+  const { don, atrMult, rr, makerEntry = true, makerTp = true, takerRate = TAKER, slipBps = 0 } = p;
+  const slip = slipBps / 10000; // adverse slippage applied to taker fills
   const trades = [];
   let i = Math.max(from, don + 1, ATR_N + 1);
   while (i < to - 1) {
@@ -77,12 +78,19 @@ export function simulateMeanRev(bars, p, from = ATR_N + 1, to = bars.length) {
         if (hitTp) { exitPx = tp; win = true; exitIdx = j; break; }
       }
       if (exitIdx >= 0) {
-        const move = dir === 'long' ? exitPx - entry : entry - exitPx;
+        // Adverse slippage hits TAKER legs only. Stop exits are always taker
+        // (market on trigger) and slip the worst — the realistic failure mode.
+        // Maker entry / maker TP fill at their resting price (no slip).
+        const sgn = dir === 'long' ? 1 : -1;
+        const entryFill = makerEntry ? entry : entry * (1 + sgn * slip);     // buy higher / sell lower
+        const exitFill = win
+          ? (makerTp ? exitPx : exitPx * (1 - sgn * slip))                   // TP: sell lower / buy higher if taker
+          : exitPx * (1 - sgn * slip);                                       // STOP (taker): always adverse
+        const move = dir === 'long' ? exitFill - entryFill : entryFill - exitFill;
         const grossR = move / risk;
-        // entry leg maker on fills at a resting band limit; TP leg maker; SL taker.
         const entryFee = makerEntry ? 0 : takerRate;
-        const exitFee = win ? (makerTp ? 0 : takerRate) : takerRate; // SL always taker
-        const feeR = ((entry * (entryFee + exitFee))) / risk;
+        const exitFee = win ? (makerTp ? 0 : takerRate) : takerRate;          // SL always taker
+        const feeR = (entry * (entryFee + exitFee)) / risk;
         trades.push({ ts: b.t, dir, grossR, netR: grossR - feeR, win });
         i = exitIdx;
       }
@@ -118,7 +126,8 @@ function main() {
   const args = process.argv.slice(2);
   const allTaker = args.includes('--all-taker');
   const isOnly = args.includes('--is');
-  const feeOpts = allTaker ? { makerEntry: false, makerTp: false } : { makerEntry: true, makerTp: true };
+  const slipBps = Number((args.find(a => a.startsWith('--slip=')) || '--slip=0').split('=')[1]) || 0;
+  const feeOpts = { ...(allTaker ? { makerEntry: false, makerTp: false } : { makerEntry: true, makerTp: true }), slipBps };
 
   const symbols = readdirSync(FIX).filter(f => /-365d-Min5\.json$/.test(f)).map(f => ({ sym: f.split('-')[0], bars: loadSymbol(f) }));
   const FOLDS = 5;
@@ -133,7 +142,7 @@ function main() {
     return { trades: all, ...metrics(all) };
   };
 
-  console.log(`MEAN-REVERSION walk-forward · 4h · fees=${allTaker ? 'ALL-TAKER (conservative)' : 'maker entry+TP, taker SL (realistic)'} · taker=${TAKER}`);
+  console.log(`MEAN-REVERSION walk-forward · 4h · fees=${allTaker ? 'ALL-TAKER (conservative)' : 'maker entry+TP, taker SL (realistic)'} · taker=${TAKER} · slip=${slipBps}bps`);
   console.log(`grid: ${GRID.length} param sets · ${symbols.length} symbols · ${FOLDS} folds (anchored expanding)\n`);
 
   if (isOnly) {
