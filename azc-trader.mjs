@@ -586,13 +586,31 @@ async function tryFire() {
   const openPositions = await getOpenPositions();
   const valid = results.filter(r => !r.skip);
 
+  // Build the decision args once. Sentiment never affects pick SELECTION —
+  // it only converts fire→skip or attaches a shadow flag AFTER the pick — so
+  // run a sentiment-free pass to learn the actual pick, fetch sentiment for
+  // THAT symbol, then re-decide. Previously sentiment was fetched for the
+  // global closest candidate, which differs from the pick once symbol-side
+  // or session-side gates filter the list, so the gate was applied against
+  // the wrong symbol's sentiment. Bonus: the API is only hit when we'd fire.
+  const decisionArgs = {
+    candidates: valid,
+    pendingOrder: false,
+    openPositions: openPositions.length,
+    maxOpenPositions: MAX_OPEN_POSITIONS,
+    sideStatus,
+    sessionStatus,
+    symbolSideStatus,
+    sessionSideStatus,
+    currentSession: currentKillzoneName() || 'off',
+    riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
+    skipSessions: SKIP_SESSIONS,
+  };
+
   let sentimentSnapshot = null;
-  if (SENTIMENT_GATE_MODE !== 'off' && valid.length) {
-    // Locally pick the top candidate using the same comparator
-    // decideFireAction uses, so we only fetch sentiment for the one
-    // symbol we're about to vote on. Duplication is two lines.
-    const top = [...valid].sort((a, b) => a.distPct - b.distPct)[0];
-    const ticker = String(top.symbol || '').split('_')[0];
+  if (SENTIMENT_GATE_MODE !== 'off') {
+    const dry = decideFireAction({ ...decisionArgs, sentimentSnapshot: null, sentimentGateMode: 'off' });
+    const ticker = dry.action === 'fire' ? String(dry.pick.symbol || '').split('_')[0] : '';
     if (ticker) {
       try {
         sentimentSnapshot = await getSentiment({ ticker });
@@ -607,19 +625,9 @@ async function tryFire() {
   }
 
   const decision = decideFireAction({
-    candidates: valid,
-    pendingOrder: false,
-    openPositions: openPositions.length,
-    maxOpenPositions: MAX_OPEN_POSITIONS,
-    sideStatus,
-    sessionStatus,
-    symbolSideStatus,
-    sessionSideStatus,
-    currentSession: currentKillzoneName() || 'off',
-    riskTiers: { default: RISK_PCT_DEFAULT, top2: RISK_PCT_TOP_2, best: RISK_PCT_BEST },
+    ...decisionArgs,
     sentimentSnapshot,
     sentimentGateMode: SENTIMENT_GATE_MODE,
-    skipSessions: SKIP_SESSIONS,
   });
 
   if (decision.skip === 'sentiment-disagree') {
