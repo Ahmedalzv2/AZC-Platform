@@ -1,12 +1,18 @@
 name: Tests
 
+# PR + feature-branch validation only. main is intentionally absent: a push
+# to main is covered by the `tests` job inside deploy-pages.yml, so testing
+# here too would double-run the suite on every merge.
 on:
   push:
     branches:
-      - main
       - 'claude/**'
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:

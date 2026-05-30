@@ -1,15 +1,16 @@
 name: Deploy dashboard to GitHub Pages
 
-# Auto-deploys index.html (and the rest of the repo) to GitHub Pages on
-# every push to main. The user just bookmarks
-# https://Ahmedalzv2.github.io/ict-autopilot/ — it always shows the latest
-# code without manual downloads.
+# Auto-deploys the repo (index.html + assets) to GitHub Pages on every push
+# to main, so https://Ahmedalzv2.github.io/AZC-Platform/ always shows latest.
 #
-# Only main is wired up here because the github-pages environment has
-# branch-protection rules that only allow the default branch to deploy.
-# Pushes from feature branches were being rejected with
-# "Branch '<feature>' is not allowed to deploy to github-pages
-#  due to environment protection rules."
+# Pipeline: tests -> build -> deploy. Deploy is gated on a green suite, so a
+# failing test never reaches production. Only main is wired up because the
+# github-pages environment's branch-protection rules reject non-default
+# branches ("Branch '<x>' is not allowed to deploy to github-pages").
+#
+# Uses GitHub's native Pages deployment (upload-pages-artifact + deploy-pages)
+# rather than pushing a gh-pages branch — no redundant pages-build-deployment
+# runs, and deploy provenance flows through the id-token.
 
 on:
   push:
@@ -23,14 +24,21 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+
+  build:
+    needs: [tests]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -42,10 +50,16 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # The whole repo so Pages can serve any future asset alongside
-          # index.html. Hosted as a static site — no build step.
+          # Whole repo — served as a static site, no build step.
           path: '.'
 
+  deploy:
+    needs: [build]
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
