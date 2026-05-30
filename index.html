@@ -532,7 +532,7 @@
         <div class="page-header" style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <div>
             <h1>📰 News & Market Intelligence</h1>
-            <p>Aggregated headlines from CryptoCompare and CoinGecko · auto-refresh every 5 min · filter by source, category, tracked assets, or recency.</p>
+            <p>Aggregated crypto headlines via the relay's keyless RSS feed (CoinDesk, Cointelegraph, Decrypt, The Block…) · auto-refresh every 5 min · filter by source, category, tracked assets, or recency.</p>
           </div>
           <div style="display:flex;gap:8px;">
             <button class="alert-log-clear" onclick="fetchAllNewsAggregate(true)" id="newsRefreshBtn" title="Force refresh now">↻ Refresh</button>
@@ -7387,6 +7387,25 @@
         body
       };
     }
+    if (source === 'relay') {
+      // Server-side RSS aggregate from the relay /news endpoint. Map onto the
+      // existing 'rss' source + per-outlet _sourceKey so the CoinDesk /
+      // Cointelegraph / The Block chips keep filtering. raw = { title, url,
+      // source (feed name), published (unix sec), body }.
+      const skMap = { 'coindesk':'coindesk', 'cointelegraph':'cointelegraph', 'the block':'theblock', 'beincrypto':'beincrypto', 'u.today':'utoday' };
+      const label = String(raw.source || 'RSS');
+      return {
+        id: 'relay-' + (raw.url || raw.title),
+        title: String(raw.title || ''),
+        url: raw.url || '#',
+        source: 'rss',
+        _sourceKey: skMap[label.toLowerCase()] || label.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        sourceLabel: label,
+        published: raw.published || 0,
+        categories: [],
+        body: String(raw.body || '').slice(0, 220)
+      };
+    }
     if (source === 'social') {
       // LunarCrush post: { id, post_title, post_link, post_created, creator_name, interactions_24h, sentiment }
       return {
@@ -7414,6 +7433,20 @@
   // it through a server-side fetcher in the relay rather than a public proxy.
   const RSS_FEEDS = [];
   async function _fetchRSSFeed(_feed) { return []; }
+
+  // Keyless server-side RSS aggregate. The relay fetches public crypto RSS
+  // (CoinDesk, Cointelegraph, Decrypt, The Block, …) Node-side — no CORS, no
+  // API key — and returns normalized items. This is the primary news lane now
+  // that CryptoCompare/cryptocurrency.cv/CoinGecko/LunarCrush free tiers died.
+  async function _fetchRelayNews() {
+    try {
+      const r = await fetch(TG_RELAY_BASE + '/news?limit=120', { cache: 'no-store', signal: _t(12000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const arr = Array.isArray(j.articles) ? j.articles : [];
+      return arr.map(n => _normalizeNewsItem(n, 'relay')).filter(Boolean);
+    } catch (e) { console.warn('relay news fetch failed:', e.message); return []; }
+  }
 
   // ═══════════════════════════════════════════════════════
   // LunarCrush 𝕏 / social posts per tracked asset
@@ -7663,18 +7696,19 @@
     if (btn) btn.textContent = '⟳ refreshing…';
     // X-Live (Nitter via ScrapeBadger) is SLOW and unreliable — fetch it
     // separately so the main news refresh isn't blocked by it.
-    const [cc, cv, cg, social] = await Promise.all([
+    const [relay, cc, cv, cg, social] = await Promise.all([
+      _fetchRelayNews(),
       _fetchCryptoCompareGlobal(),
       _fetchCryptocurrencyCV(),
       _fetchCoinGeckoGlobal(),
       _fetchLunarCrushSocial(),
     ]);
     const allRss = [];
-    console.log('[news] sources:', { cryptocompare: cc.length, cccv: cv.length, coingecko: cg.length, lunarcrush: social.length });
-    // Dedupe by URL (preserve any already-loaded X-live items in the cache)
+    console.log('[news] sources:', { relay: relay.length, cryptocompare: cc.length, cccv: cv.length, coingecko: cg.length, lunarcrush: social.length });
+    // Dedupe by URL (relay first so it wins; preserve already-loaded X-live items)
     const byUrl = new Map();
     const existingXlive = _newsAggregateItems.filter(i => i._sourceKey === 'xlive');
-    [...cc, ...cv, ...cg, ...allRss, ...social, ...existingXlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
+    [...relay, ...cc, ...cv, ...cg, ...allRss, ...social, ...existingXlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
     _newsAggregateItems = Array.from(byUrl.values()).sort((a,b) => (b.published||0) - (a.published||0));
     _newsAggregateTs = Date.now();
     if (btn) btn.textContent = '↻ Refresh';
@@ -8049,7 +8083,7 @@
     const stats = document.getElementById('newsStatsBar');
     if (!host || !stats) return;
     if (!_newsAggregateItems.length) {
-      stats.innerHTML = '<span style="color:var(--text-mute);">⟳ loading first batch from CryptoCompare + CoinGecko…</span>';
+      stats.innerHTML = '<span style="color:var(--text-mute);">⟳ loading latest crypto headlines…</span>';
       host.innerHTML = '<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:48px 24px;text-align:center;color:var(--text-mute);">Fetching headlines…</div>';
       return;
     }
@@ -8075,7 +8109,7 @@
     if (!filtered.length) {
       const totalRaw = _newsAggregateItems.length;
       const reason = totalRaw === 0
-        ? 'No sources returned any items. Open DevTools → Console to see [news] diagnostic. Likely CryptoCompare temporarily unreachable or all crypto news APIs are throttling.'
+        ? 'No sources returned any items. Open DevTools → Console to see the [news] diagnostic. Likely the relay /news endpoint is unreachable or all RSS feeds are throttling.'
         : `${totalRaw} articles in cache but none match the current filters. Try widening recency, unchecking categories, or clearing the search box.`;
       host.innerHTML = `<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:36px 24px;text-align:center;color:var(--text-mute);font-size:12px;line-height:1.6;">${reason}</div>`;
       return;

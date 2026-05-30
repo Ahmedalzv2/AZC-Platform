@@ -10,6 +10,7 @@ import { SIDE_GATE_SAMPLE_SINCE_TS } from './trader-config.mjs';
 import { readTailEvents } from './trader-events.mjs';
 import { summarizeShadowSignals } from './shadow-summary.mjs';
 import { buildStats } from './trade-stats.mjs';
+import { aggregateNews } from './news-feed.mjs';
 import { authedWriteWith } from './relay-auth.mjs';
 import { callMexcSigned, ALLOWED_PATH_PREFIX as MEXC_ALLOWED } from './mexc-signer.mjs';
 
@@ -850,6 +851,15 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/stats' && req.method === 'GET') {
       try { return sendJson(res, 200, await buildStats(LEARN_ROOT), CORS_HEADERS); }
       catch (error) { return sendJson(res, 502, { error: error.message }, CORS_HEADERS); }
+    }
+    if (url.pathname === '/news' && req.method === 'GET') {
+      // Keyless server-side RSS aggregate — replaces the dead browser-side
+      // free sources. Cached internally (5min) so feeds aren't hammered.
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '60', 10) || 60, 1), 150);
+      try {
+        const data = await aggregateNews();
+        return sendJson(res, 200, { articles: data.articles.slice(0, limit), fetchedAt: data.fetchedAt, sources: data.sources, errors: data.errors }, CORS_HEADERS);
+      } catch (error) { return sendJson(res, 502, { error: error.message, articles: [] }, CORS_HEADERS); }
     }
     if (url.pathname === '/actions' && req.method === 'GET') {
       // Destructive GET (returns + clears the queue). Auth-required so a
