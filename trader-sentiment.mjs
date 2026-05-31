@@ -134,11 +134,86 @@ export async function _cryptoPanicFetcher({ ticker, env, signal, fetchFn, now = 
   return { label, source: 'cryptopanic', pos, neg, sampled };
 }
 
+// CoinGecko coin id per MEXC base ticker (trend + meanrev baskets). Unmapped
+// tickers fail open — no id, no fetch.
+const CG_IDS = {
+  BTC: 'bitcoin', ETH: 'ethereum', BNB: 'binancecoin', SOL: 'solana', XRP: 'ripple',
+  DOGE: 'dogecoin', ADA: 'cardano', AVAX: 'avalanche-2', LINK: 'chainlink', DOT: 'polkadot',
+  TRX: 'tron', ATOM: 'cosmos', NEAR: 'near', APT: 'aptos', ARB: 'arbitrum', OP: 'optimism',
+  SUI: 'sui', INJ: 'injective-protocol', AAVE: 'aave', UNI: 'uniswap', ETC: 'ethereum-classic',
+  BCH: 'bitcoin-cash', SEI: 'sei-network', TIA: 'celestia', RUNE: 'thorchain', LTC: 'litecoin',
+};
+const CG_URL = (id, key) =>
+  `https://api.coingecko.com/api/v3/coins/${id}?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false&sparkline=false${key ? `&x_cg_demo_api_key=${encodeURIComponent(key)}` : ''}`;
+
+// CoinGecko per-coin community up/down vote %. Keyless (free, no signup); an
+// optional COINGECKO_API_KEY raises the rate limit. Crowd mood, not news —
+// kept as the always-available fallback under Alpha Vantage's real news scores.
+export async function _coinGeckoFetcher({ ticker, env, signal, fetchFn } = {}) {
+  const id = CG_IDS[String(ticker).toUpperCase()];
+  if (!id) return null;
+  const fn = fetchFn || globalThis.fetch;
+  let res;
+  try { res = await fn(CG_URL(id, env?.COINGECKO_API_KEY), { signal }); } catch { return null; }
+  if (!res || !res.ok) return null;
+  let json;
+  try { json = await res.json(); } catch { return null; }
+  const up = Number(json?.sentiment_votes_up_percentage);
+  if (!Number.isFinite(up)) return null;
+  const label = up >= 60 ? 'bull' : up <= 40 ? 'bear' : 'neutral';
+  return { label, source: 'coingecko', up };
+}
+
+const AV_URL = (t, key) =>
+  `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=CRYPTO:${encodeURIComponent(t)}&sort=LATEST&limit=50&apikey=${encodeURIComponent(key)}`;
+const AV_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// AV stamps publish time as "20260531T120000" (UTC, no separators).
+function _avParseTime(s) {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/.exec(String(s || ''));
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : NaN;
+}
+
+// Alpha Vantage NEWS_SENTIMENT: real per-ticker news NLP. Relevance-weighted
+// mean of ticker_sentiment_score across the last 24h of articles → bull/bear/
+// neutral on AV's own ±0.15 band. Free tier is 25 req/day, so this is the
+// primary only when a key exists; the cache (15m) keeps usage well under cap at
+// the real entry cadence. A missing `feed` (Information/Note/rate-limit) → null.
+export async function _alphaVantageFetcher({ ticker, env, signal, fetchFn, now = Date.now() } = {}) {
+  const key = env?.ALPHAVANTAGE_API_KEY;
+  if (!key) return null;
+  const fn = fetchFn || globalThis.fetch;
+  let res;
+  try { res = await fn(AV_URL(ticker, key), { signal }); } catch { return null; }
+  if (!res || !res.ok) return null;
+  let json;
+  try { json = await res.json(); } catch { return null; }
+  if (!Array.isArray(json?.feed)) return null;
+  const want = `CRYPTO:${String(ticker).toUpperCase()}`;
+  const cutoff = now - AV_WINDOW_MS;
+  let wsum = 0, wtot = 0, n = 0;
+  for (const item of json.feed) {
+    const ts = _avParseTime(item?.time_published);
+    if (Number.isFinite(ts) && ts < cutoff) continue;
+    const arr = Array.isArray(item?.ticker_sentiment) ? item.ticker_sentiment : [];
+    const hit = arr.find((x) => String(x?.ticker).toUpperCase() === want);
+    if (!hit) continue;
+    const score = Number(hit.ticker_sentiment_score);
+    if (!Number.isFinite(score)) continue;
+    const rel = Number(hit.relevance_score);
+    const w = Number.isFinite(rel) && rel > 0 ? rel : 1;
+    wsum += score * w; wtot += w; n += 1;
+  }
+  if (n < 1 || wtot <= 0) return null;
+  const mean = wsum / wtot;
+  const label = mean >= 0.15 ? 'bull' : mean <= -0.15 ? 'bear' : 'neutral';
+  return { label, source: 'alphavantage', mean, sampled: n };
+}
+
 export async function getSentiment({
   ticker, env = process.env, now = Date.now(), fetchFn, timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
   if (!ticker || typeof ticker !== 'string') return null;
-  if (!env?.CRYPTOPANIC_AUTH_TOKEN && !env?.LUNARCRUSH_API_KEY) return null;
   const key = ticker.toUpperCase();
   const hit = _cache.get(key);
   if (hit && hit.expiresAtMs > now) return hit.snapshot;
@@ -146,20 +221,16 @@ export async function getSentiment({
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let snapshot = null;
+  const take = (r) => { if (r && !snapshot) snapshot = { label: r.label, source: r.source, fetchedAtMs: now }; };
   try {
-    // CryptoPanic first (free tier works); LunarCrush topic/news as fallback.
-    const cp = await _cryptoPanicFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now });
-    if (cp) {
-      snapshot = { label: cp.label, source: 'cryptopanic', fetchedAtMs: now };
-    } else if (!controller.signal.aborted) {
-      const topic = await _topicFetcher({ ticker: key, env, signal: controller.signal, fetchFn });
-      if (topic) {
-        snapshot = { label: topic.label, source: 'topic', fetchedAtMs: now };
-      } else if (!controller.signal.aborted) {
-        const news = await _newsFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now });
-        if (news) snapshot = { label: news.label, source: 'news', fetchedAtMs: now };
-      }
-    }
+    // Priority: real news (Alpha Vantage) → keyless crowd votes (CoinGecko) →
+    // paid-tier fallbacks (CryptoPanic, LunarCrush topic/news). Each fetcher
+    // self-gates on its own key and fails open to null.
+    take(await _alphaVantageFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now }));
+    if (!snapshot && !controller.signal.aborted) take(await _coinGeckoFetcher({ ticker: key, env, signal: controller.signal, fetchFn }));
+    if (!snapshot && !controller.signal.aborted) take(await _cryptoPanicFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now }));
+    if (!snapshot && !controller.signal.aborted) take(await _topicFetcher({ ticker: key, env, signal: controller.signal, fetchFn }));
+    if (!snapshot && !controller.signal.aborted) take(await _newsFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now }));
   } catch {
     snapshot = null;
   } finally {
