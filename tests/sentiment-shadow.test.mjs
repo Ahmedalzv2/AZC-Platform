@@ -23,8 +23,9 @@ describe('sentimentDisagrees', () => {
 });
 
 describe('sentimentShadow', () => {
-  it('returns {available:false} with no key (fail-open, never throws)', async () => {
-    const r = await sentimentShadow({ ticker: 'SOL', dir: 'long', env: {} });
+  it('returns {available:false} when no source resolves (fail-open, never throws)', async () => {
+    // Unmapped ticker + no keys → every fetcher self-skips, nothing to log.
+    const r = await sentimentShadow({ ticker: 'ZZZ', dir: 'long', env: {} });
     assert.deepEqual(r, { available: false });
   });
 

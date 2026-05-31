@@ -59,9 +59,9 @@ describe('_newsFetcher', () => {
   });
 });
 
-describe('getSentiment — no key', () => {
-  it('returns null when LUNARCRUSH_API_KEY is missing', async () => {
-    const r = await getSentiment({ ticker: 'SOL', env: {}, now: 1779950000000 });
+describe('getSentiment — no source', () => {
+  it('returns null with no keys for an unmapped ticker (no keyless CoinGecko id)', async () => {
+    const r = await getSentiment({ ticker: 'ZZZ', env: {}, now: 1779950000000 });
     assert.equal(r, null);
   });
 });
@@ -131,8 +131,8 @@ describe('getSentiment — cache', () => {
     };
     const env = { LUNARCRUSH_API_KEY: 'k' };
     const t0 = 1779950000000;
-    const a = await getSentiment({ ticker: 'SOL', env, now: t0, fetchFn });
-    const b = await getSentiment({ ticker: 'SOL', env, now: t0 + 10_000, fetchFn });
+    const a = await getSentiment({ ticker: 'ZZZ', env, now: t0, fetchFn });
+    const b = await getSentiment({ ticker: 'ZZZ', env, now: t0 + 10_000, fetchFn });
     assert.equal(a.label, 'bull');
     assert.deepEqual(b, a);
     assert.equal(calls, 1);
@@ -147,8 +147,8 @@ describe('getSentiment — cache', () => {
     };
     const env = { LUNARCRUSH_API_KEY: 'k' };
     const t0 = 1779950000000;
-    await getSentiment({ ticker: 'SOL', env, now: t0, fetchFn });
-    await getSentiment({ ticker: 'SOL', env, now: t0 + 15 * 60 * 1000 + 1, fetchFn });
+    await getSentiment({ ticker: 'ZZZ', env, now: t0, fetchFn });
+    await getSentiment({ ticker: 'ZZZ', env, now: t0 + 15 * 60 * 1000 + 1, fetchFn });
     assert.equal(calls, 2);
   });
 
@@ -161,8 +161,8 @@ describe('getSentiment — cache', () => {
     };
     const env = { LUNARCRUSH_API_KEY: 'k' };
     const t0 = 1779950000000;
-    const a = await getSentiment({ ticker: 'SOL', env, now: t0, fetchFn });
-    const b = await getSentiment({ ticker: 'SOL', env, now: t0 + 100, fetchFn });
+    const a = await getSentiment({ ticker: 'ZZZ', env, now: t0, fetchFn });
+    const b = await getSentiment({ ticker: 'ZZZ', env, now: t0 + 100, fetchFn });
     assert.equal(a, null);
     assert.equal(b, null);
     assert.equal(calls, 4);    // not 2 — null was not cached; 2 getSentiment calls × 2 fetchers each
@@ -247,9 +247,113 @@ describe('getSentiment — CryptoPanic primary, LunarCrush-less', () => {
     assert.equal(r.source, 'cryptopanic');
   });
 
-  it('returns null when neither key nor token is set', async () => {
+  it('returns null when no key/token is set and the ticker is unmapped (no keyless source)', async () => {
     _clearCache();
-    const r = await getSentiment({ ticker: 'SOL', env: {}, now: 1779950000000 });
+    const r = await getSentiment({ ticker: 'ZZZ', env: {}, now: 1779950000000 });
     assert.equal(r, null);
+  });
+});
+
+import { _coinGeckoFetcher, _alphaVantageFetcher } from '../trader-sentiment.mjs';
+
+describe('_coinGeckoFetcher', () => {
+  const okFetch = (body) => async () => ({ ok: true, status: 200, json: async () => body });
+
+  it('maps a known ticker and resolves bull when up-vote % is high', async () => {
+    const r = await _coinGeckoFetcher({ ticker: 'SOL', signal: new AbortController().signal, fetchFn: okFetch({ sentiment_votes_up_percentage: 73.68, sentiment_votes_down_percentage: 26.32 }) });
+    assert.equal(r.label, 'bull');
+    assert.equal(r.source, 'coingecko');
+  });
+
+  it('resolves bear when down-vote % dominates', async () => {
+    const r = await _coinGeckoFetcher({ ticker: 'XRP', signal: new AbortController().signal, fetchFn: okFetch({ sentiment_votes_up_percentage: 30, sentiment_votes_down_percentage: 70 }) });
+    assert.equal(r.label, 'bear');
+  });
+
+  it('resolves neutral in the middle band', async () => {
+    const r = await _coinGeckoFetcher({ ticker: 'DOGE', signal: new AbortController().signal, fetchFn: okFetch({ sentiment_votes_up_percentage: 50, sentiment_votes_down_percentage: 50 }) });
+    assert.equal(r.label, 'neutral');
+  });
+
+  it('returns null for an unmapped ticker (no fetch)', async () => {
+    let called = false;
+    const r = await _coinGeckoFetcher({ ticker: 'ZZZZ', signal: new AbortController().signal, fetchFn: async () => { called = true; return { ok: true, json: async () => ({}) }; } });
+    assert.equal(r, null);
+    assert.equal(called, false);
+  });
+
+  it('returns null when the vote field is missing', async () => {
+    const r = await _coinGeckoFetcher({ ticker: 'SOL', signal: new AbortController().signal, fetchFn: okFetch({}) });
+    assert.equal(r, null);
+  });
+
+  it('returns null on non-2xx', async () => {
+    const r = await _coinGeckoFetcher({ ticker: 'SOL', signal: new AbortController().signal, fetchFn: async () => ({ ok: false, status: 429, json: async () => ({}) }) });
+    assert.equal(r, null);
+  });
+});
+
+describe('_alphaVantageFetcher', () => {
+  const now = 1779950000000;                       // 2026-... fixed
+  const recent = '20260528T120000';                // within 24h of `now`? compute relative
+  const okFetch = (body) => async () => ({ ok: true, status: 200, json: async () => body });
+  const feed = (score) => ({ feed: [{
+    time_published: new Date(now - 3600_000).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, ''),
+    ticker_sentiment: [{ ticker: 'CRYPTO:SOL', relevance_score: '0.9', ticker_sentiment_score: String(score), ticker_sentiment_label: 'x' }],
+  }] });
+
+  it('returns null with no key (no fetch)', async () => {
+    let called = false;
+    const r = await _alphaVantageFetcher({ ticker: 'SOL', env: {}, signal: new AbortController().signal, fetchFn: async () => { called = true; return { ok: true, json: async () => ({}) }; }, now });
+    assert.equal(r, null);
+    assert.equal(called, false);
+  });
+
+  it('resolves bull on a positive ticker_sentiment_score', async () => {
+    const r = await _alphaVantageFetcher({ ticker: 'SOL', env: { ALPHAVANTAGE_API_KEY: 'k' }, signal: new AbortController().signal, fetchFn: okFetch(feed(0.4)), now });
+    assert.equal(r.label, 'bull');
+    assert.equal(r.source, 'alphavantage');
+  });
+
+  it('resolves bear on a negative score', async () => {
+    const r = await _alphaVantageFetcher({ ticker: 'SOL', env: { ALPHAVANTAGE_API_KEY: 'k' }, signal: new AbortController().signal, fetchFn: okFetch(feed(-0.4)), now });
+    assert.equal(r.label, 'bear');
+  });
+
+  it('returns null when the API returns a rate-limit Information note', async () => {
+    const r = await _alphaVantageFetcher({ ticker: 'SOL', env: { ALPHAVANTAGE_API_KEY: 'k' }, signal: new AbortController().signal, fetchFn: okFetch({ Information: 'rate limit' }), now });
+    assert.equal(r, null);
+  });
+
+  it('returns null when no feed item references the ticker', async () => {
+    const r = await _alphaVantageFetcher({ ticker: 'SOL', env: { ALPHAVANTAGE_API_KEY: 'k' }, signal: new AbortController().signal, fetchFn: okFetch({ feed: [{ time_published: '20260528T120000', ticker_sentiment: [{ ticker: 'CRYPTO:BTC', ticker_sentiment_score: '0.5', relevance_score: '0.9' }] }] }), now });
+    assert.equal(r, null);
+  });
+});
+
+describe('getSentiment — keyless via CoinGecko', () => {
+  it('resolves with NO keys at all (CoinGecko is keyless)', async () => {
+    _clearCache();
+    const fetchFn = async (url) => {
+      if (String(url).includes('coingecko.com')) return { ok: true, status: 200, json: async () => ({ sentiment_votes_up_percentage: 80, sentiment_votes_down_percentage: 20 }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+    const r = await getSentiment({ ticker: 'SOL', env: {}, now: 1779950000000, fetchFn });
+    assert.equal(r.label, 'bull');
+    assert.equal(r.source, 'coingecko');
+  });
+
+  it('prefers Alpha Vantage news over CoinGecko when a key is present', async () => {
+    _clearCache();
+    const now = 1779950000000;
+    const avBody = { feed: [{ time_published: new Date(now - 3600_000).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, ''), ticker_sentiment: [{ ticker: 'CRYPTO:SOL', relevance_score: '0.9', ticker_sentiment_score: '0.5' }] }] };
+    const fetchFn = async (url) => {
+      if (String(url).includes('alphavantage.co')) return { ok: true, status: 200, json: async () => avBody };
+      if (String(url).includes('coingecko.com')) return { ok: true, status: 200, json: async () => ({ sentiment_votes_up_percentage: 10, sentiment_votes_down_percentage: 90 }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+    const r = await getSentiment({ ticker: 'SOL', env: { ALPHAVANTAGE_API_KEY: 'k' }, now, fetchFn });
+    assert.equal(r.source, 'alphavantage');
+    assert.equal(r.label, 'bull');     // AV positive wins over CoinGecko's bearish votes
   });
 });
