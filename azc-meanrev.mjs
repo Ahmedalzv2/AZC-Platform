@@ -35,7 +35,13 @@ const log = (...a) => console.log(new Date().toISOString().slice(0, 19).replace(
 
 const sg = (o) => callMexcSigned({ apiKey: API_KEY, apiSecret: API_SECRET, ...o })
   .then(r => { try { return { ...r, json: JSON.parse(r.body) }; } catch { return { ...r, json: null }; } });
-const pub = (u) => fetch(u, { signal: AbortSignal.timeout(8000) }).then(r => r.json());
+const pub = async (u, tries = 2) => {
+  // MEXC public API is flaky; one slow response shouldn't blank a whole 4h bar
+  for (let i = 0; ; i++) {
+    try { return await fetch(u, { signal: AbortSignal.timeout(15000) }).then(r => r.json()); }
+    catch (e) { if (i >= tries - 1) throw e; await sleep(1500); }
+  }
+};
 const placeOrder = (body) => sg({ path: '/api/v1/private/order/submit', method: 'POST', body });
 const cancelOrder = (id) => sg({ path: '/api/v1/private/order/cancel', method: 'POST', body: [String(id)] });
 
@@ -166,6 +172,8 @@ async function cycle() {
     if (Date.now() < (cooldownUntil.get(symbol) || 0)) continue;
     try {
       const [bars, tk, m] = await Promise.all([bars4h(symbol), ticker(symbol), meta(symbol)]);
+      // MEXC ticker/detail flap returns no data -> skip this symbol, don't kill the cycle
+      if (!tk?.lastPrice || !m?.priceUnit) continue;
       if (bars.length < MR_PARAMS.don + MR_PARAMS.atrN + 2) continue;
       const barTs = bars[bars.length - 1].t;
       if (actedBar.get(symbol) === barTs) continue;            // one decision per 4h bar

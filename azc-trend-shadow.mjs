@@ -30,7 +30,13 @@ const MIN_BARS = Math.max(STRATEGY_PARAMS.don, STRATEGY_PARAMS.atrN) + 2;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString().slice(0, 19).replace('T', ' '), '·', ...a);
-const pub = (u) => fetch(u, { signal: AbortSignal.timeout(8000) }).then(r => r.json());
+const pub = async (u, tries = 2) => {
+  // MEXC public API is flaky; one slow response shouldn't blank a whole 4h bar
+  for (let i = 0; ; i++) {
+    try { return await fetch(u, { signal: AbortSignal.timeout(15000) }).then(r => r.json()); }
+    catch (e) { if (i >= tries - 1) throw e; await sleep(1500); }
+  }
+};
 
 async function bars4h(symbol) {
   // Same construction as the live mean-rev lane so both shadows see one tape.
