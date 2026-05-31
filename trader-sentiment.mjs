@@ -72,6 +72,33 @@ export async function _topicFetcher({ ticker, env, signal, fetchFn } = {}) {
   return { label, source: 'topic', mean, sampled: nums.length };
 }
 
+// Does an explicit sentiment label oppose a trade direction? Only a non-neutral
+// label pointing the other way counts; neutral/null/unknown fail open (no
+// opinion → never a veto). dir accepts long/short or bull/bear.
+export function sentimentDisagrees(dir, label) {
+  if (!label || label === 'neutral') return false;
+  const bullish = dir === 'long' || dir === 'bull';
+  const bearish = dir === 'short' || dir === 'bear';
+  return (bullish && label === 'bear') || (bearish && label === 'bull');
+}
+
+// Shadow annotation for a signal: fetch sentiment and return a loggable
+// sub-record. Always resolves an object (never throws), so the audit line is
+// uniform. {available:false} when there's no key or no data — that keeps "key
+// missing" distinguishable from "had data and agreed" in the shadow stream.
+export async function sentimentShadow({ ticker, dir, env, fetchFn, now } = {}) {
+  let snap = null;
+  try { snap = await getSentiment({ ticker, env, fetchFn, ...(now != null ? { now } : {}) }); }
+  catch { snap = null; }
+  if (!snap) return { available: false };
+  return {
+    available: true,
+    label: snap.label,
+    source: snap.source,
+    wouldSkip: sentimentDisagrees(dir, snap.label),
+  };
+}
+
 export async function getSentiment({
   ticker, env = process.env, now = Date.now(), fetchFn, timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {

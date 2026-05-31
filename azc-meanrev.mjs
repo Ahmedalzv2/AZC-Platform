@@ -12,6 +12,7 @@
 import { callMexcSigned } from './mexc-signer.mjs';
 import { planMeanRevTrade, resampleTo4h, MR_PARAMS } from './strategy-meanrev.mjs';
 import { shadowSignalRecord, buildMeanRevHealth } from './meanrev-shadow.mjs';
+import { sentimentShadow } from './trader-sentiment.mjs';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { mkdir, appendFile, writeFile, rename } from 'node:fs/promises';
@@ -76,13 +77,13 @@ async function writeHealth(killed) {
   } catch (e) { log(`health-write err ${e.message}`); }
 }
 
-async function recordShadow(plan, barTs) {
+async function recordShadow(plan, barTs, sentiment) {
   // Every decision (armed entry or skip) becomes one JSONL line so a shadow
   // run is reviewable instead of stdout-only. Best-effort — never break the
   // cycle over an audit write.
   try {
     await mkdir(SHADOW_DIR, { recursive: true });
-    const rec = shadowSignalRecord({ now: Date.now(), plan, barTs, dryRun: DRY_RUN });
+    const rec = shadowSignalRecord({ now: Date.now(), plan, barTs, dryRun: DRY_RUN, sentiment });
     await appendFile(SHADOW_LOG, JSON.stringify(rec) + '\n');
   } catch (e) { log(`shadow-record err ${e.message}`); }
 }
@@ -169,9 +170,15 @@ async function cycle() {
       const barTs = bars[bars.length - 1].t;
       if (actedBar.get(symbol) === barTs) continue;            // one decision per 4h bar
       const plan = planMeanRevTrade({ symbol, bars4h: bars, price: +tk.lastPrice, balance: bal, riskPct: RISK_PCT, leverage: LEVERAGE, meta: m });
-      if (plan) await recordShadow(plan, barTs);
-      if (plan && !plan.skip) { actedBar.set(symbol, barTs); await placeEntry(plan, m); }
-      else if (plan?.skip) { actedBar.set(symbol, barTs); log(`${symbol}: signal but skip=${plan.skip}`); }
+      if (plan && !plan.skip) {
+        // News veto is shadow-only here: log what it WOULD have done, never gate the fill.
+        const sentiment = await sentimentShadow({ ticker: symbol.split('_')[0], dir: plan.dir });
+        await recordShadow(plan, barTs, sentiment);
+        actedBar.set(symbol, barTs); await placeEntry(plan, m);
+      } else if (plan?.skip) {
+        await recordShadow(plan, barTs);
+        actedBar.set(symbol, barTs); log(`${symbol}: signal but skip=${plan.skip}`);
+      }
     } catch (e) { log(`${symbol}: cycle error ${e.message}`); }
   }
   await writeHealth(false);
