@@ -28,9 +28,9 @@ export function buildTrendHealth({ now, cycleCount, dryRun, killed, basket, posi
 // worth logging (no breakout, or an open position merely trailing). Records:
 // entry (breakout open), exit (trailing-stop close), skip (breakout suppressed
 // by the regime gate — the fill-audit-relevant near-miss).
-export function trendSignalRecord({ now, d, barTs, symbol, dryRun, netR }) {
+export function trendSignalRecord({ now, d, barTs, symbol, dryRun, netR, sentiment }) {
   const base = { ts: now, barTs, dryRun: !!dryRun, symbol, strategy: 'trend-trail-4h' };
-  if (d.action === 'open') return { ...base, decision: 'entry', dir: d.dir, entry: d.entry, stop: d.initialStop, atr: d.atrAtEntry };
+  if (d.action === 'open') return { ...base, decision: 'entry', dir: d.dir, entry: d.entry, stop: d.initialStop, atr: d.atrAtEntry, ...(sentiment ? { sentiment } : {}) };
   if (d.action === 'close') return { ...base, decision: 'exit', exit: d.exit, win: !!d.win, ...(netR != null ? { netR } : {}) };
   if (d.action === 'flat' && d.regime === 'chop') return { ...base, decision: 'skip', reason: 'chop' };
   return null;

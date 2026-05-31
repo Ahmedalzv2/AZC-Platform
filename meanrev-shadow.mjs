@@ -27,7 +27,7 @@ export function buildMeanRevHealth({ now, cycleCount, dryRun, killed, basket, pe
   };
 }
 
-export function shadowSignalRecord({ now, plan, barTs, dryRun }) {
+export function shadowSignalRecord({ now, plan, barTs, dryRun, sentiment }) {
   const base = {
     ts: now,
     barTs,
@@ -46,5 +46,6 @@ export function shadowSignalRecord({ now, plan, barTs, dryRun }) {
     qty: plan.qty,
     riskUsd: plan.riskUsd,
     atr: plan.atr,
+    ...(sentiment ? { sentiment } : {}),
   };
 }

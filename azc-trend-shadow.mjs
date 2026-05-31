@@ -12,6 +12,7 @@
 import { decideStep, tradeNetR, STRATEGY_PARAMS } from './strategy-trend-trail.mjs';
 import { resampleTo4h } from './strategy-meanrev.mjs';
 import { trendSignalRecord, buildTrendHealth } from './trend-shadow.mjs';
+import { sentimentShadow } from './trader-sentiment.mjs';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { mkdir, appendFile, writeFile, rename } from 'node:fs/promises';
@@ -96,7 +97,8 @@ async function stepSymbol(symbol) {
   if (d.action === 'open') {
     positions.set(symbol, { dir: d.dir, entry: d.entry, initialStop: d.initialStop, atrAtEntry: d.atrAtEntry, hwm: d.entry, lwm: d.entry, lastBarTs: barTs });
     actedBar.set(symbol, barTs);
-    await recordShadow(trendSignalRecord({ now: Date.now(), d, barTs, symbol, dryRun: DRY_RUN }));
+    const sentiment = await sentimentShadow({ ticker: symbol.split('_')[0], dir: d.dir });
+    await recordShadow(trendSignalRecord({ now: Date.now(), d, barTs, symbol, dryRun: DRY_RUN, sentiment }));
     log(`${symbol}: 🟢 [SHADOW] would OPEN ${d.dir} entry=${d.entry} stop=${d.initialStop.toFixed(6)}`);
   } else if (d.action === 'flat' && d.regime === 'chop') {
     actedBar.set(symbol, barTs);
