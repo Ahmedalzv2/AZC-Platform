@@ -184,3 +184,72 @@ describe('getSentiment — timeout', () => {
     assert.ok(Date.now() - start < 500, 'must short-circuit on timeout');
   });
 });
+
+import { _cryptoPanicFetcher } from '../trader-sentiment.mjs';
+
+describe('_cryptoPanicFetcher', () => {
+  const okFetch = (results) => async () => ({ ok: true, status: 200, json: async () => ({ results }) });
+  const now = 1779950000000;
+  const recent = new Date(now - 3600_000).toISOString();
+  const stale = new Date(now - 48 * 3600_000).toISOString();
+
+  it('returns null with no token', async () => {
+    const r = await _cryptoPanicFetcher({ ticker: 'SOL', env: {}, signal: new AbortController().signal, fetchFn: okFetch([]) });
+    assert.equal(r, null);
+  });
+
+  it('leans bull when positive votes dominate recent posts', async () => {
+    const results = [
+      { published_at: recent, votes: { positive: 8, negative: 1 } },
+      { published_at: recent, votes: { positive: 5, negative: 2 } },
+    ];
+    const r = await _cryptoPanicFetcher({ ticker: 'SOL', env: { CRYPTOPANIC_AUTH_TOKEN: 't' }, signal: new AbortController().signal, fetchFn: okFetch(results), now });
+    assert.equal(r.label, 'bull');
+    assert.equal(r.source, 'cryptopanic');
+  });
+
+  it('leans bear when negative votes dominate', async () => {
+    const results = [{ published_at: recent, votes: { positive: 1, negative: 9 } }];
+    const r = await _cryptoPanicFetcher({ ticker: 'SOL', env: { CRYPTOPANIC_AUTH_TOKEN: 't' }, signal: new AbortController().signal, fetchFn: okFetch(results), now });
+    assert.equal(r.label, 'bear');
+  });
+
+  it('ignores posts outside the 24h window', async () => {
+    const results = [{ published_at: stale, votes: { positive: 50, negative: 0 } }];
+    const r = await _cryptoPanicFetcher({ ticker: 'SOL', env: { CRYPTOPANIC_AUTH_TOKEN: 't' }, signal: new AbortController().signal, fetchFn: okFetch(results), now });
+    assert.equal(r, null);
+  });
+
+  it('returns null when no recent post carries votes', async () => {
+    const results = [{ published_at: recent, votes: { positive: 0, negative: 0 } }];
+    const r = await _cryptoPanicFetcher({ ticker: 'SOL', env: { CRYPTOPANIC_AUTH_TOKEN: 't' }, signal: new AbortController().signal, fetchFn: okFetch(results), now });
+    assert.equal(r, null);
+  });
+
+  it('returns null on non-2xx', async () => {
+    const r = await _cryptoPanicFetcher({ ticker: 'SOL', env: { CRYPTOPANIC_AUTH_TOKEN: 't' }, signal: new AbortController().signal, fetchFn: async () => ({ ok: false, status: 404, json: async () => ({}) }) });
+    assert.equal(r, null);
+  });
+});
+
+describe('getSentiment — CryptoPanic primary, LunarCrush-less', () => {
+  it('resolves via CryptoPanic when only CRYPTOPANIC_AUTH_TOKEN is set', async () => {
+    _clearCache();
+    const now = 1779950000000;
+    const fetchFn = async (url) => {
+      if (String(url).includes('cryptopanic.com')) {
+        return { ok: true, status: 200, json: async () => ({ results: [{ published_at: new Date(now - 1000).toISOString(), votes: { positive: 9, negative: 0 } }] }) };
+      }
+      return { ok: false, status: 402, json: async () => ({}) };
+    };
+    const r = await getSentiment({ ticker: 'SOL', env: { CRYPTOPANIC_AUTH_TOKEN: 't' }, now, fetchFn });
+    assert.equal(r.label, 'bull');
+    assert.equal(r.source, 'cryptopanic');
+  });
+
+  it('returns null when neither key nor token is set', async () => {
+    _clearCache();
+    const r = await getSentiment({ ticker: 'SOL', env: {}, now: 1779950000000 });
+    assert.equal(r, null);
+  });
+});

@@ -99,11 +99,46 @@ export async function sentimentShadow({ ticker, dir, env, fetchFn, now } = {}) {
   };
 }
 
+const CP_URL = (t, token) =>
+  `https://cryptopanic.com/api/v1/posts/?auth_token=${encodeURIComponent(token)}&currencies=${encodeURIComponent(t)}&public=true`;
+const CP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// CryptoPanic free Developer API: aggregate community up/down votes across the
+// last 24h of posts for a currency into a bull/bear/neutral lean. positive vs
+// negative vote SHARE is the signal; too few votes => null (no opinion), so a
+// quiet currency fails open like LunarCrush's neutral.
+export async function _cryptoPanicFetcher({ ticker, env, signal, fetchFn, now = Date.now() } = {}) {
+  const token = env?.CRYPTOPANIC_AUTH_TOKEN;
+  if (!token) return null;
+  const fn = fetchFn || globalThis.fetch;
+  let res;
+  try { res = await fn(CP_URL(ticker, token), { signal }); } catch { return null; }
+  if (!res || !res.ok) return null;
+  let json;
+  try { json = await res.json(); } catch { return null; }
+  const posts = Array.isArray(json?.results) ? json.results : [];
+  const cutoff = now - CP_WINDOW_MS;
+  let pos = 0, neg = 0, sampled = 0;
+  for (const p of posts) {
+    const ts = Date.parse(p?.published_at || p?.created_at || '');
+    if (Number.isFinite(ts) && ts < cutoff) continue;          // undated posts count (API already recency-orders)
+    const v = p?.votes || {};
+    const up = Number(v.positive) || 0;
+    const dn = Number(v.negative) || 0;
+    if (up || dn) { pos += up; neg += dn; sampled += 1; }
+  }
+  const total = pos + neg;
+  if (total < 1 || sampled < 1) return null;
+  const share = pos / total;
+  const label = share >= 0.6 ? 'bull' : share <= 0.4 ? 'bear' : 'neutral';
+  return { label, source: 'cryptopanic', pos, neg, sampled };
+}
+
 export async function getSentiment({
   ticker, env = process.env, now = Date.now(), fetchFn, timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
   if (!ticker || typeof ticker !== 'string') return null;
-  if (!env?.LUNARCRUSH_API_KEY) return null;
+  if (!env?.CRYPTOPANIC_AUTH_TOKEN && !env?.LUNARCRUSH_API_KEY) return null;
   const key = ticker.toUpperCase();
   const hit = _cache.get(key);
   if (hit && hit.expiresAtMs > now) return hit.snapshot;
@@ -112,12 +147,18 @@ export async function getSentiment({
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let snapshot = null;
   try {
-    const topic = await _topicFetcher({ ticker: key, env, signal: controller.signal, fetchFn });
-    if (topic) {
-      snapshot = { label: topic.label, source: 'topic', fetchedAtMs: now };
+    // CryptoPanic first (free tier works); LunarCrush topic/news as fallback.
+    const cp = await _cryptoPanicFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now });
+    if (cp) {
+      snapshot = { label: cp.label, source: 'cryptopanic', fetchedAtMs: now };
     } else if (!controller.signal.aborted) {
-      const news = await _newsFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now });
-      if (news) snapshot = { label: news.label, source: 'news', fetchedAtMs: now };
+      const topic = await _topicFetcher({ ticker: key, env, signal: controller.signal, fetchFn });
+      if (topic) {
+        snapshot = { label: topic.label, source: 'topic', fetchedAtMs: now };
+      } else if (!controller.signal.aborted) {
+        const news = await _newsFetcher({ ticker: key, env, signal: controller.signal, fetchFn, now });
+        if (news) snapshot = { label: news.label, source: 'news', fetchedAtMs: now };
+      }
     }
   } catch {
     snapshot = null;
